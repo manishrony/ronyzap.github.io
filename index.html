@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ronyzap LLC – Modern Sports AI Platform</title>
-    <meta name="description" content="Ronyzap LLC builds AI‑powered sports performance tools for athletes and coaches." />
+    <title>Ronyzap LLC – Sign In & Use Top‑Notch Tech</title>
+    <meta name="description" content="Ronyzap LLC – AI‑powered sports performance platform." />
     <meta name="theme-color" content="#0a0f2c" />
     <style>
       *,
@@ -21,154 +21,286 @@
         line-height: 1.6;
       }
       .container {
-        max-width: 800px;
+        max-width: 500px;
         margin: 0 auto;
         padding: 2rem 1.25rem;
       }
       header {
         text-align: center;
-        padding: 2.5rem 0 1.5rem;
-        border-bottom: 1px solid #2c3560;
+        padding: 1.5rem 0;
       }
       .logo {
-        font-size: 2.2rem;
+        font-size: 2rem;
         font-weight: 700;
         letter-spacing: 0.05em;
         color: #00d9ff;
         text-decoration: none;
       }
       .tagline {
-        font-size: 1.1rem;
+        font-size: 0.95rem;
         color: #8ea2ff;
-        margin-top: 0.5rem;
+        margin-top: 0.25rem;
       }
-      main {
-        padding: 2rem 0;
-      }
-      h1,
-      h2,
-      h3 {
-        color: #00d9ff;
-      }
-      h1 {
-        font-size: 1.8rem;
-      }
-      h2 {
-        font-size: 1.3rem;
-        margin-top: 2rem;
-        border-bottom: 1px solid #2c3560;
-        padding-bottom: 0.5rem;
-      }
-      p {
-        margin-bottom: 1rem;
-      }
-      .highlight {
-        color: #ff4081;
-        font-weight: 600;
-      }
-      .cta {
-        display: inline-block;
+      .card {
+        background: #161d40;
+        border-radius: 10px;
+        padding: 1.5rem;
         margin-top: 1rem;
-        padding: 0.75rem 1.5rem;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      }
+      .btn {
+        display: block;
+        width: 100%;
+        padding: 0.75rem 1rem;
+        margin-top: 0.5rem;
         background: #00d9ff;
         color: #0a0f2c;
-        text-decoration: none;
+        text-align: center;
+        border: none;
         border-radius: 6px;
         font-weight: 600;
+        cursor: pointer;
         transition: transform 0.2s ease, box-shadow 0.2s ease;
       }
-      .cta:hover {
+      .btn:hover {
         transform: translateY(-2px);
         box-shadow: 0 4px 12px rgba(0, 217, 255, 0.3);
       }
+      .hidden {
+        display: none;
+      }
       footer {
         text-align: center;
-        padding: 1.5rem 0;
+        margin-top: 2.5rem;
+        padding-top: 1rem;
         border-top: 1px solid #2c3560;
         font-size: 0.9rem;
         color: #7180b9;
-      }
-      @media (prefers-color-scheme: light) {
-        body {
-          background-color: #f0f4ff;
-          color: #1a203c;
-        }
-        .container,
-        header,
-        main,
-        footer {
-          border-color: #c5d7ff;
-        }
-        .logo,
-        h1,
-        h2,
-        h3 {
-          color: #1a203c;
-        }
-        .highlight {
-          color: #ff4081;
-        }
-        .cta {
-          background: #1a203c;
-          color: #ffffff;
-        }
-        .cta:hover {
-          box-shadow: 0 4px 12px rgba(26, 32, 60, 0.2);
-        }
       }
     </style>
   </head>
   <body>
     <div class="container">
-      <header>
-        <a href="/" class="logo">Ronyzap LLC</a>
-        <div class="tagline">AI‑powered sports performance for modern athletes</div>
-      </header>
+      <!-- LOADING -->
+      <div id="loading" class="card">
+        <p>Loading Ronyzap AI backend…</p>
+      </div>
 
-      <main>
-        <h1>About Ronyzap LLC</h1>
+      <!-- LOGIN SCREEN -->
+      <div id="login" class="hidden card">
+        <h1>Sign in to Ronyzap AI</h1>
         <p>
-          Ronyzap LLC is building a sports‑AI SaaS platform that helps athletes record their performance, get real‑time AI feedback, and track progress over time. Whether you’re training cricket, baseball, soccer, or football, Ronyzap AI turns your camera into a personal coach.
+          Sign in with your email or Google account to start using our top‑notch sports AI.
         </p>
+        <form id="email-form">
+          <input
+            id="email"
+            type="email"
+            placeholder="Your email"
+            required
+            style="width:100%; padding:0.75rem; border-radius:6px; border:1px solid #2c3560; background:#0a0f2c; color:#e0e0ff; margin-bottom:0.5rem;"
+          />
+          <input
+            id="password"
+            type="password"
+            placeholder="Password"
+            required
+            style="width:100%; padding:0.75rem; border-radius:6px; border:1px solid #2c3560; background:#0a0f2c; color:#e0e0ff; margin-bottom:0.75rem;"
+          />
+          <button type="submit" class="btn">Sign in</button>
+          <button type="button" class="btn" id="signup-btn">Create account</button>
+        </form>
+        <button id="google-btn" class="btn" style="background:#ff4081;">Continue with Google</button>
+      </div>
 
-        <h2>What we’re building</h2>
-        <p>
-          Our platform lets you:
-        </p>
-        <ul>
-          <li>Sign up with email or social accounts (Google, Facebook, Microsoft, Yahoo).</li>
-          <li>Pick a sport and record yourself with your device’s camera.</li>
-          <li>Receive real‑time feedback on form, speed, accuracy, and motion.</li>
-          <li>Review detailed analytics and progress charts in your profile.</li>
-        </ul>
-
-        <h2>Early access & contact</h2>
-        <p>
-          We’re currently in early development and recruiting beta users and partners. If you’d like to:
-        </p>
-        <ul>
-          <li>Join the waitlist.</li>
-          <li>Explore partnerships or integrations.</li>
-          <li>Learn more about the Ronyzap AI stack.</li>
-        </ul>
-        <p>
-          Please reach out via:
-        </p>
-        <p>
-          <a href="mailto:contact@ronyzapllc.com" class="highlight">contact@ronyzapllc.com</a>
-          or connect with us on <a href="https://github.com/ronyzapllc" class="highlight">GitHub</a>.
-        </p>
-
-        <a href="mailto:contact@ronyzapllc.com" class="cta">Join the waitlist</a>
-      </main>
+      <!-- DASHBOARD -->
+      <div id="dashboard" class="hidden card">
+        <h1>Welcome to Ronyzap AI 🎯</h1>
+        <p>You’re signed in as <span id="user-email"></span>.</p>
+        <p>Ronyzap AI will now analyze your motion in real time and provide feedback on form, speed, and accuracy.</p>
+        <button id="record-btn" class="btn">Record a session</button>
+        <div id="demo-result" class="card" style="margin-top:1rem; display:none;">
+          <h3>Ronyzap AI Result</h3>
+          <p><strong>Form score:</strong> <span id="form-score">78</span>/100</p>
+          <p><strong>Ball speed:</strong> <span id="speed">86</span> mph</p>
+          <p><strong>Accuracy:</strong> <span id="accuracy">92</span>%</p>
+          <p><strong>Feedback:</strong> <span id="feedback">Good follow‑through, keep elbow slightly lower.</span></p>
+        </div>
+      </div>
 
       <footer>
         &copy; <span id="year"></span> Ronyzap LLC – Modern Sports AI Platform
       </footer>
     </div>
 
-    <script>
+    <!-- FIREBASE SDK (v9 modular) -->
+    <!-- REPLACE the `firebaseConfig` below with your own project keys -->
+    <script type="module">
+      import { initializeApp } from "noreply@ronyzap-llc-1a20d.firebaseapp.com";
+      import {
+        getAuth,
+        onAuthStateChanged,
+        signInWithEmailAndPassword,
+        createUserWithEmailAndPassword,
+        signInWithPopup,
+        GoogleAuthProvider,
+        signOut,
+      } from "noreply@ronyzap-llc-1a20d.firebaseapp.com";
+
+      // 👇<<< REPLACE THIS WITH YOUR FIREBASE CONFIG >>> 👇
+      const firebaseConfig = {
+        apiKey: "AIzaSyBFgBC9wuTb78ywqkiZLvutIGLR2tPY98E",
+        authDomain: "ronyzap-llc-1a20d.firebaseapp.com",
+        projectId: "ronyzap-llc-1a20d",
+        storageBucket: "ronyzap-llc-1a20d.firebasestorage.app",
+        messagingSenderId: "1037746154686",
+        appId: "1037746154686:web:e51af523e914256adc82ef",
+      };
+
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const provider = new GoogleAuthProvider();
+
+      // Simple "demo" AI backend response
+      function mockRonyzapAI() {
+        return {
+          formScore: Math.floor(Math.random() * 40 + 60), // 60–99
+          speed: Math.floor(Math.random() * 30 + 70),      // 70–99 mph
+          accuracy: Math.floor(Math.random() * 20 + 80),   // 80–99%
+          feedback:
+            [
+              "Good follow‑through, keep elbow slightly lower.",
+              "Excellent balance; try increasing speed by 5–10%.",
+              "Slight asymmetry detected; focus on even weight distribution.",
+            ][Math.floor(Math.random() * 3)],
+        };
+      }
+
+      // DOM refs
+      const loadingEl = document.getElementById("loading");
+      const loginEl = document.getElementById("login");
+      const dashboardEl = document.getElementById("dashboard");
+      const userEmailEl = document.getElementById("user-email");
+
+      const emailForm = document.getElementById("email-form");
+      const emailInput = document.getElementById("email");
+      const passwordInput = document.getElementById("password");
+      const signupBtn = document.getElementById("signup-btn");
+      const googleBtn = document.getElementById("google-btn");
+      const signOutBtn = document.createElement("button");
+      signOutBtn.className = "btn";
+      signOutBtn.style.marginTop = "0.5rem";
+      signOutBtn.textContent = "Sign out";
+
+      const recordBtn = document.getElementById("record-btn");
+      const demoResultEl = document.getElementById("demo-result");
+
+      const formScoreEl = document.getElementById("form-score");
+      const speedEl = document.getElementById("speed");
+      const accuracyEl = document.getElementById("accuracy");
+      const feedbackEl = document.getElementById("feedback");
+
+      // Show / hide views
+      function showLoading() {
+        loadingEl.classList.remove("hidden");
+        loginEl.classList.add("hidden");
+        dashboardEl.classList.add("hidden");
+      }
+      function showLogin() {
+        loadingEl.classList.add("hidden");
+        loginEl.classList.remove("hidden");
+        dashboardEl.classList.add("hidden");
+      }
+      function showDashboard(user) {
+        loadingEl.classList.add("hidden");
+        loginEl.classList.add("hidden");
+        dashboardEl.classList.remove("hidden");
+        userEmailEl.textContent = user.email;
+        if (!dashboardEl.contains(signOutBtn)) {
+          dashboardEl.appendChild(signOutBtn);
+        }
+      }
+
+      // Auth state listener
+      onAuthStateChanged(auth, (user) => {
+        if (user) {
+          showDashboard(user);
+        } else {
+          showLogin();
+        }
+      });
+
+      // Email sign in
+      emailForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const email = emailInput.value;
+        const password = passwordInput.value;
+        try {
+          await signInWithEmailAndPassword(auth, email, password);
+          emailForm.reset();
+        } catch (error) {
+          alert("Sign in failed: " + error.message);
+        }
+      });
+
+      // Email sign up
+      signupBtn.addEventListener("click", async () => {
+        const email = emailInput.value;
+        const password = passwordInput.value;
+        if (!email || !password) {
+          alert("Please enter email and password.");
+          return;
+        }
+        try {
+          await createUserWithEmailAndPassword(auth, email, password);
+          alert("Account created! You’re now signed in.");
+          emailForm.reset();
+        } catch (error) {
+          alert("Sign up failed: " + error.message);
+        }
+      });
+
+      // Google sign in
+      googleBtn.addEventListener("click", async () => {
+        try {
+          await signInWithPopup(auth, provider);
+        } catch (error) {
+          alert("Google sign in failed: " + error.message);
+        }
+      });
+
+      // Sign out
+      signOutBtn.addEventListener("click", async () => {
+        try {
+          await signOut(auth);
+          showLogin();
+        } catch (error) {
+          alert("Sign out failed: " + error.message);
+        }
+      });
+
+      // Mock “record” button → call Ronyzap AI
+      recordBtn.addEventListener("click", () => {
+        showLoading();
+        // Simulate network / AI delay
+        setTimeout(() => {
+          const result = mockRonyzapAI();
+          formScoreEl.textContent = result.formScore;
+          speedEl.textContent = result.speed;
+          accuracyEl.textContent = result.accuracy;
+          feedbackEl.textContent = result.feedback;
+          demoResultEl.style.display = "block";
+          loadingEl.classList.add("hidden");
+        }, 1200);
+      });
+
+      // Set current year
       document.getElementById("year").textContent = new Date().getFullYear();
+
+      // Start: hide loading after 1.5s if auth isn’t ready yet
+      setTimeout(() => {
+        if (loadingEl) loadingEl.classList.add("hidden");
+      }, 1500);
     </script>
   </body>
 </html>
