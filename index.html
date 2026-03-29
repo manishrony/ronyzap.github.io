@@ -134,172 +134,146 @@
     </div>
 
     <!-- FIREBASE SDK (v10 modular) -->
-    <!-- REPLACE the `firebaseConfig` below with your own project keys -->
-    <script type="module">
-      import { initializeApp } from "https://www.gstatic.com/firebasejs/10/app.js";
-      import {
-        getAuth,
-        onAuthStateChanged,
-        signInWithEmailAndPassword,
-        createUserWithEmailAndPassword,
-        signInWithPopup,
-        GoogleAuthProvider,
-        signOut,
-      } from "https://www.gstatic.com/firebasejs/10/auth.js";
-      
-      const firebaseConfig = {
-        apiKey: "AIzaSyBFgBC9wuTb78ywqkiZLvutIGLR2tPY98E",
-        authDomain: "ronyzap-llc-1a20d.firebaseapp.com",
-        projectId: "ronyzap-llc-1a20d",
-        storageBucket: "ronyzap-llc-1a20d.firebasestorage.app",
-        messagingSenderId: "1037746154686",
-        appId: "1037746154686:web:e51af523e914256adc82ef",
-      };
+    <!-- FIREBASE SDK v9 (Global) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js"></script>
 
-      const app = initializeApp(firebaseConfig);
-      const auth = getAuth(app);
-      const provider = new GoogleAuthProvider();
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyBFgBC9wuTb78ywqkiZLvutIGLR2tPY98E",
+    authDomain: "ronyzap-llc-1a20d.firebaseapp.com",
+    projectId: "ronyzap-llc-1a20d",
+    storageBucket: "ronyzap-llc-1a20d.firebasestorage.app",
+    messagingSenderId: "1037746154686",
+    appId: "1037746154686:web:e51af523e914256adc82ef",
+  };
 
-      // Simple "demo" AI backend response
-      function mockRonyzapAI() {
-        return {
-          formScore: Math.floor(Math.random() * 40 + 60), // 60–99
-          speed: Math.floor(Math.random() * 30 + 70),      // 70–99 mph
-          accuracy: Math.floor(Math.random() * 20 + 80),   // 80–99%
-          feedback:
-            [
-              "Good follow‑through, keep elbow slightly lower.",
-              "Excellent balance; try increasing speed by 5–10%.",
-              "Slight asymmetry detected; focus on even weight distribution.",
-            ][Math.floor(Math.random() * 3)],
-        };
-      }
+  const app = firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth();
 
-      // DOM refs
-      const loadingEl = document.getElementById("loading");
-      const loginEl = document.getElementById("login");
-      const dashboardEl = document.getElementById("dashboard");
-      const userEmailEl = document.getElementById("user-email");
+  function mockRonyzapAI() {
+    return {
+      formScore: Math.floor(Math.random() * 40 + 60),
+      speed: Math.floor(Math.random() * 30 + 70),
+      accuracy: Math.floor(Math.random() * 20 + 80),
+      feedback: [
+        "Good follow‑through, keep elbow slightly lower.",
+        "Excellent balance; try increasing speed by 5–10%.",
+        "Slight asymmetry detected; focus on even weight distribution.",
+      ][Math.floor(Math.random() * 3)],
+    };
+  }
 
-      const emailForm = document.getElementById("email-form");
-      const emailInput = document.getElementById("email");
-      const passwordInput = document.getElementById("password");
-      const signupBtn = document.getElementById("signup-btn");
-      const googleBtn = document.getElementById("google-btn");
-      const signOutBtn = document.createElement("button");
-      signOutBtn.className = "btn";
-      signOutBtn.style.marginTop = "0.5rem";
-      signOutBtn.textContent = "Sign out";
+  const loadingEl = document.getElementById("loading");
+  const loginEl = document.getElementById("login");
+  const dashboardEl = document.getElementById("dashboard");
+  const userEmailEl = document.getElementById("user-email");
+  const emailForm = document.getElementById("email-form");
+  const emailInput = document.getElementById("email");
+  const passwordInput = document.getElementById("password");
+  const signupBtn = document.getElementById("signup-btn");
+  const googleBtn = document.getElementById("google-btn");
+  const signOutBtn = document.createElement("button");
+  signOutBtn.className = "btn";
+  signOutBtn.style.marginTop = "0.5rem";
+  signOutBtn.textContent = "Sign out";
+  const recordBtn = document.getElementById("record-btn");
+  const demoResultEl = document.getElementById("demo-result");
+  const formScoreEl = document.getElementById("form-score");
+  const speedEl = document.getElementById("speed");
+  const accuracyEl = document.getElementById("accuracy");
+  const feedbackEl = document.getElementById("feedback");
 
-      const recordBtn = document.getElementById("record-btn");
-      const demoResultEl = document.getElementById("demo-result");
+  function showLoading() {
+    loadingEl.classList.remove("hidden");
+    loginEl.classList.add("hidden");
+    dashboardEl.classList.add("hidden");
+  }
 
-      const formScoreEl = document.getElementById("form-score");
-      const speedEl = document.getElementById("speed");
-      const accuracyEl = document.getElementById("accuracy");
-      const feedbackEl = document.getElementById("feedback");
+  function showLogin() {
+    loadingEl.classList.add("hidden");
+    loginEl.classList.remove("hidden");
+    dashboardEl.classList.add("hidden");
+  }
 
-      // Show / hide views
-      function showLoading() {
-        loadingEl.classList.remove("hidden");
-        loginEl.classList.add("hidden");
-        dashboardEl.classList.add("hidden");
-      }
-      function showLogin() {
-        loadingEl.classList.add("hidden");
-        loginEl.classList.remove("hidden");
-        dashboardEl.classList.add("hidden");
-      }
-      function showDashboard(user) {
-        loadingEl.classList.add("hidden");
-        loginEl.classList.add("hidden");
-        dashboardEl.classList.remove("hidden");
-        userEmailEl.textContent = user.email;
-        if (!dashboardEl.contains(signOutBtn)) {
-          dashboardEl.appendChild(signOutBtn);
-        }
-      }
+  function showDashboard(user) {
+    loadingEl.classList.add("hidden");
+    loginEl.classList.add("hidden");
+    dashboardEl.classList.remove("hidden");
+    userEmailEl.textContent = user.email;
+    if (!dashboardEl.contains(signOutBtn)) {
+      dashboardEl.appendChild(signOutBtn);
+    }
+  }
 
-      // Auth state listener
-      onAuthStateChanged(auth, (user) => {
-        if (user) {
-          showDashboard(user);
-        } else {
-          showLogin();
-        }
-      });
+  auth.onAuthStateChanged((user) => {
+    if (user) {
+      showDashboard(user);
+    } else {
+      showLogin();
+    }
+  });
 
-      // Email sign in
-      emailForm.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const email = emailInput.value;
-        const password = passwordInput.value;
-        try {
-          await signInWithEmailAndPassword(auth, email, password);
-          emailForm.reset();
-        } catch (error) {
-          alert("Sign in failed: " + error.message);
-        }
-      });
+  emailForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      await auth.signInWithEmailAndPassword(emailInput.value, passwordInput.value);
+      emailForm.reset();
+    } catch (error) {
+      alert("Sign in failed: " + error.message);
+    }
+  });
 
-      // Email sign up
-      signupBtn.addEventListener("click", async () => {
-        const email = emailInput.value;
-        const password = passwordInput.value;
-        if (!email || !password) {
-          alert("Please enter email and password.");
-          return;
-        }
-        try {
-          await createUserWithEmailAndPassword(auth, email, password);
-          alert("Account created! You’re now signed in.");
-          emailForm.reset();
-        } catch (error) {
-          alert("Sign up failed: " + error.message);
-        }
-      });
+  signupBtn.addEventListener("click", async () => {
+    if (!emailInput.value || !passwordInput.value) {
+      alert("Please enter email and password.");
+      return;
+    }
+    try {
+      await auth.createUserWithEmailAndPassword(emailInput.value, passwordInput.value);
+      alert("Account created! You're now signed in.");
+      emailForm.reset();
+    } catch (error) {
+      alert("Sign up failed: " + error.message);
+    }
+  });
 
-      // Google sign in
-      googleBtn.addEventListener("click", async () => {
-        try {
-          await signInWithPopup(auth, provider);
-        } catch (error) {
-          alert("Google sign in failed: " + error.message);
-        }
-      });
+  googleBtn.addEventListener("click", async () => {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    try {
+      await auth.signInWithPopup(provider);
+    } catch (error) {
+      alert("Google sign in failed: " + error.message);
+    }
+  });
 
-      // Sign out
-      signOutBtn.addEventListener("click", async () => {
-        try {
-          await signOut(auth);
-          showLogin();
-        } catch (error) {
-          alert("Sign out failed: " + error.message);
-        }
-      });
+  signOutBtn.addEventListener("click", async () => {
+    try {
+      await auth.signOut();
+      showLogin();
+    } catch (error) {
+      alert("Sign out failed: " + error.message);
+    }
+  });
 
-      // Mock “record” button → call Ronyzap AI
-      recordBtn.addEventListener("click", () => {
-        showLoading();
-        // Simulate network / AI delay
-        setTimeout(() => {
-          const result = mockRonyzapAI();
-          formScoreEl.textContent = result.formScore;
-          speedEl.textContent = result.speed;
-          accuracyEl.textContent = result.accuracy;
-          feedbackEl.textContent = result.feedback;
-          demoResultEl.style.display = "block";
-          loadingEl.classList.add("hidden");
-        }, 1200);
-      });
+  recordBtn.addEventListener("click", () => {
+    showLoading();
+    setTimeout(() => {
+      const result = mockRonyzapAI();
+      formScoreEl.textContent = result.formScore;
+      speedEl.textContent = result.speed;
+      accuracyEl.textContent = result.accuracy;
+      feedbackEl.textContent = result.feedback;
+      demoResultEl.style.display = "block";
+      loadingEl.classList.add("hidden");
+    }, 1200);
+  });
 
-      // Set current year
-      document.getElementById("year").textContent = new Date().getFullYear();
+  document.getElementById("year").textContent = new Date().getFullYear();
 
-      // Start: hide loading after 1.5s if auth isn’t ready yet
-      setTimeout(() => {
-        if (loadingEl) loadingEl.classList.add("hidden");
-      }, 1500);
-    </script>
+  setTimeout(() => {
+    if (loadingEl) loadingEl.classList.add("hidden");
+  }, 1500);
+</script>
   </body>
 </html>
