@@ -136,7 +136,7 @@
     <!-- FIREBASE SDK (v9 modular) -->
     <!-- REPLACE the `firebaseConfig` below with your own project keys -->
     <script type="module">
-      import { initializeApp } from "noreply@ronyzap-llc-1a20d.firebaseapp.com";
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/11/app.js";
       import {
         getAuth,
         onAuthStateChanged,
@@ -145,9 +145,8 @@
         signInWithPopup,
         GoogleAuthProvider,
         signOut,
-      } from "noreply@ronyzap-llc-1a20d.firebaseapp.com";
-
-      // 👇<<< REPLACE THIS WITH YOUR FIREBASE CONFIG >>> 👇
+      } from "https://www.gstatic.com/firebasejs/11/app.js";
+      
       const firebaseConfig = {
         apiKey: "AIzaSyBFgBC9wuTb78ywqkiZLvutIGLR2tPY98E",
         authDomain: "ronyzap-llc-1a20d.firebaseapp.com",
