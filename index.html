@@ -1,276 +1,64 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ronyzap LLC – Sign In & Use Top‑Notch Tech</title>
-    <meta name="description" content="Ronyzap LLC – AI‑powered sports performance platform." />
-    <meta name="theme-color" content="#0a0f2c" />
-    <style>
-      *,
-      *::before,
-      *::after {
-        box-sizing: border-box;
-      }
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background-color: #0a0f2c;
-        color: #e0e0ff;
-        margin: 0;
-        padding: 0;
-        line-height: 1.6;
-      }
-      .container {
-        max-width: 500px;
-        margin: 0 auto;
-        padding: 2rem 1.25rem;
-      }
-      header {
-        text-align: center;
-        padding: 1.5rem 0;
-      }
-      .logo {
-        font-size: 2rem;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        color: #00d9ff;
-        text-decoration: none;
-      }
-      .tagline {
-        font-size: 0.95rem;
-        color: #8ea2ff;
-        margin-top: 0.25rem;
-      }
-      .card {
-        background: #161d40;
-        border-radius: 10px;
-        padding: 1.5rem;
-        margin-top: 1rem;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-      }
-      .btn {
-        display: block;
-        width: 100%;
-        padding: 0.75rem 1rem;
-        margin-top: 0.5rem;
-        background: #00d9ff;
-        color: #0a0f2c;
-        text-align: center;
-        border: none;
-        border-radius: 6px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-      }
-      .btn:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0, 217, 255, 0.3);
-      }
-      .hidden {
-        display: none;
-      }
-      footer {
-        text-align: center;
-        margin-top: 2.5rem;
-        padding-top: 1rem;
-        border-top: 1px solid #2c3560;
-        font-size: 0.9rem;
-        color: #7180b9;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <!-- LOADING -->
-      <div id="loading" class="card">
-        <p>Loading Ronyzap AI backend…</p>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ronyzap LLC – Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header>
+    <img src="assets/logo.png" alt="Ronyzap LLC Logo" class="logo">
+    <h1>Ronyzap LLC Dashboard</h1>
+    <p>Track your ball speed, improve your form, and analyze performance.</p>
+  </header>
+
+  <!-- AI Ball Tracker Section -->
+  <main>
+    <section class="ai-tracker">
+      <h2>AI Ball Speed Tracker</h2>
+      <input type="file" id="fileInput">
+      <button onclick="uploadVideo()">Upload & Analyze</button>
+      <p>Max Speed: <span id="speed">--</span> MPH</p>
+      <video id="resultVideo" controls></video>
+    </section>
+
+    <!-- Dashboard Cards -->
+    <section class="dashboard-cards">
+      <div class="card">
+        <h3>Recent Sessions</h3>
+        <ul id="recentSessions">
+          <li>No data yet.</li>
+        </ul>
       </div>
-
-      <!-- LOGIN SCREEN -->
-      <div id="login" class="hidden card">
-        <h1>Sign in to Ronyzap AI</h1>
-        <p>
-          Sign in with your email or Google account to start using our top‑notch sports AI.
-        </p>
-        <form id="email-form">
-          <input
-            id="email"
-            type="email"
-            placeholder="Your email"
-            required
-            style="width:100%; padding:0.75rem; border-radius:6px; border:1px solid #2c3560; background:#0a0f2c; color:#e0e0ff; margin-bottom:0.5rem;"
-          />
-          <input
-            id="password"
-            type="password"
-            placeholder="Password"
-            required
-            style="width:100%; padding:0.75rem; border-radius:6px; border:1px solid #2c3560; background:#0a0f2c; color:#e0e0ff; margin-bottom:0.75rem;"
-          />
-          <button type="submit" class="btn">Sign in</button>
-          <button type="button" class="btn" id="signup-btn">Create account</button>
-        </form>
-        <button id="google-btn" class="btn" style="background:#ff4081;">Continue with Google</button>
+      <div class="card">
+        <h3>Average Speed</h3>
+        <p id="avgSpeed">-- MPH</p>
       </div>
-
-      <!-- DASHBOARD -->
-      <div id="dashboard" class="hidden card">
-        <h1>Welcome to Ronyzap AI 🎯</h1>
-        <p>You’re signed in as <span id="user-email"></span>.</p>
-        <p>Ronyzap AI will now analyze your motion in real time and provide feedback on form, speed, and accuracy.</p>
-        <button id="record-btn" class="btn">Record a session</button>
-        <div id="demo-result" class="card" style="margin-top:1rem; display:none;">
-          <h3>Ronyzap AI Result</h3>
-          <p><strong>Form score:</strong> <span id="form-score">78</span>/100</p>
-          <p><strong>Ball speed:</strong> <span id="speed">86</span> mph</p>
-          <p><strong>Accuracy:</strong> <span id="accuracy">92</span>%</p>
-          <p><strong>Feedback:</strong> <span id="feedback">Good follow‑through, keep elbow slightly lower.</span></p>
-        </div>
+      <div class="card">
+        <h3>Top Performance</h3>
+        <p id="topSpeed">-- MPH</p>
       </div>
+    </section>
 
-      <footer>
-        &copy; <span id="year"></span> Ronyzap LLC – Modern Sports AI Platform
-      </footer>
-    </div>
-<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <!-- Performance Chart -->
+    <section class="chart-section">
+      <h2>Performance Over Time</h2>
+      <canvas id="speedChart"></canvas>
+    </section>
 
-<script>
-  const firebaseConfig = {
-    apiKey: "AIzaSyBFgBC9wuTb78ywqkiZLvutIGLR2tPY98E",
-    authDomain: "ronyzap-llc-1a20d.firebaseapp.com",
-    projectId: "ronyzap-llc-1a20d",
-    storageBucket: "ronyzap-llc-1a20d.firebasestorage.app",
-    messagingSenderId: "1037746154686",
-    appId: "1037746154686:web:e51af523e914256adc82ef",
-  };
+    <!-- Contact Info -->
+    <section class="contact">
+      <h2>Contact Ronyzap LLC</h2>
+      <p>Email: <a href="mailto:Accounts@ronyzap.com">Accounts@ronyzap.com</a></p>
+      <p>Phone: (484) 364-3177</p>
+      <p>Website: <a href="https://ronyzap-speed-snap.base44.app">ronyzap-speed-snap.base44.app</a></p>
+    </section>
+  </main>
 
-  const app = firebase.initializeApp(firebaseConfig);
-  const auth = firebase.auth();
-
-  function mockRonyzapAI() {
-    return {
-      formScore: Math.floor(Math.random() * 40 + 60),
-      speed: Math.floor(Math.random() * 30 + 70),
-      accuracy: Math.floor(Math.random() * 20 + 80),
-      feedback: [
-        "Good follow‑through, keep elbow slightly lower.",
-        "Excellent balance; try increasing speed by 5–10%.",
-        "Slight asymmetry detected; focus on even weight distribution.",
-      ][Math.floor(Math.random() * 3)],
-    };
-  }
-
-  const loadingEl = document.getElementById("loading");
-  const loginEl = document.getElementById("login");
-  const dashboardEl = document.getElementById("dashboard");
-  const userEmailEl = document.getElementById("user-email");
-  const emailForm = document.getElementById("email-form");
-  const emailInput = document.getElementById("email");
-  const passwordInput = document.getElementById("password");
-  const signupBtn = document.getElementById("signup-btn");
-  const googleBtn = document.getElementById("google-btn");
-  const signOutBtn = document.createElement("button");
-  signOutBtn.className = "btn";
-  signOutBtn.style.marginTop = "0.5rem";
-  signOutBtn.textContent = "Sign out";
-  const recordBtn = document.getElementById("record-btn");
-  const demoResultEl = document.getElementById("demo-result");
-  const formScoreEl = document.getElementById("form-score");
-  const speedEl = document.getElementById("speed");
-  const accuracyEl = document.getElementById("accuracy");
-  const feedbackEl = document.getElementById("feedback");
-
-  function showLoading() {
-    loadingEl.classList.remove("hidden");
-    loginEl.classList.add("hidden");
-    dashboardEl.classList.add("hidden");
-  }
-
-  function showLogin() {
-    loadingEl.classList.add("hidden");
-    loginEl.classList.remove("hidden");
-    dashboardEl.classList.add("hidden");
-  }
-
-  function showDashboard(user) {
-    loadingEl.classList.add("hidden");
-    loginEl.classList.add("hidden");
-    dashboardEl.classList.remove("hidden");
-    userEmailEl.textContent = user.email;
-    if (!dashboardEl.contains(signOutBtn)) {
-      dashboardEl.appendChild(signOutBtn);
-    }
-  }
-
-  auth.onAuthStateChanged((user) => {
-    if (user) {
-      showDashboard(user);
-    } else {
-      showLogin();
-    }
-  });
-
-  emailForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    try {
-      await auth.signInWithEmailAndPassword(emailInput.value, passwordInput.value);
-      emailForm.reset();
-    } catch (error) {
-      alert("Sign in failed: " + error.message);
-    }
-  });
-
-  signupBtn.addEventListener("click", async () => {
-    if (!emailInput.value || !passwordInput.value) {
-      alert("Please enter email and password.");
-      return;
-    }
-    try {
-      await auth.createUserWithEmailAndPassword(emailInput.value, passwordInput.value);
-      alert("Account created! You're now signed in.");
-      emailForm.reset();
-    } catch (error) {
-      alert("Sign up failed: " + error.message);
-    }
-  });
-
-  googleBtn.addEventListener("click", async () => {
-    const provider = new firebase.auth.GoogleAuthProvider();
-    try {
-      await auth.signInWithPopup(provider);
-    } catch (error) {
-      alert("Google sign in failed: " + error.message);
-    }
-  });
-
-  signOutBtn.addEventListener("click", async () => {
-    try {
-      await auth.signOut();
-      showLogin();
-    } catch (error) {
-      alert("Sign out failed: " + error.message);
-    }
-  });
-
-  recordBtn.addEventListener("click", () => {
-    showLoading();
-    setTimeout(() => {
-      const result = mockRonyzapAI();
-      formScoreEl.textContent = result.formScore;
-      speedEl.textContent = result.speed;
-      accuracyEl.textContent = result.accuracy;
-      feedbackEl.textContent = result.feedback;
-      demoResultEl.style.display = "block";
-      loadingEl.classList.add("hidden");
-    }, 1200);
-  });
-
-  document.getElementById("year").textContent = new Date().getFullYear();
-
-  setTimeout(() => {
-    if (loadingEl) loadingEl.classList.add("hidden");
-  }, 1500);
-</script>
-  </body>
+  <script src="app.js"></script>
+</body>
 </html>
