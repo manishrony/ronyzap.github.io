@@ -24,7 +24,7 @@ TELEGRAM_CHAT_ID=""      # Auto-populated from /etc/gpu_monitor.conf
 
 # --- Vast.ai config ---
 VASTAI_API_KEY=""
-VASTAI_API="https://console.vast.ai/api/v0"
+VASTAI_API="https://console.vast.ai/api/v1"
 VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
 
 # --- Pricing rules ---
