@@ -484,13 +484,15 @@ get_price_floor() {
 
 vastai_get_machines() {
     curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
-        "$VASTAI_API/machines/?owner=me" 2>/dev/null
+        "$VASTAI_API/machines/?owner=me" 2>/dev/null || echo '{"machines":[]}'
 }
 
 vastai_market_price() {
     local gpu_name="$1"
-    curl -sf "$VASTAI_API/asks/?gpu_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name")&rentable=true&order=dph_total&limit=20" \
-        2>/dev/null | python3 -c "
+    local url
+    url="$VASTAI_API/asks/?gpu_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name")&rentable=true&order=dph_total&limit=20"
+    # Use || echo fallback so curl HTTP errors don't propagate through the pipe
+    { curl -sf "$url" 2>/dev/null || echo '{"offers":[]}'; } | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -559,7 +561,7 @@ for m in data.get('machines', []):
         floor=$(get_price_floor "$gpu_name")
 
         local market_price
-        market_price=$(vastai_market_price "$gpu_name")
+        market_price=$(vastai_market_price "$gpu_name") || market_price="0"
 
         if [[ -z "$market_price" || "$market_price" == "0" ]]; then
             log "  Machine $mid: could not fetch market price, skipping"
