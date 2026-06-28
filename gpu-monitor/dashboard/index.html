@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPU Rig Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  body { background:#060d1a; font-family:system-ui,sans-serif; }
+  .card { background:#0d1f35; border:1px solid #1a3a5c; border-radius:12px; }
+  .badge-green  { background:#052e16; color:#4ade80; border:1px solid #166534; }
+  .badge-yellow { background:#1c1002; color:#fbbf24; border:1px solid #78350f; }
+  .badge-red    { background:#1f0707; color:#f87171; border:1px solid #7f1d1d; }
+  .badge-blue   { background:#03142b; color:#60a5fa; border:1px solid #1e3a5f; }
+  .badge-purple { background:#150c2b; color:#c084fc; border:1px solid #4c1d95; }
+  .tab-active   { background:#0d1f35; color:#fff; border-bottom:2px solid #3b82f6; }
+  .tab-idle     { color:#64748b; }
+  .tab-idle:hover { color:#94a3b8; }
+  ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:#060d1a; }
+  ::-webkit-scrollbar-thumb { background:#1a3a5c; border-radius:3px; }
+  .temp-ok   { color:#4ade80; }
+  .temp-warn { color:#fbbf24; }
+  .temp-hot  { color:#f87171; }
+  .bar-fill  { transition:width .6s ease; }
+  canvas { max-height:220px; }
+</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+
+<!-- ── Header ── -->
+<div class="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <span class="text-2xl">⚡</span>
+    <div>
+      <h1 class="text-lg font-bold text-white" id="rig-name">GPU Rig Monitor</h1>
+      <p class="text-xs text-slate-500" id="last-updated">Loading…</p>
+    </div>
+  </div>
+  <div class="flex items-center gap-4">
+    <span id="status-dot" class="inline-flex items-center gap-2 text-xs px-3 py-1 rounded-full badge-green">
+      <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span> ONLINE
+    </span>
+    <span class="text-xs text-slate-500">Auto-refresh: <span id="countdown" class="text-blue-400 font-mono">60s</span></span>
+  </div>
+</div>
+
+<!-- ── Tabs ── -->
+<div class="flex gap-1 px-6 pt-4 border-b border-slate-800">
+  <button onclick="showTab('overview')" id="tab-overview" class="tab-active px-4 py-2 text-sm font-medium rounded-t-lg">Overview</button>
+  <button onclick="showTab('daily')"    id="tab-daily"    class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Daily</button>
+  <button onclick="showTab('weekly')"   id="tab-weekly"   class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Weekly</button>
+</div>
+
+<!-- ════════════════════════ OVERVIEW ════════════════════════ -->
+<div id="tab-content-overview" class="p-6 space-y-6">
+
+  <!-- Stat cards -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="card p-4">
+      <p class="text-xs text-slate-500 mb-1">Revenue Today</p>
+      <p class="text-2xl font-bold text-emerald-400" id="stat-revenue-today">—</p>
+      <p class="text-xs text-slate-500 mt-1" id="stat-revenue-today-sub"></p>
+    </div>
+    <div class="card p-4">
+      <p class="text-xs text-slate-500 mb-1">Active Rental</p>
+      <p class="text-lg font-bold text-white" id="stat-rental-status">—</p>
+      <p class="text-xs text-slate-500 mt-1" id="stat-rental-sub"></p>
+    </div>
+    <div class="card p-4">
+      <p class="text-xs text-slate-500 mb-1">Avg GPU Temp</p>
+      <p class="text-2xl font-bold" id="stat-avg-temp">—</p>
+      <p class="text-xs text-slate-500 mt-1" id="stat-temp-sub"></p>
+    </div>
+    <div class="card p-4">
+      <p class="text-xs text-slate-500 mb-1">Price Changes Today</p>
+      <p class="text-2xl font-bold text-violet-400" id="stat-price-changes">—</p>
+      <p class="text-xs text-slate-500 mt-1" id="stat-price-sub"></p>
+    </div>
+  </div>
+
+  <!-- GPU cards -->
+  <div>
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">GPU Status</h2>
+    <div id="gpu-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div class="card p-4 text-slate-500 text-sm">Waiting for GPU data…</div>
+    </div>
+  </div>
+
+  <!-- Charts row -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Temperature — Last 24h</h2>
+      <canvas id="chart-temp-24h"></canvas>
+    </div>
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Ask Price — Last 7 Days</h2>
+      <canvas id="chart-price-7d"></canvas>
+    </div>
+  </div>
+
+  <!-- Recent events -->
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">Recent Events</h2>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-slate-500 text-xs border-b border-slate-800">
+          <th class="text-left py-2 pr-4">Time</th>
+          <th class="text-left py-2 pr-4">Type</th>
+          <th class="text-left py-2">Details</th>
+        </tr></thead>
+        <tbody id="events-table" class="divide-y divide-slate-800/50"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════ DAILY ════════════════════════ -->
+<div id="tab-content-daily" class="p-6 space-y-6 hidden">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Revenue Today</p><p class="text-2xl font-bold text-emerald-400" id="d-revenue">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Rentals Today</p><p class="text-2xl font-bold text-blue-400" id="d-rentals">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Temp Warnings</p><p class="text-2xl font-bold text-amber-400" id="d-temp-warns">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Price Adjustments</p><p class="text-2xl font-bold text-violet-400" id="d-price-adj">—</p></div>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">Hourly Revenue — Today</h2>
+    <canvas id="chart-hourly-revenue"></canvas>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">Rental Sessions Today</h2>
+    <div id="daily-rentals-table" class="text-sm space-y-2"></div>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">Price Adjustments Today</h2>
+    <div id="daily-price-table" class="text-sm space-y-2"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════ WEEKLY ════════════════════════ -->
+<div id="tab-content-weekly" class="p-6 space-y-6 hidden">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Revenue (7d)</p><p class="text-2xl font-bold text-emerald-400" id="w-revenue">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Total Rentals</p><p class="text-2xl font-bold text-blue-400" id="w-rentals">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Avg Daily Revenue</p><p class="text-2xl font-bold text-emerald-300" id="w-avg-revenue">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Price Adjustments</p><p class="text-2xl font-bold text-violet-400" id="w-price-adj">—</p></div>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Daily Revenue — Last 7 Days</h2>
+      <canvas id="chart-daily-revenue"></canvas>
+    </div>
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Temperature Trend — Last 7 Days</h2>
+      <canvas id="chart-temp-7d"></canvas>
+    </div>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">Weekly Rental Summary</h2>
+    <div id="weekly-summary-table" class="text-sm space-y-2"></div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────
+let STATE = { events: [], host: "" };
+let CHARTS = {};
+let countdown = 60;
+let activeTab = "overview";
+
+// ── Fetch data ─────────────────────────────────────────────────────
+async function fetchData() {
+  try {
+    const r = await fetch("/api/data?" + Date.now());
+    if (!r.ok) throw new Error(r.status);
+    STATE = await r.json();
+    document.getElementById("rig-name").textContent = "⚡ " + (STATE.host || "GPU Rig");
+    document.getElementById("last-updated").textContent = "Last updated: " + new Date().toLocaleTimeString();
+    document.getElementById("status-dot").innerHTML =
+      '<span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span> ONLINE';
+    document.getElementById("status-dot").className = "inline-flex items-center gap-2 text-xs px-3 py-1 rounded-full badge-green";
+  } catch(e) {
+    document.getElementById("status-dot").innerHTML = '<span class="w-2 h-2 rounded-full bg-red-400"></span> OFFLINE';
+    document.getElementById("status-dot").className = "inline-flex items-center gap-2 text-xs px-3 py-1 rounded-full badge-red";
+  }
+  render();
+}
+
+// ── Tab management ─────────────────────────────────────────────────
+function showTab(name) {
+  activeTab = name;
+  ["overview","daily","weekly"].forEach(t => {
+    document.getElementById("tab-content-" + t).classList.toggle("hidden", t !== name);
+    const el = document.getElementById("tab-" + t);
+    el.className = t === name ? "tab-active px-4 py-2 text-sm font-medium rounded-t-lg"
+                              : "tab-idle px-4 py-2 text-sm font-medium rounded-t-lg";
+  });
+  render();
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
+const fmtUSD = v => "$" + Number(v).toFixed(2);
+const fmtTS  = ts => { const d = new Date(ts); return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); };
+const fmtDate = ts => new Date(ts).toLocaleDateString([], {month:"short",day:"numeric"});
+
+function today() {
+  const d = new Date(); d.setHours(0,0,0,0); return d;
+}
+function daysAgo(n) {
+  const d = new Date(); d.setDate(d.getDate() - n); d.setHours(0,0,0,0); return d;
+}
+function eventsIn(days) {
+  const cutoff = daysAgo(days).toISOString();
+  return STATE.events.filter(e => e.ts >= cutoff);
+}
+function eventsToday() {
+  const cutoff = today().toISOString();
+  return STATE.events.filter(e => e.ts >= cutoff);
+}
+
+function tempClass(t) {
+  if (t > 75) return "temp-hot";
+  if (t > 65) return "temp-warn";
+  return "temp-ok";
+}
+
+function eventBadge(type) {
+  const map = {
+    gpu_status:   ["badge-blue",   "GPU"],
+    temp_warning: ["badge-red",    "🌡️ TEMP"],
+    rental_start: ["badge-green",  "▶ RENTED"],
+    rental_end:   ["badge-yellow", "■ ENDED"],
+    price_change: ["badge-purple", "💰 PRICE"],
+    startup:      ["badge-blue",   "🚀 START"],
+  };
+  const [cls, label] = map[type] || ["badge-blue", type];
+  return `<span class="text-xs px-2 py-0.5 rounded font-medium ${cls}">${label}</span>`;
+}
+
+function computeRevenue(events) {
+  // Estimate revenue: pair rental_start → rental_end, multiply rate × duration
+  const starts = events.filter(e => e.type === "rental_start");
+  const ends   = events.filter(e => e.type === "rental_end");
+  let total = 0;
+  starts.forEach(s => {
+    const end = ends.find(e => e.instance_id === s.instance_id && e.ts > s.ts);
+    const rateStr = (s.rate || "$0").replace("$","").replace("/hr","");
+    const rate = parseFloat(rateStr) || 0;
+    if (end) {
+      const hrs = (new Date(end.ts) - new Date(s.ts)) / 3600000;
+      total += rate * hrs;
+    }
+  });
+  return total;
+}
+
+function lastGPUStatus() {
+  const gpuEvs = [...STATE.events].filter(e => e.type === "gpu_status").reverse();
+  return gpuEvs[0] || null;
+}
+
+// ── Chart helpers ──────────────────────────────────────────────────
+function destroyChart(id) {
+  if (CHARTS[id]) { CHARTS[id].destroy(); delete CHARTS[id]; }
+}
+
+function lineChart(id, labels, datasets, opts = {}) {
+  destroyChart(id);
+  const el = document.getElementById(id);
+  if (!el) return;
+  CHARTS[id] = new Chart(el, {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: { legend: { labels: { color: "#94a3b8", font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { color: "#475569", maxTicksLimit: 8 }, grid: { color: "#0f2333" } },
+        y: { ticks: { color: "#475569" }, grid: { color: "#0f2333" }, ...opts.y }
+      },
+      elements: { point: { radius: 2 }, line: { tension: 0.3 } },
+    }
+  });
+}
+
+function barChart(id, labels, data, color = "#22c55e") {
+  destroyChart(id);
+  const el = document.getElementById(id);
+  if (!el) return;
+  CHARTS[id] = new Chart(el, {
+    type: "bar",
+    data: { labels, datasets: [{ label: "Revenue ($)", data, backgroundColor: color + "99", borderColor: color, borderWidth: 1, borderRadius: 4 }] },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#475569" }, grid: { color: "#0f2333" } },
+        y: { ticks: { color: "#475569" }, grid: { color: "#0f2333" }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+// ── Render functions ───────────────────────────────────────────────
+function renderOverview() {
+  const todayEvs = eventsToday();
+
+  // Revenue today
+  const revToday = computeRevenue(todayEvs);
+  document.getElementById("stat-revenue-today").textContent = fmtUSD(revToday);
+  const rentCount = todayEvs.filter(e => e.type === "rental_start").length;
+  document.getElementById("stat-revenue-today-sub").textContent = rentCount + " rental session(s) today";
+
+  // Rental status — last known
+  const lastRentStart = [...STATE.events].filter(e => e.type === "rental_start").pop();
+  const lastRentEnd   = [...STATE.events].filter(e => e.type === "rental_end").pop();
+  const isRented = lastRentStart && (!lastRentEnd || lastRentEnd.ts < lastRentStart.ts);
+  document.getElementById("stat-rental-status").innerHTML = isRented
+    ? `<span class="text-emerald-400">● Active</span>`
+    : `<span class="text-slate-500">○ Available</span>`;
+  document.getElementById("stat-rental-sub").textContent = isRented
+    ? (lastRentStart.gpus || "") + " @ " + (lastRentStart.rate || "")
+    : "No active rental";
+
+  // Avg temp (last gpu_status event)
+  const last = lastGPUStatus();
+  if (last && last.gpus && last.gpus.length) {
+    const avg = Math.round(last.gpus.reduce((a,g) => a + g.temp, 0) / last.gpus.length);
+    const el = document.getElementById("stat-avg-temp");
+    el.textContent = avg + "°C";
+    el.className = "text-2xl font-bold " + (avg > 75 ? "temp-hot" : avg > 65 ? "temp-warn" : "temp-ok");
+    const warns = todayEvs.filter(e => e.type === "temp_warning").length;
+    document.getElementById("stat-temp-sub").textContent = warns + " warning(s) today";
+  } else {
+    document.getElementById("stat-avg-temp").textContent = "—";
+  }
+
+  // Price changes today
+  const pChanges = todayEvs.filter(e => e.type === "price_change");
+  document.getElementById("stat-price-changes").textContent = pChanges.length;
+  if (pChanges.length) {
+    const last = pChanges[pChanges.length-1];
+    document.getElementById("stat-price-sub").textContent = `Last: $${last.old_price} → $${last.new_price}`;
+  }
+
+  // GPU cards
+  renderGPUCards(last);
+
+  // Temp 24h chart
+  const tempEvs = eventsIn(1).filter(e => e.type === "gpu_status");
+  if (tempEvs.length) {
+    const labels = tempEvs.map(e => fmtTS(e.ts));
+    const gpuCount = tempEvs[0].gpus?.length || 0;
+    const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399","#818cf8","#fb923c"];
+    const datasets = Array.from({length: gpuCount}, (_, i) => ({
+      label: "GPU " + i,
+      data: tempEvs.map(e => e.gpus?.[i]?.temp ?? null),
+      borderColor: colors[i % colors.length],
+      backgroundColor: colors[i % colors.length] + "20",
+      fill: false,
+    }));
+    lineChart("chart-temp-24h", labels, datasets, { y: { suggestedMin: 40, suggestedMax: 90 } });
+  }
+
+  // Price 7d chart
+  const priceEvs = eventsIn(7).filter(e => e.type === "price_change");
+  if (priceEvs.length) {
+    lineChart("chart-price-7d",
+      priceEvs.map(e => fmtDate(e.ts) + " " + fmtTS(e.ts)),
+      [{
+        label: "Ask Price ($/hr)",
+        data: priceEvs.map(e => e.new_price),
+        borderColor: "#c084fc", backgroundColor: "#c084fc20", fill: true,
+      }]
+    );
+  }
+
+  // Events table
+  const recentEvs = [...STATE.events].reverse().slice(0, 50);
+  const tbody = document.getElementById("events-table");
+  tbody.innerHTML = recentEvs.map(e => {
+    let detail = "";
+    if (e.type === "gpu_status" && e.gpus) {
+      detail = e.gpus.map(g => `GPU${g.idx} ${g.temp}°C ${g.power_draw}W Fan:${g.fan}%`).join(" | ");
+    } else if (e.type === "price_change") {
+      detail = `${e.gpu_name} x${e.num_gpus} | $${e.old_price} → $${e.new_price}/hr (market $${e.market_price})`;
+    } else if (e.type === "rental_start") {
+      detail = `${e.gpus} @ ${e.rate}`;
+    } else if (e.type === "rental_end") {
+      detail = `${e.gpus} ended`;
+    } else if (e.type === "temp_warning") {
+      detail = `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
+    } else if (e.type === "startup") {
+      detail = `Power ${e.power_limit}W | Threshold ${e.temp_threshold}°C`;
+    }
+    return `<tr class="hover:bg-slate-800/30">
+      <td class="py-2 pr-4 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
+      <td class="py-2 pr-4">${eventBadge(e.type)}</td>
+      <td class="py-2 text-xs text-slate-400">${detail}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderGPUCards(last) {
+  const container = document.getElementById("gpu-cards");
+  if (!last || !last.gpus || !last.gpus.length) return;
+  container.innerHTML = last.gpus.map(g => {
+    const tClass = tempClass(g.temp);
+    const powerPct = Math.round((g.power_draw / g.power_limit) * 100);
+    const tempPct  = Math.round((g.temp / 100) * 100);
+    return `<div class="card p-4 space-y-3">
+      <div class="flex justify-between items-start">
+        <div>
+          <p class="text-xs text-slate-500">GPU ${g.idx}</p>
+          <p class="text-sm font-semibold text-white">${g.name}</p>
+        </div>
+        <span class="text-xl font-bold ${tClass}">${g.temp}°C</span>
+      </div>
+      <div>
+        <div class="flex justify-between text-xs text-slate-500 mb-1"><span>Temp</span><span>${g.temp}°C</span></div>
+        <div class="w-full bg-slate-800 rounded-full h-1.5">
+          <div class="h-1.5 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(tempPct,100)}%"></div>
+        </div>
+      </div>
+      <div>
+        <div class="flex justify-between text-xs text-slate-500 mb-1"><span>Power</span><span>${g.power_draw}W / ${g.power_limit}W</span></div>
+        <div class="w-full bg-slate-800 rounded-full h-1.5">
+          <div class="h-1.5 rounded-full bar-fill bg-blue-500" style="width:${Math.min(powerPct,100)}%"></div>
+        </div>
+      </div>
+      <div class="flex justify-between text-xs text-slate-400">
+        <span>Fan <b>${g.fan}%</b></span>
+        <span class="${g.temp>75?'text-red-400':g.temp>65?'text-amber-400':'text-emerald-400'}">${g.temp>75?'HOT':g.temp>65?'WARM':'OK'}</span>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderDaily() {
+  const todayEvs = eventsToday();
+  document.getElementById("d-revenue").textContent    = fmtUSD(computeRevenue(todayEvs));
+  document.getElementById("d-rentals").textContent    = todayEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("d-temp-warns").textContent = todayEvs.filter(e=>e.type==="temp_warning").length;
+  document.getElementById("d-price-adj").textContent  = todayEvs.filter(e=>e.type==="price_change").length;
+
+  // Hourly revenue bar chart
+  const hours = Array.from({length:24},(_,i)=>i);
+  const hourLabels = hours.map(h => h.toString().padStart(2,"0")+":00");
+  const rentStarts = todayEvs.filter(e=>e.type==="rental_start");
+  const rentEnds   = todayEvs.filter(e=>e.type==="rental_end");
+  const hourRev = hours.map(h => {
+    let rev = 0;
+    rentStarts.forEach(s => {
+      const end = rentEnds.find(e=>e.instance_id===s.instance_id && e.ts>s.ts);
+      const rate = parseFloat((s.rate||"0").replace(/[^0-9.]/g,"")) || 0;
+      const sH = new Date(s.ts).getHours();
+      const eH = end ? new Date(end.ts).getHours() : new Date().getHours();
+      if (sH <= h && h <= eH) rev += rate;
+    });
+    return parseFloat(rev.toFixed(4));
+  });
+  barChart("chart-hourly-revenue", hourLabels, hourRev);
+
+  // Rentals table
+  const rDiv = document.getElementById("daily-rentals-table");
+  const rentals = rentStarts;
+  if (!rentals.length) { rDiv.innerHTML = '<p class="text-slate-500">No rentals today.</p>'; }
+  else {
+    rDiv.innerHTML = rentals.map(s => {
+      const e = rentEnds.find(x=>x.instance_id===s.instance_id&&x.ts>s.ts);
+      const dur = e ? ((new Date(e.ts)-new Date(s.ts))/3600000).toFixed(1)+"h" : "ongoing";
+      return `<div class="flex justify-between items-center py-2 border-b border-slate-800/50">
+        <div><span class="badge-green px-2 py-0.5 rounded text-xs">▶ ${fmtTS(s.ts)}</span>
+          <span class="ml-2 text-slate-300">${s.gpus||""}</span></div>
+        <div class="text-right"><span class="text-emerald-400 font-mono">${s.rate||""}</span>
+          <span class="text-slate-500 text-xs ml-2">${dur}</span></div>
+      </div>`;
+    }).join("");
+  }
+
+  // Price table
+  const pDiv = document.getElementById("daily-price-table");
+  const prices = todayEvs.filter(e=>e.type==="price_change");
+  if (!prices.length) { pDiv.innerHTML = '<p class="text-slate-500">No price changes today.</p>'; }
+  else {
+    pDiv.innerHTML = prices.map(p =>
+      `<div class="flex justify-between items-center py-2 border-b border-slate-800/50">
+        <div><span class="text-slate-500 text-xs">${fmtTS(p.ts)}</span>
+          <span class="ml-2 text-slate-300">${p.gpu_name||""} x${p.num_gpus||""}</span></div>
+        <div class="text-right font-mono text-sm">
+          <span class="text-slate-400">$${p.old_price}</span>
+          <span class="text-slate-600 mx-1">→</span>
+          <span class="${parseFloat(p.new_price)>parseFloat(p.old_price)?'text-emerald-400':'text-amber-400'}">$${p.new_price}</span>
+        </div>
+      </div>`
+    ).join("");
+  }
+}
+
+function renderWeekly() {
+  const weekEvs = eventsIn(7);
+
+  const rev7d = computeRevenue(weekEvs);
+  document.getElementById("w-revenue").textContent   = fmtUSD(rev7d);
+  document.getElementById("w-rentals").textContent   = weekEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("w-avg-revenue").textContent = fmtUSD(rev7d / 7) + "/day";
+  document.getElementById("w-price-adj").textContent = weekEvs.filter(e=>e.type==="price_change").length;
+
+  // Daily revenue bar chart
+  const days = Array.from({length:7},(_,i)=>{ const d=daysAgo(6-i); return d; });
+  const dayLabels = days.map(d=>d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}));
+  const dayRevs = days.map(d => {
+    const next = new Date(d); next.setDate(next.getDate()+1);
+    const dayEvs = STATE.events.filter(e=>e.ts>=d.toISOString()&&e.ts<next.toISOString());
+    return parseFloat(computeRevenue(dayEvs).toFixed(4));
+  });
+  barChart("chart-daily-revenue", dayLabels, dayRevs, "#22c55e");
+
+  // Temp 7d chart
+  const tempEvs = weekEvs.filter(e=>e.type==="gpu_status");
+  if (tempEvs.length) {
+    const gpuCount = tempEvs[0].gpus?.length || 0;
+    const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399"];
+    const datasets = Array.from({length:gpuCount},(_,i)=>({
+      label:"GPU "+i,
+      data:tempEvs.map(e=>e.gpus?.[i]?.temp??null),
+      borderColor:colors[i%colors.length],
+      backgroundColor:colors[i%colors.length]+"20",
+      fill:false,
+    }));
+    lineChart("chart-temp-7d", tempEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts)), datasets);
+  }
+
+  // Weekly summary table
+  const sDiv = document.getElementById("weekly-summary-table");
+  const summary = days.map(d => {
+    const next = new Date(d); next.setDate(next.getDate()+1);
+    const dayEvs = STATE.events.filter(e=>e.ts>=d.toISOString()&&e.ts<next.toISOString());
+    const rev = computeRevenue(dayEvs);
+    const rents = dayEvs.filter(e=>e.type==="rental_start").length;
+    const warns = dayEvs.filter(e=>e.type==="temp_warning").length;
+    const prices = dayEvs.filter(e=>e.type==="price_change").length;
+    return {label:d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}),rev,rents,warns,prices};
+  });
+
+  sDiv.innerHTML = `
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+        <th class="text-left py-2">Day</th>
+        <th class="text-right py-2">Revenue</th>
+        <th class="text-right py-2">Rentals</th>
+        <th class="text-right py-2">Temp Warns</th>
+        <th class="text-right py-2">Price Adj</th>
+      </tr></thead>
+      <tbody class="divide-y divide-slate-800/50">
+        ${summary.map(r=>`<tr class="hover:bg-slate-800/20">
+          <td class="py-2 text-slate-300">${r.label}</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(r.rev)}</td>
+          <td class="py-2 text-right text-blue-400">${r.rents}</td>
+          <td class="py-2 text-right ${r.warns>0?'text-amber-400':'text-slate-600'}">${r.warns}</td>
+          <td class="py-2 text-right text-violet-400">${r.prices}</td>
+        </tr>`).join("")}
+        <tr class="border-t border-slate-700 font-semibold">
+          <td class="py-2 text-white">Total</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(summary.reduce((a,r)=>a+r.rev,0))}</td>
+          <td class="py-2 text-right text-blue-400">${summary.reduce((a,r)=>a+r.rents,0)}</td>
+          <td class="py-2 text-right text-amber-400">${summary.reduce((a,r)=>a+r.warns,0)}</td>
+          <td class="py-2 text-right text-violet-400">${summary.reduce((a,r)=>a+r.prices,0)}</td>
+        </tr>
+      </tbody>
+    </table>`;
+}
+
+// ── Master render ──────────────────────────────────────────────────
+function render() {
+  if (activeTab === "overview") renderOverview();
+  else if (activeTab === "daily")   renderDaily();
+  else if (activeTab === "weekly")  renderWeekly();
+}
+
+// ── Auto-refresh countdown ─────────────────────────────────────────
+setInterval(() => {
+  countdown--;
+  document.getElementById("countdown").textContent = countdown + "s";
+  if (countdown <= 0) { countdown = 60; fetchData(); }
+}, 1000);
+
+// ── Boot ───────────────────────────────────────────────────────────
+fetchData();
+</script>
+</body>
+</html>

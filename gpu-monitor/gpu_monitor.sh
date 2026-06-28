@@ -10,6 +10,7 @@
 set -euo pipefail
 
 LOG_FILE="/var/log/gpu_monitor.log"
+JSONL_FILE="/var/log/gpu_monitor_data.jsonl"
 TEMP_THRESHOLD=75        # °C — Telegram alert if exceeded
 POWER_LIMIT_DEFAULT=500  # Watts — applied to all GPUs always
 CHECK_INTERVAL=1200      # 20 minutes in seconds (GPU + rental check)
@@ -39,10 +40,27 @@ PRICE_ADJUST_MAX=5   # maximum cents to move per cycle
 MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 
 # ─────────────────────────────────────────────
-# Logging
+# Logging + structured JSON events
 # ─────────────────────────────────────────────
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+# Append a JSON event to the JSONL data file for the dashboard
+write_event() {
+    local type="$1"
+    local payload="$2"
+    python3 - <<PYEOF 2>/dev/null || true
+import json, datetime, socket, os
+event = {
+    "ts":   datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "type": "$type",
+    "host": socket.gethostname(),
+}
+event.update(json.loads(r"""$payload"""))
+with open("$JSONL_FILE", "a") as f:
+    f.write(json.dumps(event) + "\n")
+PYEOF
 }
 
 # ─────────────────────────────────────────────
@@ -101,6 +119,8 @@ nvidia-smi failed: $gpu_data"
 
     log "--- GPU Status ---"
     local overtemp=0
+    local gpu_json_arr="["
+    local first=1
     while IFS=',' read -r idx name temp power_draw power_limit fan; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
         temp=$(echo "$temp" | xargs); power_draw=$(echo "$power_draw" | xargs)
@@ -108,15 +128,23 @@ nvidia-smi failed: $gpu_data"
 
         log "  GPU $idx | $name | Temp: ${temp}°C | Power: ${power_draw}W/${power_limit}W | Fan: ${fan}%"
 
+        [[ $first -eq 0 ]] && gpu_json_arr+=","
+        gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan}"
+        first=0
+
         if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > TEMP_THRESHOLD )); then
             log "  WARNING: GPU $idx at ${temp}°C exceeds ${TEMP_THRESHOLD}°C!"
             tg_send "🌡️ <b>HIGH TEMP WARNING</b> — $(hostname)
 GPU $idx: <b>$name</b>
 Temp: <b>${temp}°C</b> (threshold: ${TEMP_THRESHOLD}°C)
 Power: ${power_draw}W / ${power_limit}W | Fan: ${fan}%"
+            write_event "temp_warning" "{\"gpu_idx\":$idx,\"gpu_name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"fan\":$fan}"
             overtemp=$((overtemp + 1))
         fi
     done <<< "$gpu_data"
+    gpu_json_arr+="]"
+
+    write_event "gpu_status" "{\"gpus\":$gpu_json_arr}"
 
     (( overtemp == 0 )) && log "  All GPUs within thermal limits." \
         || log "  WARNING: $overtemp GPU(s) over temp threshold."
@@ -164,6 +192,7 @@ print('\n'.join(lines))
                 tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
 Instance: <b>$iid</b> | GPUs: $gpus
 Rate: <b>$cost</b> | Status: $status"
+                write_event "rental_start" "{\"instance_id\":\"$iid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"$status\"}"
             fi
         done <<< "$current_state"
 
@@ -175,6 +204,7 @@ Rate: <b>$cost</b> | Status: $status"
                 tg_send "🔴 <b>Vast.ai Rental ENDED</b> — $(hostname)
 Instance: <b>$iid</b> | GPUs: $gpus
 Rate was: $cost | Last status: $status"
+                write_event "rental_end" "{\"instance_id\":\"$iid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"$status\"}"
             fi
         done <<< "$last_state"
 
@@ -363,6 +393,7 @@ Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
 <b>\$$cur_bid → \$$new_price/hr</b> $direction
 Market: \$$market_price/hr | Floor: \$$floor/hr
 Max rental: <b>${MAX_RENTAL_DAYS} days</b> (until $expire_date)"
+            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"floor\":$floor,\"expire_date\":\"$expire_date\"}"
         else
             log "  Machine $mid: price update FAILED"
         fi
@@ -391,8 +422,10 @@ main() {
     log "Vast.ai  : $([ -n "$VASTAI_API_KEY"   ] && echo 'configured' || echo 'NOT configured')"
     log "======================================"
 
+    touch "$JSONL_FILE" && chmod 644 "$JSONL_FILE"
     enable_persistence_mode
     set_power_limits
+    write_event "startup" "{\"power_limit\":$POWER_LIMIT_DEFAULT,\"temp_threshold\":$TEMP_THRESHOLD}"
 
     tg_send "🚀 <b>GPU Monitor Started</b> — $host
 Power limit: ${POWER_LIMIT_DEFAULT}W/GPU | Temp alert: ${TEMP_THRESHOLD}°C
