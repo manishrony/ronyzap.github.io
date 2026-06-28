@@ -24,6 +24,8 @@
   .temp-hot  { color:#f87171; }
   .bar-fill  { transition:width .6s ease; }
   canvas { max-height:220px; }
+  .drill-row { cursor:pointer; }
+  .drill-row:hover td { background:rgba(30,58,92,0.35); }
 </style>
 </head>
 <body class="text-slate-200 min-h-screen">
@@ -46,16 +48,16 @@
 </div>
 
 <!-- ── Tabs ── -->
-<div class="flex gap-1 px-6 pt-4 border-b border-slate-800">
+<div class="flex gap-1 px-6 pt-4 border-b border-slate-800 flex-wrap">
   <button onclick="showTab('overview')" id="tab-overview" class="tab-active px-4 py-2 text-sm font-medium rounded-t-lg">Overview</button>
   <button onclick="showTab('daily')"    id="tab-daily"    class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Daily</button>
   <button onclick="showTab('weekly')"   id="tab-weekly"   class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Weekly</button>
+  <button onclick="showTab('monthly')"  id="tab-monthly"  class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Monthly</button>
+  <button onclick="showTab('yearly')"   id="tab-yearly"   class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Yearly</button>
 </div>
 
 <!-- ════════════════════════ OVERVIEW ════════════════════════ -->
 <div id="tab-content-overview" class="p-6 space-y-6">
-
-  <!-- Stat cards -->
   <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
     <div class="card p-4">
       <p class="text-xs text-slate-500 mb-1">Revenue Today</p>
@@ -78,16 +80,12 @@
       <p class="text-xs text-slate-500 mt-1" id="stat-price-sub"></p>
     </div>
   </div>
-
-  <!-- GPU cards -->
   <div>
     <h2 class="text-sm font-semibold text-slate-400 mb-3">GPU Status</h2>
     <div id="gpu-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
       <div class="card p-4 text-slate-500 text-sm">Waiting for GPU data…</div>
     </div>
   </div>
-
-  <!-- Charts row -->
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     <div class="card p-4">
       <h2 class="text-sm font-semibold text-slate-400 mb-3">Temperature — Last 24h</h2>
@@ -98,8 +96,6 @@
       <canvas id="chart-price-7d"></canvas>
     </div>
   </div>
-
-  <!-- Recent events -->
   <div class="card p-4">
     <h2 class="text-sm font-semibold text-slate-400 mb-3">Recent Events</h2>
     <div class="overflow-x-auto">
@@ -161,12 +157,62 @@
   </div>
 </div>
 
+<!-- ════════════════════════ MONTHLY ════════════════════════ -->
+<div id="tab-content-monthly" class="p-6 space-y-6 hidden">
+  <!-- Breadcrumb (shown when drilled in) -->
+  <div id="monthly-breadcrumb" class="hidden items-center gap-2 text-sm pb-3 border-b border-slate-800">
+    <button onclick="monthlyBack()" class="text-blue-400 hover:text-blue-300 flex items-center gap-1">← All Months</button>
+    <span class="text-slate-600">/</span>
+    <span class="text-white font-medium" id="monthly-drill-label"></span>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1" id="mo-stat1-label">Revenue This Month</p><p class="text-2xl font-bold text-emerald-400" id="mo-revenue">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Total Rentals</p><p class="text-2xl font-bold text-blue-400" id="mo-rentals">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Avg Daily Revenue</p><p class="text-2xl font-bold text-emerald-300" id="mo-avg">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Price Adjustments</p><p class="text-2xl font-bold text-violet-400" id="mo-prices">—</p></div>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3" id="mo-chart-label">Revenue Chart</h2>
+    <canvas id="chart-monthly-revenue"></canvas>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3" id="mo-table-label">All Months</h2>
+    <div id="monthly-table" class="overflow-x-auto"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════ YEARLY ════════════════════════ -->
+<div id="tab-content-yearly" class="p-6 space-y-6 hidden">
+  <!-- Breadcrumb (shown when drilled in) -->
+  <div id="yearly-breadcrumb" class="hidden items-center gap-2 text-sm pb-3 border-b border-slate-800">
+    <button onclick="yearlyBack()" class="text-blue-400 hover:text-blue-300 flex items-center gap-1">← All Years</button>
+    <span class="text-slate-600">/</span>
+    <span class="text-white font-medium" id="yearly-drill-label"></span>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1" id="yr-stat1-label">Revenue This Year</p><p class="text-2xl font-bold text-emerald-400" id="yr-revenue">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Total Rentals</p><p class="text-2xl font-bold text-blue-400" id="yr-rentals">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Avg Monthly Revenue</p><p class="text-2xl font-bold text-emerald-300" id="yr-avg">—</p></div>
+    <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Days Active</p><p class="text-2xl font-bold text-violet-400" id="yr-days">—</p></div>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3" id="yr-chart-label">Revenue Chart</h2>
+    <canvas id="chart-yearly-revenue"></canvas>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3" id="yr-table-label">Year-by-Year Summary</h2>
+    <div id="yearly-table" class="overflow-x-auto"></div>
+  </div>
+</div>
+
 <script>
 // ── State ──────────────────────────────────────────────────────────
 let STATE = { events: [], host: "" };
 let CHARTS = {};
 let countdown = 60;
 let activeTab = "overview";
+let MONTHLY_DRILL = null;  // null = top level; {year, month} = drilled month
+let YEARLY_DRILL  = null;  // null = top level; {year} = drilled year
 
 // ── Fetch data ─────────────────────────────────────────────────────
 async function fetchData() {
@@ -187,9 +233,11 @@ async function fetchData() {
 }
 
 // ── Tab management ─────────────────────────────────────────────────
+const ALL_TABS = ["overview","daily","weekly","monthly","yearly"];
+
 function showTab(name) {
   activeTab = name;
-  ["overview","daily","weekly"].forEach(t => {
+  ALL_TABS.forEach(t => {
     document.getElementById("tab-content-" + t).classList.toggle("hidden", t !== name);
     const el = document.getElementById("tab-" + t);
     el.className = t === name ? "tab-active px-4 py-2 text-sm font-medium rounded-t-lg"
@@ -199,8 +247,8 @@ function showTab(name) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
-const fmtUSD = v => "$" + Number(v).toFixed(2);
-const fmtTS  = ts => { const d = new Date(ts); return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); };
+const fmtUSD  = v => "$" + Number(v).toFixed(2);
+const fmtTS   = ts => { const d = new Date(ts); return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); };
 const fmtDate = ts => new Date(ts).toLocaleDateString([], {month:"short",day:"numeric"});
 
 function today() {
@@ -216,6 +264,21 @@ function eventsIn(days) {
 function eventsToday() {
   const cutoff = today().toISOString();
   return STATE.events.filter(e => e.ts >= cutoff);
+}
+
+function monthRange(year, month) {
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end   = new Date(Date.UTC(year, month, 1));
+  return { start, end };
+}
+function yearRange(year) {
+  return { start: new Date(Date.UTC(year, 0, 1)), end: new Date(Date.UTC(year + 1, 0, 1)) };
+}
+function getUniqueMonths(events) {
+  const s = new Set(); events.forEach(e => { if (e.ts) s.add(e.ts.slice(0, 7)); }); return [...s].sort();
+}
+function getUniqueYears(events) {
+  const s = new Set(); events.forEach(e => { if (e.ts) s.add(parseInt(e.ts.slice(0, 4))); }); return [...s].sort();
 }
 
 function tempClass(t) {
@@ -237,17 +300,12 @@ function eventBadge(type) {
   return `<span class="text-xs px-2 py-0.5 rounded font-medium ${cls}">${label}</span>`;
 }
 
-// computeRevenue(allEvents, periodStart, periodEnd)
-// daily_earnings (Vast.ai confirmed) take priority over rental_start/end.
-// For any UTC day covered by daily_earnings, use that amount as-is.
+// computeRevenue — daily_earnings (Vast.ai confirmed) take priority.
 // rental_start/end only counts hours on days NOT covered by daily_earnings.
 function computeRevenue(allEvents, periodStart, periodEnd) {
   const pS = periodStart ? periodStart.getTime() : 0;
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
   let total = 0;
-
-  // Step 1: daily_earnings — ground truth; record which UTC dates are covered.
-  // Only mark covered if total > 0 — $0 entries mean billing not yet finalised.
   const covered = new Set();
   allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
     const dayS = new Date(e.ts).getTime();
@@ -257,14 +315,11 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
       if ((e.total || 0) > 0) covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
     }
   });
-
-  // Step 2: rental_start/end — skip hours on days already covered by daily_earnings.
   const starts = allEvents.filter(e => e.type === "rental_start");
   const ends   = allEvents.filter(e => e.type === "rental_end");
   starts.forEach(s => {
     const end  = ends.find(e => e.instance_id === s.instance_id && e.ts > s.ts);
     let rate = parseFloat((s.rate || "0").replace(/[^0-9.]/g, "")) || 0;
-    // If rental_start has $0 rate (backfilled before price was set), estimate from price_change
     if (!rate) {
       const mid = String(s.machine_id || s.instance_id || "");
       const pc = allEvents.filter(e => e.type === "price_change" && String(e.machine_id || "") === mid);
@@ -285,13 +340,11 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
       cur = next;
     }
   });
-
   return total;
 }
 
 function lastGPUStatus() {
-  const gpuEvs = [...STATE.events].filter(e => e.type === "gpu_status").reverse();
-  return gpuEvs[0] || null;
+  return [...STATE.events].filter(e => e.type === "gpu_status").pop() || null;
 }
 
 // ── Chart helpers ──────────────────────────────────────────────────
@@ -301,11 +354,9 @@ function destroyChart(id) {
 
 function lineChart(id, labels, datasets, opts = {}) {
   destroyChart(id);
-  const el = document.getElementById(id);
-  if (!el) return;
+  const el = document.getElementById(id); if (!el) return;
   CHARTS[id] = new Chart(el, {
-    type: "line",
-    data: { labels, datasets },
+    type: "line", data: { labels, datasets },
     options: {
       responsive: true, maintainAspectRatio: true,
       plugins: { legend: { labels: { color: "#94a3b8", font: { size: 11 } } } },
@@ -320,8 +371,7 @@ function lineChart(id, labels, datasets, opts = {}) {
 
 function barChart(id, labels, data, color = "#22c55e") {
   destroyChart(id);
-  const el = document.getElementById(id);
-  if (!el) return;
+  const el = document.getElementById(id); if (!el) return;
   CHARTS[id] = new Chart(el, {
     type: "bar",
     data: { labels, datasets: [{ label: "Revenue ($)", data, backgroundColor: color + "99", borderColor: color, borderWidth: 1, borderRadius: 4 }] },
@@ -336,17 +386,13 @@ function barChart(id, labels, data, color = "#22c55e") {
   });
 }
 
-// ── Render functions ───────────────────────────────────────────────
+// ── Render: Overview ───────────────────────────────────────────────
 function renderOverview() {
   const todayEvs = eventsToday();
-
-  // Revenue today — use all events with period overlap so ongoing rentals count
   const revToday = computeRevenue(STATE.events, today(), new Date());
   document.getElementById("stat-revenue-today").textContent = fmtUSD(revToday);
-  const rentCount = todayEvs.filter(e => e.type === "rental_start").length;
-  document.getElementById("stat-revenue-today-sub").textContent = rentCount + " rental session(s) today";
+  document.getElementById("stat-revenue-today-sub").textContent = todayEvs.filter(e=>e.type==="rental_start").length + " rental session(s) today";
 
-  // Rental status — last known
   const lastRentStart = [...STATE.events].filter(e => e.type === "rental_start").pop();
   const lastRentEnd   = [...STATE.events].filter(e => e.type === "rental_end").pop();
   const isRented = lastRentStart && (!lastRentEnd || lastRentEnd.ts < lastRentStart.ts);
@@ -357,77 +403,54 @@ function renderOverview() {
     ? (lastRentStart.gpus || "") + " @ " + (lastRentStart.rate || "")
     : "No active rental";
 
-  // Avg temp (last gpu_status event)
   const last = lastGPUStatus();
   if (last && last.gpus && last.gpus.length) {
     const avg = Math.round(last.gpus.reduce((a,g) => a + g.temp, 0) / last.gpus.length);
     const el = document.getElementById("stat-avg-temp");
     el.textContent = avg + "°C";
     el.className = "text-2xl font-bold " + (avg > 75 ? "temp-hot" : avg > 65 ? "temp-warn" : "temp-ok");
-    const warns = todayEvs.filter(e => e.type === "temp_warning").length;
-    document.getElementById("stat-temp-sub").textContent = warns + " warning(s) today";
+    document.getElementById("stat-temp-sub").textContent = todayEvs.filter(e=>e.type==="temp_warning").length + " warning(s) today";
   } else {
     document.getElementById("stat-avg-temp").textContent = "—";
   }
 
-  // Price changes today
   const pChanges = todayEvs.filter(e => e.type === "price_change");
   document.getElementById("stat-price-changes").textContent = pChanges.length;
   if (pChanges.length) {
-    const last = pChanges[pChanges.length-1];
-    document.getElementById("stat-price-sub").textContent = `Last: $${last.old_price} → $${last.new_price}`;
+    const lp = pChanges[pChanges.length-1];
+    document.getElementById("stat-price-sub").textContent = `Last: $${lp.old_price} → $${lp.new_price}`;
   }
 
-  // GPU cards
   renderGPUCards(last);
 
-  // Temp 24h chart
   const tempEvs = eventsIn(1).filter(e => e.type === "gpu_status");
   if (tempEvs.length) {
-    const labels = tempEvs.map(e => fmtTS(e.ts));
     const gpuCount = tempEvs[0].gpus?.length || 0;
     const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399","#818cf8","#fb923c"];
-    const datasets = Array.from({length: gpuCount}, (_, i) => ({
-      label: "GPU " + i,
-      data: tempEvs.map(e => e.gpus?.[i]?.temp ?? null),
-      borderColor: colors[i % colors.length],
-      backgroundColor: colors[i % colors.length] + "20",
-      fill: false,
-    }));
-    lineChart("chart-temp-24h", labels, datasets, { y: { suggestedMin: 40, suggestedMax: 90 } });
+    lineChart("chart-temp-24h", tempEvs.map(e => fmtTS(e.ts)),
+      Array.from({length: gpuCount}, (_, i) => ({
+        label: "GPU " + i, data: tempEvs.map(e => e.gpus?.[i]?.temp ?? null),
+        borderColor: colors[i % colors.length], backgroundColor: colors[i % colors.length] + "20", fill: false,
+      })), { y: { suggestedMin: 40, suggestedMax: 90 } });
   }
 
-  // Price 7d chart
   const priceEvs = eventsIn(7).filter(e => e.type === "price_change");
   if (priceEvs.length) {
     lineChart("chart-price-7d",
       priceEvs.map(e => fmtDate(e.ts) + " " + fmtTS(e.ts)),
-      [{
-        label: "Ask Price ($/hr)",
-        data: priceEvs.map(e => e.new_price),
-        borderColor: "#c084fc", backgroundColor: "#c084fc20", fill: true,
-      }]
-    );
+      [{ label: "Ask Price ($/hr)", data: priceEvs.map(e => e.new_price), borderColor: "#c084fc", backgroundColor: "#c084fc20", fill: true }]);
   }
 
-  // Events table
   const recentEvs = [...STATE.events].reverse().slice(0, 50);
   const tbody = document.getElementById("events-table");
   tbody.innerHTML = recentEvs.map(e => {
     let detail = "";
-    if (e.type === "gpu_status" && e.gpus) {
-      detail = e.gpus.map(g => `GPU${g.idx} ${g.temp}°C ${g.power_draw}W Fan:${g.fan}%`).join(" | ");
-    } else if (e.type === "price_change") {
-      detail = `${e.gpu_name} x${e.num_gpus} | $${e.old_price} → $${e.new_price}/hr (market $${e.market_price})`;
-    } else if (e.type === "rental_start") {
-      detail = `${e.gpus} @ ${e.rate}`;
-    } else if (e.type === "rental_end") {
-      detail = `${e.gpus} ended`;
-    } else if (e.type === "temp_warning") {
-      detail = `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
-    } else if (e.type === "startup") {
-      detail = `Power ${e.power_limit}W | Threshold ${e.temp_threshold}°C`;
-    }
+    if (e.type === "gpu_status" && e.gpus) detail = e.gpus.map(g => `GPU${g.idx} ${g.temp}°C ${g.power_draw}W Fan:${g.fan}%`).join(" | ");
+    else if (e.type === "price_change") detail = `${e.gpu_name} x${e.num_gpus} | $${e.old_price} → $${e.new_price}/hr (market $${e.market_price})`;
+    else if (e.type === "rental_start") detail = `${e.gpus} @ ${e.rate}`;
+    else if (e.type === "rental_end")   detail = `${e.gpus} ended`;
+    else if (e.type === "temp_warning") detail = `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
+    else if (e.type === "startup")      detail = `Power ${e.power_limit}W | Threshold ${e.temp_threshold}°C`;
     return `<tr class="hover:bg-slate-800/30">
       <td class="py-2 pr-4 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
       <td class="py-2 pr-4">${eventBadge(e.type)}</td>
@@ -445,10 +468,7 @@ function renderGPUCards(last) {
     const tempPct  = Math.round((g.temp / 100) * 100);
     return `<div class="card p-4 space-y-3">
       <div class="flex justify-between items-start">
-        <div>
-          <p class="text-xs text-slate-500">GPU ${g.idx}</p>
-          <p class="text-sm font-semibold text-white">${g.name}</p>
-        </div>
+        <div><p class="text-xs text-slate-500">GPU ${g.idx}</p><p class="text-sm font-semibold text-white">${g.name}</p></div>
         <span class="text-xl font-bold ${tClass}">${g.temp}°C</span>
       </div>
       <div>
@@ -471,6 +491,7 @@ function renderGPUCards(last) {
   }).join("");
 }
 
+// ── Render: Daily ──────────────────────────────────────────────────
 function renderDaily() {
   const todayEvs = eventsToday();
   document.getElementById("d-revenue").textContent    = fmtUSD(computeRevenue(STATE.events, today(), new Date()));
@@ -478,22 +499,20 @@ function renderDaily() {
   document.getElementById("d-temp-warns").textContent = todayEvs.filter(e=>e.type==="temp_warning").length;
   document.getElementById("d-price-adj").textContent  = todayEvs.filter(e=>e.type==="price_change").length;
 
-  // Hourly revenue — use all events with period overlap so ongoing rentals show
   const hours = Array.from({length:24},(_,i)=>i);
-  const hourLabels = hours.map(h => h.toString().padStart(2,"0")+":00");
-  const hourRev = hours.map(h => {
-    const hStart = new Date(today()); hStart.setHours(h,0,0,0);
-    const hEnd   = new Date(today()); hEnd.setHours(h+1,0,0,0);
-    return parseFloat(computeRevenue(STATE.events, hStart, hEnd).toFixed(4));
-  });
-  barChart("chart-hourly-revenue", hourLabels, hourRev);
+  barChart("chart-hourly-revenue", hours.map(h=>h.toString().padStart(2,"0")+":00"),
+    hours.map(h => {
+      const hS = new Date(today()); hS.setUTCHours(h,0,0,0);
+      const hE = new Date(today()); hE.setUTCHours(h+1,0,0,0);
+      return parseFloat(computeRevenue(STATE.events, hS, hE).toFixed(4));
+    }));
 
-  // Rentals table
+  const rentStarts = todayEvs.filter(e=>e.type==="rental_start");
+  const rentEnds   = STATE.events.filter(e=>e.type==="rental_end");
   const rDiv = document.getElementById("daily-rentals-table");
-  const rentals = rentStarts;
-  if (!rentals.length) { rDiv.innerHTML = '<p class="text-slate-500">No rentals today.</p>'; }
+  if (!rentStarts.length) { rDiv.innerHTML = '<p class="text-slate-500">No rentals today.</p>'; }
   else {
-    rDiv.innerHTML = rentals.map(s => {
+    rDiv.innerHTML = rentStarts.map(s => {
       const e = rentEnds.find(x=>x.instance_id===s.instance_id&&x.ts>s.ts);
       const dur = e ? ((new Date(e.ts)-new Date(s.ts))/3600000).toFixed(1)+"h" : "ongoing";
       return `<div class="flex justify-between items-center py-2 border-b border-slate-800/50">
@@ -505,7 +524,6 @@ function renderDaily() {
     }).join("");
   }
 
-  // Price table
   const pDiv = document.getElementById("daily-price-table");
   const prices = todayEvs.filter(e=>e.type==="price_change");
   if (!prices.length) { pDiv.innerHTML = '<p class="text-slate-500">No price changes today.</p>'; }
@@ -524,59 +542,41 @@ function renderDaily() {
   }
 }
 
+// ── Render: Weekly ─────────────────────────────────────────────────
 function renderWeekly() {
   const weekEvs = eventsIn(7);
-
   const rev7d = computeRevenue(STATE.events, daysAgo(7), new Date());
   document.getElementById("w-revenue").textContent   = fmtUSD(rev7d);
   document.getElementById("w-rentals").textContent   = weekEvs.filter(e=>e.type==="rental_start").length;
   document.getElementById("w-avg-revenue").textContent = fmtUSD(rev7d / 7) + "/day";
   document.getElementById("w-price-adj").textContent = weekEvs.filter(e=>e.type==="price_change").length;
 
-  // Daily revenue bar chart
-  const days = Array.from({length:7},(_,i)=>{ const d=daysAgo(6-i); return d; });
-  const dayLabels = days.map(d=>d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}));
-  const dayRevs = days.map(d => {
-    const next = new Date(d); next.setDate(next.getDate()+1);
-    return parseFloat(computeRevenue(STATE.events, d, next).toFixed(4));
-  });
-  barChart("chart-daily-revenue", dayLabels, dayRevs, "#22c55e");
+  const days = Array.from({length:7},(_,i)=>daysAgo(6-i));
+  barChart("chart-daily-revenue",
+    days.map(d=>d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"})),
+    days.map(d => { const next = new Date(d); next.setDate(next.getDate()+1); return parseFloat(computeRevenue(STATE.events, d, next).toFixed(4)); }),
+    "#22c55e");
 
-  // Temp 7d chart
   const tempEvs = weekEvs.filter(e=>e.type==="gpu_status");
   if (tempEvs.length) {
     const gpuCount = tempEvs[0].gpus?.length || 0;
     const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399"];
-    const datasets = Array.from({length:gpuCount},(_,i)=>({
-      label:"GPU "+i,
-      data:tempEvs.map(e=>e.gpus?.[i]?.temp??null),
-      borderColor:colors[i%colors.length],
-      backgroundColor:colors[i%colors.length]+"20",
-      fill:false,
-    }));
-    lineChart("chart-temp-7d", tempEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts)), datasets);
+    lineChart("chart-temp-7d", tempEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts)),
+      Array.from({length:gpuCount},(_,i)=>({label:"GPU "+i, data:tempEvs.map(e=>e.gpus?.[i]?.temp??null), borderColor:colors[i%colors.length], backgroundColor:"transparent", fill:false})));
   }
 
-  // Weekly summary table
-  const sDiv = document.getElementById("weekly-summary-table");
   const summary = days.map(d => {
     const next = new Date(d); next.setDate(next.getDate()+1);
-    const dayEvs = STATE.events.filter(e=>e.ts>=d.toISOString()&&e.ts<next.toISOString());
-    const rev = computeRevenue(STATE.events, d, next);
-    const rents = dayEvs.filter(e=>e.type==="rental_start").length;
-    const warns = dayEvs.filter(e=>e.type==="temp_warning").length;
-    const prices = dayEvs.filter(e=>e.type==="price_change").length;
-    return {label:d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}),rev,rents,warns,prices};
+    const de = STATE.events.filter(e=>e.ts>=d.toISOString()&&e.ts<next.toISOString());
+    return {label:d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}),
+      rev:computeRevenue(STATE.events, d, next), rents:de.filter(e=>e.type==="rental_start").length,
+      warns:de.filter(e=>e.type==="temp_warning").length, prices:de.filter(e=>e.type==="price_change").length};
   });
-
-  sDiv.innerHTML = `
+  document.getElementById("weekly-summary-table").innerHTML = `
     <table class="w-full text-sm">
       <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
-        <th class="text-left py-2">Day</th>
-        <th class="text-right py-2">Revenue</th>
-        <th class="text-right py-2">Rentals</th>
-        <th class="text-right py-2">Temp Warns</th>
-        <th class="text-right py-2">Price Adj</th>
+        <th class="text-left py-2">Day</th><th class="text-right py-2">Revenue</th>
+        <th class="text-right py-2">Rentals</th><th class="text-right py-2">Temp Warns</th><th class="text-right py-2">Price Adj</th>
       </tr></thead>
       <tbody class="divide-y divide-slate-800/50">
         ${summary.map(r=>`<tr class="hover:bg-slate-800/20">
@@ -597,11 +597,326 @@ function renderWeekly() {
     </table>`;
 }
 
+// ── Render: Monthly ────────────────────────────────────────────────
+function renderMonthly() {
+  const bc = document.getElementById("monthly-breadcrumb");
+  if (!MONTHLY_DRILL) {
+    bc.classList.add("hidden"); bc.classList.remove("flex");
+    renderAllMonths();
+  } else {
+    bc.classList.remove("hidden"); bc.classList.add("flex");
+    const { year, month } = MONTHLY_DRILL;
+    document.getElementById("monthly-drill-label").textContent =
+      new Date(Date.UTC(year, month-1, 1)).toLocaleDateString([], {month:"long", year:"numeric"});
+    renderMonthDetail(year, month);
+  }
+}
+
+function drillMonth(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  MONTHLY_DRILL = { year: y, month: m };
+  renderMonthly();
+}
+function monthlyBack() { MONTHLY_DRILL = null; renderMonthly(); }
+
+function renderAllMonths() {
+  const now = new Date();
+  const curY = now.getUTCFullYear(), curM = now.getUTCMonth() + 1;
+  const { start: mS, end: mE } = monthRange(curY, curM);
+  const mCap = mE > now ? now : mE;
+  const mEvs = STATE.events.filter(e => e.ts >= mS.toISOString() && e.ts < mE.toISOString());
+  const mRev = computeRevenue(STATE.events, mS, mCap);
+  const daysElapsed = Math.max(1, now.getUTCDate());
+
+  document.getElementById("mo-stat1-label").textContent = "Revenue This Month";
+  document.getElementById("mo-revenue").textContent = fmtUSD(mRev);
+  document.getElementById("mo-rentals").textContent  = mEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("mo-avg").textContent      = fmtUSD(mRev / daysElapsed) + "/day";
+  document.getElementById("mo-prices").textContent   = mEvs.filter(e=>e.type==="price_change").length;
+
+  const months = getUniqueMonths(STATE.events);
+  const mLabels = months.map(ym => {
+    const [y,m] = ym.split("-").map(Number);
+    return new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"short",year:"2-digit"});
+  });
+  const mRevs = months.map(ym => {
+    const [y,m] = ym.split("-").map(Number);
+    const { start, end } = monthRange(y, m);
+    return parseFloat(computeRevenue(STATE.events, start, end > now ? now : end).toFixed(4));
+  });
+  document.getElementById("mo-chart-label").textContent = "Monthly Revenue — All Time";
+  barChart("chart-monthly-revenue", mLabels, mRevs, "#22c55e");
+
+  const rows = [...months].reverse().map(ym => {
+    const [y,m] = ym.split("-").map(Number);
+    const { start, end } = monthRange(y, m);
+    const cap = end > now ? now : end;
+    const evs = STATE.events.filter(e => e.ts >= start.toISOString() && e.ts < end.toISOString());
+    return { ym, label: new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"long",year:"numeric"}),
+      rev: computeRevenue(STATE.events, start, cap),
+      rents: evs.filter(e=>e.type==="rental_start").length,
+      warns: evs.filter(e=>e.type==="temp_warning").length,
+      prices: evs.filter(e=>e.type==="price_change").length };
+  });
+
+  document.getElementById("mo-table-label").textContent = "All Months — click to drill in";
+  document.getElementById("monthly-table").innerHTML = `
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+        <th class="text-left py-2">Month</th><th class="text-right py-2">Revenue</th>
+        <th class="text-right py-2">Rentals</th><th class="text-right py-2">Temp Warns</th>
+        <th class="text-right py-2">Price Adj</th><th class="text-right py-2 pr-1"></th>
+      </tr></thead>
+      <tbody class="divide-y divide-slate-800/50">
+        ${rows.map(r=>`<tr class="drill-row" onclick="drillMonth('${r.ym}')">
+          <td class="py-2 text-slate-300">${r.label}</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(r.rev)}</td>
+          <td class="py-2 text-right text-blue-400">${r.rents}</td>
+          <td class="py-2 text-right ${r.warns>0?'text-amber-400':'text-slate-600'}">${r.warns}</td>
+          <td class="py-2 text-right text-violet-400">${r.prices}</td>
+          <td class="py-2 text-right text-blue-400 text-xs pr-1">→</td>
+        </tr>`).join("")}
+        <tr class="border-t border-slate-700 font-semibold">
+          <td class="py-2 text-white">All Time</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(rows.reduce((a,r)=>a+r.rev,0))}</td>
+          <td class="py-2 text-right text-blue-400">${rows.reduce((a,r)=>a+r.rents,0)}</td>
+          <td class="py-2 text-right text-amber-400">${rows.reduce((a,r)=>a+r.warns,0)}</td>
+          <td class="py-2 text-right text-violet-400">${rows.reduce((a,r)=>a+r.prices,0)}</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>`;
+}
+
+function renderMonthDetail(year, month) {
+  const now = new Date();
+  const { start, end } = monthRange(year, month);
+  const cap = end > now ? now : end;
+  const evs = STATE.events.filter(e => e.ts >= start.toISOString() && e.ts < end.toISOString());
+  const rev = computeRevenue(STATE.events, start, cap);
+  const daysInMonth  = (end - start) / 86400000;
+  const daysElapsed  = Math.max(1, Math.ceil((cap - start) / 86400000));
+  const label = new Date(Date.UTC(year, month-1, 1)).toLocaleDateString([],{month:"long", year:"numeric"});
+
+  document.getElementById("mo-stat1-label").textContent = label;
+  document.getElementById("mo-revenue").textContent = fmtUSD(rev);
+  document.getElementById("mo-rentals").textContent  = evs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("mo-avg").textContent      = fmtUSD(rev / daysElapsed) + "/day";
+  document.getElementById("mo-prices").textContent   = evs.filter(e=>e.type==="price_change").length;
+
+  const dayLabels = [], dayRevs = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = new Date(Date.UTC(year, month-1, d));
+    const de = new Date(Date.UTC(year, month-1, d+1));
+    if (ds > now) break;
+    dayLabels.push(ds.toLocaleDateString([],{day:"numeric",month:"short"}));
+    dayRevs.push(parseFloat(computeRevenue(STATE.events, ds, de > now ? now : de).toFixed(4)));
+  }
+  document.getElementById("mo-chart-label").textContent = "Daily Revenue — " + label;
+  barChart("chart-monthly-revenue", dayLabels, dayRevs, "#22c55e");
+
+  // Week-by-week breakdown
+  const weeks = [];
+  let cur = new Date(start);
+  while (cur < end && cur < now) {
+    const wS = new Date(cur);
+    const wE = new Date(Math.min(cur.getTime() + 7*86400000, end.getTime(), now.getTime()));
+    const wEvs = evs.filter(e => e.ts >= wS.toISOString() && e.ts < wE.toISOString());
+    weeks.push({
+      label: wS.toLocaleDateString([],{month:"short",day:"numeric"}) + " – " +
+             new Date(wE.getTime()-1).toLocaleDateString([],{month:"short",day:"numeric"}),
+      rev: computeRevenue(STATE.events, wS, wE),
+      rents: wEvs.filter(e=>e.type==="rental_start").length,
+      warns: wEvs.filter(e=>e.type==="temp_warning").length,
+      prices: wEvs.filter(e=>e.type==="price_change").length,
+    });
+    cur = new Date(cur.getTime() + 7*86400000);
+  }
+
+  document.getElementById("mo-table-label").textContent = "Week-by-Week — " + label;
+  document.getElementById("monthly-table").innerHTML = `
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+        <th class="text-left py-2">Week</th><th class="text-right py-2">Revenue</th>
+        <th class="text-right py-2">Rentals</th><th class="text-right py-2">Temp Warns</th><th class="text-right py-2">Price Adj</th>
+      </tr></thead>
+      <tbody class="divide-y divide-slate-800/50">
+        ${weeks.map(w=>`<tr class="hover:bg-slate-800/20">
+          <td class="py-2 text-slate-300">${w.label}</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(w.rev)}</td>
+          <td class="py-2 text-right text-blue-400">${w.rents}</td>
+          <td class="py-2 text-right ${w.warns>0?'text-amber-400':'text-slate-600'}">${w.warns}</td>
+          <td class="py-2 text-right text-violet-400">${w.prices}</td>
+        </tr>`).join("")}
+        <tr class="border-t border-slate-700 font-semibold">
+          <td class="py-2 text-white">Month Total</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(rev)}</td>
+          <td class="py-2 text-right text-blue-400">${weeks.reduce((a,w)=>a+w.rents,0)}</td>
+          <td class="py-2 text-right text-amber-400">${weeks.reduce((a,w)=>a+w.warns,0)}</td>
+          <td class="py-2 text-right text-violet-400">${weeks.reduce((a,w)=>a+w.prices,0)}</td>
+        </tr>
+      </tbody>
+    </table>`;
+}
+
+// ── Render: Yearly ─────────────────────────────────────────────────
+function renderYearly() {
+  const bc = document.getElementById("yearly-breadcrumb");
+  if (!YEARLY_DRILL) {
+    bc.classList.add("hidden"); bc.classList.remove("flex");
+    renderAllYears();
+  } else {
+    bc.classList.remove("hidden"); bc.classList.add("flex");
+    document.getElementById("yearly-drill-label").textContent = YEARLY_DRILL.year;
+    renderYearDetail(YEARLY_DRILL.year);
+  }
+}
+
+function drillYear(year) { YEARLY_DRILL = { year }; renderYearly(); }
+function yearlyBack()    { YEARLY_DRILL = null; renderYearly(); }
+
+// Called from yearly → month row; switches to Monthly tab drilled into that month
+function drillFromYear(year, month) {
+  MONTHLY_DRILL = { year, month };
+  showTab("monthly");
+}
+
+function renderAllYears() {
+  const now = new Date();
+  const curY = now.getUTCFullYear();
+  const { start: yS, end: yE } = yearRange(curY);
+  const yCap = yE > now ? now : yE;
+  const yEvs = STATE.events.filter(e => e.ts >= yS.toISOString() && e.ts < yE.toISOString());
+  const yRev = computeRevenue(STATE.events, yS, yCap);
+  const moElapsed = now.getUTCMonth() + 1;
+
+  document.getElementById("yr-stat1-label").textContent = "Revenue " + curY;
+  document.getElementById("yr-revenue").textContent = fmtUSD(yRev);
+  document.getElementById("yr-rentals").textContent  = yEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("yr-avg").textContent      = fmtUSD(yRev / moElapsed) + "/mo";
+  document.getElementById("yr-days").textContent     = yEvs.filter(e=>e.type==="daily_earnings"&&(e.total||0)>0).length;
+
+  const years = getUniqueYears(STATE.events);
+  if (years.length > 1) {
+    const yRevs = years.map(y => {
+      const { start, end } = yearRange(y);
+      return parseFloat(computeRevenue(STATE.events, start, end > now ? now : end).toFixed(4));
+    });
+    document.getElementById("yr-chart-label").textContent = "Annual Revenue — All Years";
+    barChart("chart-yearly-revenue", years.map(String), yRevs, "#3b82f6");
+  } else {
+    // Single year: show monthly breakdown as chart
+    const moLabels = [], moRevs = [];
+    for (let m = 1; m <= 12; m++) {
+      const { start, end } = monthRange(curY, m);
+      if (start > now) break;
+      moLabels.push(start.toLocaleDateString([],{month:"short"}));
+      moRevs.push(parseFloat(computeRevenue(STATE.events, start, end > now ? now : end).toFixed(4)));
+    }
+    document.getElementById("yr-chart-label").textContent = "Monthly Revenue — " + curY;
+    barChart("chart-yearly-revenue", moLabels, moRevs, "#3b82f6");
+  }
+
+  const rows = [...years].reverse().map(y => {
+    const { start, end } = yearRange(y);
+    const cap = end > now ? now : end;
+    const evs = STATE.events.filter(e => e.ts >= start.toISOString() && e.ts < end.toISOString());
+    return { year: y, rev: computeRevenue(STATE.events, start, cap),
+      rents: evs.filter(e=>e.type==="rental_start").length,
+      warns: evs.filter(e=>e.type==="temp_warning").length,
+      days:  evs.filter(e=>e.type==="daily_earnings"&&(e.total||0)>0).length };
+  });
+
+  document.getElementById("yr-table-label").textContent = "Year-by-Year Summary — click to drill in";
+  document.getElementById("yearly-table").innerHTML = `
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+        <th class="text-left py-2">Year</th><th class="text-right py-2">Revenue</th>
+        <th class="text-right py-2">Rentals</th><th class="text-right py-2">Days Active</th>
+        <th class="text-right py-2">Temp Warns</th><th class="text-right py-2 pr-1"></th>
+      </tr></thead>
+      <tbody class="divide-y divide-slate-800/50">
+        ${rows.map(r=>`<tr class="drill-row" onclick="drillYear(${r.year})">
+          <td class="py-2 text-slate-300 font-medium">${r.year}</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(r.rev)}</td>
+          <td class="py-2 text-right text-blue-400">${r.rents}</td>
+          <td class="py-2 text-right text-slate-300">${r.days}</td>
+          <td class="py-2 text-right ${r.warns>0?'text-amber-400':'text-slate-600'}">${r.warns}</td>
+          <td class="py-2 text-right text-blue-400 text-xs pr-1">→</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
+}
+
+function renderYearDetail(year) {
+  const now = new Date();
+  const { start: yS, end: yE } = yearRange(year);
+  const yCap = yE > now ? now : yE;
+  const yEvs = STATE.events.filter(e => e.ts >= yS.toISOString() && e.ts < yE.toISOString());
+  const yRev = computeRevenue(STATE.events, yS, yCap);
+  const moElapsed = year === now.getUTCFullYear() ? now.getUTCMonth() + 1 : 12;
+
+  document.getElementById("yr-stat1-label").textContent = "Revenue " + year;
+  document.getElementById("yr-revenue").textContent = fmtUSD(yRev);
+  document.getElementById("yr-rentals").textContent  = yEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("yr-avg").textContent      = fmtUSD(yRev / moElapsed) + "/mo";
+  document.getElementById("yr-days").textContent     = yEvs.filter(e=>e.type==="daily_earnings"&&(e.total||0)>0).length;
+
+  const moLabels = [], moRevs = [], moRows = [];
+  for (let m = 1; m <= 12; m++) {
+    const { start, end } = monthRange(year, m);
+    if (start > now) break;
+    const cap = end > now ? now : end;
+    const evs = STATE.events.filter(e => e.ts >= start.toISOString() && e.ts < end.toISOString());
+    const rev = computeRevenue(STATE.events, start, cap);
+    moLabels.push(start.toLocaleDateString([],{month:"short"}));
+    moRevs.push(parseFloat(rev.toFixed(4)));
+    moRows.push({ m, label: start.toLocaleDateString([],{month:"long"}), rev,
+      rents: evs.filter(e=>e.type==="rental_start").length,
+      warns: evs.filter(e=>e.type==="temp_warning").length,
+      prices: evs.filter(e=>e.type==="price_change").length });
+  }
+
+  document.getElementById("yr-chart-label").textContent = "Monthly Revenue — " + year;
+  barChart("chart-yearly-revenue", moLabels, moRevs, "#3b82f6");
+
+  const revRows = [...moRows].reverse();
+  document.getElementById("yr-table-label").textContent = "Month-by-Month — " + year + " (click month for daily detail)";
+  document.getElementById("yearly-table").innerHTML = `
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+        <th class="text-left py-2">Month</th><th class="text-right py-2">Revenue</th>
+        <th class="text-right py-2">Rentals</th><th class="text-right py-2">Temp Warns</th>
+        <th class="text-right py-2">Price Adj</th><th class="text-right py-2 pr-1"></th>
+      </tr></thead>
+      <tbody class="divide-y divide-slate-800/50">
+        ${revRows.map(r=>`<tr class="drill-row" onclick="drillFromYear(${year}, ${r.m})">
+          <td class="py-2 text-slate-300">${r.label}</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(r.rev)}</td>
+          <td class="py-2 text-right text-blue-400">${r.rents}</td>
+          <td class="py-2 text-right ${r.warns>0?'text-amber-400':'text-slate-600'}">${r.warns}</td>
+          <td class="py-2 text-right text-violet-400">${r.prices}</td>
+          <td class="py-2 text-right text-blue-400 text-xs pr-1">→</td>
+        </tr>`).join("")}
+        <tr class="border-t border-slate-700 font-semibold">
+          <td class="py-2 text-white">Year Total</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(yRev)}</td>
+          <td class="py-2 text-right text-blue-400">${revRows.reduce((a,r)=>a+r.rents,0)}</td>
+          <td class="py-2 text-right text-amber-400">${revRows.reduce((a,r)=>a+r.warns,0)}</td>
+          <td class="py-2 text-right text-violet-400">${revRows.reduce((a,r)=>a+r.prices,0)}</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>`;
+}
+
 // ── Master render ──────────────────────────────────────────────────
 function render() {
-  if (activeTab === "overview") renderOverview();
-  else if (activeTab === "daily")   renderDaily();
-  else if (activeTab === "weekly")  renderWeekly();
+  if      (activeTab === "overview") renderOverview();
+  else if (activeTab === "daily")    renderDaily();
+  else if (activeTab === "weekly")   renderWeekly();
+  else if (activeTab === "monthly")  renderMonthly();
+  else if (activeTab === "yearly")   renderYearly();
 }
 
 // ── Auto-refresh countdown ─────────────────────────────────────────

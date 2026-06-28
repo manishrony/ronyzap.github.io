@@ -30,6 +30,8 @@
   ::-webkit-scrollbar-thumb { background:#1a3a5c; border-radius:3px; }
   #settings-modal { display:none; }
   #settings-modal.open { display:flex; }
+  .drill-row { cursor:pointer; }
+  .drill-row:hover td { background:rgba(30,58,92,0.35); }
 </style>
 </head>
 <body class="text-slate-200 min-h-screen">
@@ -192,10 +194,12 @@
   </div>
 
   <!-- Per-rig tabs -->
-  <div class="flex gap-1 px-6 pt-4 border-b border-slate-800">
+  <div class="flex gap-1 px-6 pt-4 border-b border-slate-800 flex-wrap">
     <button onclick="showRigTab('overview')" id="rtab-overview" class="tab-active px-4 py-2 text-sm font-medium rounded-t-lg">Overview</button>
     <button onclick="showRigTab('daily')"    id="rtab-daily"    class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Daily</button>
     <button onclick="showRigTab('weekly')"   id="rtab-weekly"   class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Weekly</button>
+    <button onclick="showRigTab('monthly')"  id="rtab-monthly"  class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Monthly</button>
+    <button onclick="showRigTab('yearly')"   id="rtab-yearly"   class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Yearly</button>
   </div>
 
   <!-- Rig Overview -->
@@ -255,6 +259,52 @@
       <div id="rw-summary"></div>
     </div>
   </div>
+
+  <!-- Rig Monthly -->
+  <div id="rtab-content-monthly" class="p-6 space-y-6 hidden">
+    <div id="rm-breadcrumb" class="hidden items-center gap-2 text-sm pb-3 border-b border-slate-800">
+      <button onclick="rigMonthlyBack()" class="text-blue-400 hover:text-blue-300">← All Months</button>
+      <span class="text-slate-600">/</span>
+      <span class="text-white font-medium" id="rm-drill-label"></span>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1" id="rm-stat1-label">Revenue This Month</p><p class="text-2xl font-bold text-emerald-400" id="rm-revenue">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Total Rentals</p><p class="text-2xl font-bold text-blue-400" id="rm-rentals">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Avg Daily Revenue</p><p class="text-2xl font-bold text-emerald-300" id="rm-avg">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Price Adjustments</p><p class="text-2xl font-bold text-violet-400" id="rm-prices">—</p></div>
+    </div>
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3" id="rm-chart-label">Revenue Chart</h3>
+      <canvas id="chart-rm-rev"></canvas>
+    </div>
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3" id="rm-table-label">All Months</h3>
+      <div id="rm-table" class="overflow-x-auto"></div>
+    </div>
+  </div>
+
+  <!-- Rig Yearly -->
+  <div id="rtab-content-yearly" class="p-6 space-y-6 hidden">
+    <div id="ry-breadcrumb" class="hidden items-center gap-2 text-sm pb-3 border-b border-slate-800">
+      <button onclick="rigYearlyBack()" class="text-blue-400 hover:text-blue-300">← All Years</button>
+      <span class="text-slate-600">/</span>
+      <span class="text-white font-medium" id="ry-drill-label"></span>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1" id="ry-stat1-label">Revenue This Year</p><p class="text-2xl font-bold text-emerald-400" id="ry-revenue">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Total Rentals</p><p class="text-2xl font-bold text-blue-400" id="ry-rentals">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Avg Monthly Revenue</p><p class="text-2xl font-bold text-emerald-300" id="ry-avg">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Days Active</p><p class="text-2xl font-bold text-violet-400" id="ry-days">—</p></div>
+    </div>
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3" id="ry-chart-label">Revenue Chart</h3>
+      <canvas id="chart-ry-rev"></canvas>
+    </div>
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3" id="ry-table-label">Year-by-Year Summary</h3>
+      <div id="ry-table" class="overflow-x-auto"></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -275,6 +325,8 @@ let RIGS = loadConfig();
 let DATA = [{events:[]}, {events:[]}];
 let activeRig = -1;  // -1 = combined, 0 = zappa1, 1 = zappa2
 let activeRigTab = "overview";
+let RIG_MONTHLY_DRILL = null;  // null = all months; {year, month} = drilled
+let RIG_YEARLY_DRILL  = null;  // null = all years;  {year} = drilled
 let CHARTS = {};
 let countdown = 60;
 
@@ -343,7 +395,10 @@ function backToCombined() {
 }
 function showRigTab(name) {
   activeRigTab = name;
-  ["overview","daily","weekly"].forEach(t => {
+  // Reset drill state when switching tabs
+  if (name !== "monthly") RIG_MONTHLY_DRILL = null;
+  if (name !== "yearly")  RIG_YEARLY_DRILL  = null;
+  ["overview","daily","weekly","monthly","yearly"].forEach(t => {
     document.getElementById("rtab-content-" + t).classList.toggle("hidden", t !== name);
     const el = document.getElementById("rtab-" + t);
     el.className = t === name ? "tab-active px-4 py-2 text-sm font-medium rounded-t-lg"
@@ -361,6 +416,19 @@ const daysAgo = n  => { const d=new Date(); d.setDate(d.getDate()-n); d.setHours
 
 function eventsToday(events) { const c=today().toISOString(); return events.filter(e=>e.ts>=c); }
 function eventsIn(events, days) { const c=daysAgo(days).toISOString(); return events.filter(e=>e.ts>=c); }
+
+function monthRange(year, month) {
+  return { start: new Date(Date.UTC(year, month-1, 1)), end: new Date(Date.UTC(year, month, 1)) };
+}
+function yearRange(year) {
+  return { start: new Date(Date.UTC(year, 0, 1)), end: new Date(Date.UTC(year+1, 0, 1)) };
+}
+function getUniqueMonths(events) {
+  const s = new Set(); events.forEach(e=>{if(e.ts)s.add(e.ts.slice(0,7));}); return [...s].sort();
+}
+function getUniqueYears(events) {
+  const s = new Set(); events.forEach(e=>{if(e.ts)s.add(parseInt(e.ts.slice(0,4)));}); return [...s].sort();
+}
 
 function tempClass(t) { return t>75?"temp-hot":t>65?"temp-warn":"temp-ok"; }
 
@@ -666,6 +734,8 @@ function renderRig(idx) {
       }),
     }]);
 
+    const starts = todayEvs.filter(e=>e.type==="rental_start");
+    const ends   = events.filter(e=>e.type==="rental_end");
     const rDiv = document.getElementById("rd-rentals-list");
     rDiv.innerHTML = starts.length ? starts.map(s=>{
       const e=ends.find(x=>x.instance_id===s.instance_id&&x.ts>s.ts);
@@ -736,6 +806,270 @@ function renderRig(idx) {
         </tr>
       </tbody></table>`;
   }
+
+  if (activeRigTab === "monthly") renderRigMonthly(events);
+  if (activeRigTab === "yearly")  renderRigYearly(events);
+}
+
+// ── Rig Monthly ───────────────────────────────────────────────────────
+function renderRigMonthly(events) {
+  const bc = document.getElementById("rm-breadcrumb");
+  if (!RIG_MONTHLY_DRILL) {
+    bc.classList.add("hidden"); bc.classList.remove("flex");
+    renderRigAllMonths(events);
+  } else {
+    bc.classList.remove("hidden"); bc.classList.add("flex");
+    const {year,month} = RIG_MONTHLY_DRILL;
+    document.getElementById("rm-drill-label").textContent =
+      new Date(Date.UTC(year,month-1,1)).toLocaleDateString([],{month:"long",year:"numeric"});
+    renderRigMonthDetail(events, year, month);
+  }
+}
+function rigDrillMonth(ym) {
+  const [y,m] = ym.split("-").map(Number);
+  RIG_MONTHLY_DRILL = {year:y,month:m}; renderRig(activeRig);
+}
+function rigMonthlyBack() { RIG_MONTHLY_DRILL = null; renderRig(activeRig); }
+
+function renderRigAllMonths(events) {
+  const now = new Date();
+  const curY = now.getUTCFullYear(), curM = now.getUTCMonth()+1;
+  const {start:mS,end:mE} = monthRange(curY,curM);
+  const mCap = mE>now?now:mE;
+  const mEvs = events.filter(e=>e.ts>=mS.toISOString()&&e.ts<mE.toISOString());
+  const mRev = computeRevenue(events, mS, mCap);
+  const daysElapsed = Math.max(1, now.getUTCDate());
+
+  document.getElementById("rm-stat1-label").textContent = "Revenue This Month";
+  document.getElementById("rm-revenue").textContent = fmtUSD(mRev);
+  document.getElementById("rm-rentals").textContent  = mEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("rm-avg").textContent      = fmtUSD(mRev/daysElapsed)+"/day";
+  document.getElementById("rm-prices").textContent   = mEvs.filter(e=>e.type==="price_change").length;
+
+  const months = getUniqueMonths(events);
+  const mRevs  = months.map(ym=>{const [y,m]=ym.split("-").map(Number);const{start,end}=monthRange(y,m);return parseFloat(computeRevenue(events,start,end>now?now:end).toFixed(4));});
+  const mLabels= months.map(ym=>{const [y,m]=ym.split("-").map(Number);return new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"short",year:"2-digit"});});
+  document.getElementById("rm-chart-label").textContent = "Monthly Revenue — All Time";
+  barChart("chart-rm-rev", mLabels, mRevs, "#22c55e");
+
+  const rows = [...months].reverse().map(ym=>{
+    const [y,m]=ym.split("-").map(Number);
+    const{start,end}=monthRange(y,m);const cap=end>now?now:end;
+    const evs=events.filter(e=>e.ts>=start.toISOString()&&e.ts<end.toISOString());
+    return{ym,label:new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"long",year:"numeric"}),
+      rev:computeRevenue(events,start,cap),rents:evs.filter(e=>e.type==="rental_start").length,
+      warns:evs.filter(e=>e.type==="temp_warning").length,prices:evs.filter(e=>e.type==="price_change").length};
+  });
+  document.getElementById("rm-table-label").textContent = "All Months — click to drill in";
+  document.getElementById("rm-table").innerHTML = `<table class="w-full text-sm">
+    <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+      <th class="text-left py-2">Month</th><th class="text-right py-2">Revenue</th>
+      <th class="text-right py-2">Rentals</th><th class="text-right py-2">Warns</th>
+      <th class="text-right py-2">Price Adj</th><th class="text-right py-2 pr-1"></th>
+    </tr></thead>
+    <tbody class="divide-y divide-slate-800/50">
+      ${rows.map(r=>`<tr style="cursor:pointer" onclick="rigDrillMonth('${r.ym}')" class="hover:bg-slate-800/30">
+        <td class="py-2 text-slate-300">${r.label}</td>
+        <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(r.rev)}</td>
+        <td class="py-2 text-right text-blue-400">${r.rents}</td>
+        <td class="py-2 text-right ${r.warns>0?"text-amber-400":"text-slate-600"}">${r.warns}</td>
+        <td class="py-2 text-right text-violet-400">${r.prices}</td>
+        <td class="py-2 text-right text-blue-400 text-xs pr-1">→</td>
+      </tr>`).join("")}
+      <tr class="border-t border-slate-700 font-semibold">
+        <td class="py-2 text-white">All Time</td>
+        <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(rows.reduce((a,r)=>a+r.rev,0))}</td>
+        <td class="py-2 text-right text-blue-400">${rows.reduce((a,r)=>a+r.rents,0)}</td>
+        <td class="py-2 text-right text-amber-400">${rows.reduce((a,r)=>a+r.warns,0)}</td>
+        <td class="py-2 text-right text-violet-400">${rows.reduce((a,r)=>a+r.prices,0)}</td>
+        <td></td>
+      </tr>
+    </tbody></table>`;
+}
+
+function renderRigMonthDetail(events, year, month) {
+  const now = new Date();
+  const {start,end} = monthRange(year,month);
+  const cap = end>now?now:end;
+  const evs = events.filter(e=>e.ts>=start.toISOString()&&e.ts<end.toISOString());
+  const rev = computeRevenue(events, start, cap);
+  const daysInMonth = (end-start)/86400000;
+  const daysElapsed = Math.max(1,Math.ceil((cap-start)/86400000));
+  const label = new Date(Date.UTC(year,month-1,1)).toLocaleDateString([],{month:"long",year:"numeric"});
+
+  document.getElementById("rm-stat1-label").textContent = label;
+  document.getElementById("rm-revenue").textContent = fmtUSD(rev);
+  document.getElementById("rm-rentals").textContent  = evs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("rm-avg").textContent      = fmtUSD(rev/daysElapsed)+"/day";
+  document.getElementById("rm-prices").textContent   = evs.filter(e=>e.type==="price_change").length;
+
+  const dayLabels=[], dayRevs=[];
+  for(let d=1;d<=daysInMonth;d++){
+    const ds=new Date(Date.UTC(year,month-1,d)),de=new Date(Date.UTC(year,month-1,d+1));
+    if(ds>now)break;
+    dayLabels.push(ds.toLocaleDateString([],{day:"numeric",month:"short"}));
+    dayRevs.push(parseFloat(computeRevenue(events,ds,de>now?now:de).toFixed(4)));
+  }
+  document.getElementById("rm-chart-label").textContent = "Daily Revenue — "+label;
+  barChart("chart-rm-rev", dayLabels, dayRevs, "#22c55e");
+
+  const weeks=[];let cur=new Date(start);
+  while(cur<end&&cur<now){
+    const wS=new Date(cur),wE=new Date(Math.min(cur.getTime()+7*86400000,end.getTime(),now.getTime()));
+    const wEvs=evs.filter(e=>e.ts>=wS.toISOString()&&e.ts<wE.toISOString());
+    weeks.push({label:wS.toLocaleDateString([],{month:"short",day:"numeric"})+" – "+new Date(wE.getTime()-1).toLocaleDateString([],{month:"short",day:"numeric"}),
+      rev:computeRevenue(events,wS,wE),rents:wEvs.filter(e=>e.type==="rental_start").length,
+      warns:wEvs.filter(e=>e.type==="temp_warning").length,prices:wEvs.filter(e=>e.type==="price_change").length});
+    cur=new Date(cur.getTime()+7*86400000);
+  }
+  document.getElementById("rm-table-label").textContent = "Week-by-Week — "+label;
+  document.getElementById("rm-table").innerHTML = `<table class="w-full text-sm">
+    <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+      <th class="text-left py-2">Week</th><th class="text-right py-2">Revenue</th>
+      <th class="text-right py-2">Rentals</th><th class="text-right py-2">Warns</th><th class="text-right py-2">Price Adj</th>
+    </tr></thead>
+    <tbody class="divide-y divide-slate-800/50">
+      ${weeks.map(w=>`<tr class="hover:bg-slate-800/20">
+        <td class="py-2 text-slate-300">${w.label}</td>
+        <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(w.rev)}</td>
+        <td class="py-2 text-right text-blue-400">${w.rents}</td>
+        <td class="py-2 text-right ${w.warns>0?"text-amber-400":"text-slate-600"}">${w.warns}</td>
+        <td class="py-2 text-right text-violet-400">${w.prices}</td>
+      </tr>`).join("")}
+      <tr class="border-t border-slate-700 font-semibold">
+        <td class="py-2 text-white">Month Total</td>
+        <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(rev)}</td>
+        <td class="py-2 text-right text-blue-400">${weeks.reduce((a,w)=>a+w.rents,0)}</td>
+        <td class="py-2 text-right text-amber-400">${weeks.reduce((a,w)=>a+w.warns,0)}</td>
+        <td class="py-2 text-right text-violet-400">${weeks.reduce((a,w)=>a+w.prices,0)}</td>
+      </tr>
+    </tbody></table>`;
+}
+
+// ── Rig Yearly ────────────────────────────────────────────────────────
+function renderRigYearly(events) {
+  const bc = document.getElementById("ry-breadcrumb");
+  if (!RIG_YEARLY_DRILL) {
+    bc.classList.add("hidden"); bc.classList.remove("flex");
+    renderRigAllYears(events);
+  } else {
+    bc.classList.remove("hidden"); bc.classList.add("flex");
+    document.getElementById("ry-drill-label").textContent = RIG_YEARLY_DRILL.year;
+    renderRigYearDetail(events, RIG_YEARLY_DRILL.year);
+  }
+}
+function rigDrillYear(year) { RIG_YEARLY_DRILL={year}; renderRig(activeRig); }
+function rigYearlyBack()    { RIG_YEARLY_DRILL=null;   renderRig(activeRig); }
+function rigDrillFromYear(year,month) { RIG_MONTHLY_DRILL={year,month}; showRigTab("monthly"); }
+
+function renderRigAllYears(events) {
+  const now = new Date();
+  const curY = now.getUTCFullYear();
+  const {start:yS,end:yE}=yearRange(curY);
+  const yCap=yE>now?now:yE;
+  const yEvs=events.filter(e=>e.ts>=yS.toISOString()&&e.ts<yE.toISOString());
+  const yRev=computeRevenue(events,yS,yCap);
+  const moEl=now.getUTCMonth()+1;
+
+  document.getElementById("ry-stat1-label").textContent="Revenue "+curY;
+  document.getElementById("ry-revenue").textContent=fmtUSD(yRev);
+  document.getElementById("ry-rentals").textContent=yEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("ry-avg").textContent=fmtUSD(yRev/moEl)+"/mo";
+  document.getElementById("ry-days").textContent=yEvs.filter(e=>e.type==="daily_earnings"&&(e.total||0)>0).length;
+
+  const years=getUniqueYears(events);
+  if(years.length>1){
+    barChart("chart-ry-rev",years.map(String),
+      years.map(y=>{const{start,end}=yearRange(y);return parseFloat(computeRevenue(events,start,end>now?now:end).toFixed(4));}),
+      "#3b82f6");
+    document.getElementById("ry-chart-label").textContent="Annual Revenue — All Years";
+  } else {
+    const moLabels=[],moRevs=[];
+    for(let m=1;m<=12;m++){const{start,end}=monthRange(curY,m);if(start>now)break;moLabels.push(start.toLocaleDateString([],{month:"short"}));moRevs.push(parseFloat(computeRevenue(events,start,end>now?now:end).toFixed(4)));}
+    barChart("chart-ry-rev",moLabels,moRevs,"#3b82f6");
+    document.getElementById("ry-chart-label").textContent="Monthly Revenue — "+curY;
+  }
+
+  const rows=[...years].reverse().map(y=>{
+    const{start,end}=yearRange(y);const cap=end>now?now:end;
+    const evs=events.filter(e=>e.ts>=start.toISOString()&&e.ts<end.toISOString());
+    return{year:y,rev:computeRevenue(events,start,cap),rents:evs.filter(e=>e.type==="rental_start").length,
+      warns:evs.filter(e=>e.type==="temp_warning").length,days:evs.filter(e=>e.type==="daily_earnings"&&(e.total||0)>0).length};
+  });
+  document.getElementById("ry-table-label").textContent="Year-by-Year Summary — click to drill in";
+  document.getElementById("ry-table").innerHTML=`<table class="w-full text-sm">
+    <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+      <th class="text-left py-2">Year</th><th class="text-right py-2">Revenue</th>
+      <th class="text-right py-2">Rentals</th><th class="text-right py-2">Days Active</th>
+      <th class="text-right py-2">Temp Warns</th><th class="text-right py-2 pr-1"></th>
+    </tr></thead>
+    <tbody class="divide-y divide-slate-800/50">
+      ${rows.map(r=>`<tr style="cursor:pointer" onclick="rigDrillYear(${r.year})" class="hover:bg-slate-800/30">
+        <td class="py-2 text-slate-300 font-medium">${r.year}</td>
+        <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(r.rev)}</td>
+        <td class="py-2 text-right text-blue-400">${r.rents}</td>
+        <td class="py-2 text-right text-slate-300">${r.days}</td>
+        <td class="py-2 text-right ${r.warns>0?"text-amber-400":"text-slate-600"}">${r.warns}</td>
+        <td class="py-2 text-right text-blue-400 text-xs pr-1">→</td>
+      </tr>`).join("")}
+    </tbody></table>`;
+}
+
+function renderRigYearDetail(events, year) {
+  const now=new Date();
+  const{start:yS,end:yE}=yearRange(year);const yCap=yE>now?now:yE;
+  const yEvs=events.filter(e=>e.ts>=yS.toISOString()&&e.ts<yE.toISOString());
+  const yRev=computeRevenue(events,yS,yCap);
+  const moEl=year===now.getUTCFullYear()?now.getUTCMonth()+1:12;
+
+  document.getElementById("ry-stat1-label").textContent="Revenue "+year;
+  document.getElementById("ry-revenue").textContent=fmtUSD(yRev);
+  document.getElementById("ry-rentals").textContent=yEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("ry-avg").textContent=fmtUSD(yRev/moEl)+"/mo";
+  document.getElementById("ry-days").textContent=yEvs.filter(e=>e.type==="daily_earnings"&&(e.total||0)>0).length;
+
+  const moLabels=[],moRevs=[],moRows=[];
+  for(let m=1;m<=12;m++){
+    const{start,end}=monthRange(year,m);if(start>now)break;
+    const cap=end>now?now:end;
+    const evs=events.filter(e=>e.ts>=start.toISOString()&&e.ts<end.toISOString());
+    const rev=computeRevenue(events,start,cap);
+    moLabels.push(start.toLocaleDateString([],{month:"short"}));
+    moRevs.push(parseFloat(rev.toFixed(4)));
+    moRows.push({m,label:start.toLocaleDateString([],{month:"long"}),rev,
+      rents:evs.filter(e=>e.type==="rental_start").length,
+      warns:evs.filter(e=>e.type==="temp_warning").length,
+      prices:evs.filter(e=>e.type==="price_change").length});
+  }
+  document.getElementById("ry-chart-label").textContent="Monthly Revenue — "+year;
+  barChart("chart-ry-rev",moLabels,moRevs,"#3b82f6");
+
+  const revRows=[...moRows].reverse();
+  document.getElementById("ry-table-label").textContent="Month-by-Month — "+year+" (click for daily detail)";
+  document.getElementById("ry-table").innerHTML=`<table class="w-full text-sm">
+    <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+      <th class="text-left py-2">Month</th><th class="text-right py-2">Revenue</th>
+      <th class="text-right py-2">Rentals</th><th class="text-right py-2">Warns</th>
+      <th class="text-right py-2">Price Adj</th><th class="text-right py-2 pr-1"></th>
+    </tr></thead>
+    <tbody class="divide-y divide-slate-800/50">
+      ${revRows.map(r=>`<tr style="cursor:pointer" onclick="rigDrillFromYear(${year},${r.m})" class="hover:bg-slate-800/30">
+        <td class="py-2 text-slate-300">${r.label}</td>
+        <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(r.rev)}</td>
+        <td class="py-2 text-right text-blue-400">${r.rents}</td>
+        <td class="py-2 text-right ${r.warns>0?"text-amber-400":"text-slate-600"}">${r.warns}</td>
+        <td class="py-2 text-right text-violet-400">${r.prices}</td>
+        <td class="py-2 text-right text-blue-400 text-xs pr-1">→</td>
+      </tr>`).join("")}
+      <tr class="border-t border-slate-700 font-semibold">
+        <td class="py-2 text-white">Year Total</td>
+        <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(yRev)}</td>
+        <td class="py-2 text-right text-blue-400">${revRows.reduce((a,r)=>a+r.rents,0)}</td>
+        <td class="py-2 text-right text-amber-400">${revRows.reduce((a,r)=>a+r.warns,0)}</td>
+        <td class="py-2 text-right text-violet-400">${revRows.reduce((a,r)=>a+r.prices,0)}</td>
+        <td></td>
+      </tr>
+    </tbody></table>`;
 }
 
 // ── Master render ─────────────────────────────────────────────────────
