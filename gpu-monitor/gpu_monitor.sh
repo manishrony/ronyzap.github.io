@@ -444,26 +444,39 @@ vastai_set_price() {
     data="{\"min_bid\": $new_price, \"listed\": true}"
     tmpf=$(mktemp)
 
-    # Try api_key query param first
+    # Attempt 1: PUT with trailing slash + api_key param
     http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Content-Type: application/json" \
         -d "$data" \
         "$VASTAI_API/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-    if [[ "$http_code" =~ ^2 ]]; then
-        rm -f "$tmpf"; return 0
-    fi
-    log "  PUT api_key HTTP ${http_code}: $(head -c 300 "$tmpf")"
+    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+    log "  PUT /machines/${machine_id}/ api_key HTTP ${http_code}: $(head -c 200 "$tmpf")"
 
-    # Fall back to Bearer token
+    # Attempt 2: PUT without trailing slash + api_key param (some REST APIs redirect)
+    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
+        -H "Content-Type: application/json" \
+        -d "$data" \
+        "$VASTAI_API/machines/${machine_id}?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+    log "  PUT /machines/${machine_id} api_key HTTP ${http_code}: $(head -c 200 "$tmpf")"
+
+    # Attempt 3: PUT with Bearer token + trailing slash
     http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Authorization: Bearer $VASTAI_API_KEY" \
         -H "Content-Type: application/json" \
         -d "$data" \
         "$VASTAI_API/machines/${machine_id}/" 2>/dev/null)
-    if [[ "$http_code" =~ ^2 ]]; then
-        rm -f "$tmpf"; return 0
-    fi
-    log "  PUT Bearer HTTP ${http_code}: $(head -c 300 "$tmpf")"
+    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+    log "  PUT /machines/${machine_id}/ Bearer HTTP ${http_code}: $(head -c 200 "$tmpf")"
+
+    # Attempt 4: PATCH (some APIs use PATCH for partial update)
+    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PATCH \
+        -H "Content-Type: application/json" \
+        -d "$data" \
+        "$VASTAI_API/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+    log "  PATCH /machines/${machine_id}/ api_key HTTP ${http_code}: $(head -c 200 "$tmpf")"
+
     rm -f "$tmpf"
     return 1
 }
@@ -475,6 +488,17 @@ vastai_pricing() {
 
     local machines_json
     machines_json=$(vastai_get_machines) || { log "PRICING: Could not fetch machines"; return; }
+
+    # Debug: log ID fields from first machine to verify correct field for PUT URL
+    echo "$machines_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+machines = data.get('machines', [])
+if machines:
+    m = machines[0]
+    id_fields = {k: v for k, v in m.items() if 'id' in k.lower() or k in ('hostname','listed','rented','min_bid')}
+    print(f'[PRICING DEBUG] Machine fields: {id_fields}')
+" 2>/dev/null >> "$LOG_FILE" || true
 
     echo "$machines_json" | python3 -c "
 import sys, json
