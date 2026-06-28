@@ -211,6 +211,9 @@ now_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 for m in machines:
     mid      = str(m.get('id', ''))
     rented   = m.get('rented', False)
+    # Also check num_running_instances — API rented field can be stale
+    if int(m.get('num_running_instances', 0) or 0) > 0:
+        rented = True
     gpu_name = m.get('gpu_name', 'unknown')
     num_gpus = m.get('num_gpus', 0)
     cur_bid  = float(m.get('min_bid', 0) or 0)
@@ -301,6 +304,9 @@ lines = []
 for m in data.get('machines', []):
     mid      = m.get('id', '?')
     rented   = m.get('rented', False)
+    # Also check num_running_instances — API rented field can be stale
+    if int(m.get('num_running_instances', 0) or 0) > 0:
+        rented = True
     gpu_name = m.get('gpu_name', '?')
     num_gpus = m.get('num_gpus', 0)
     cur_bid  = float(m.get('min_bid', 0) or 0)
@@ -379,18 +385,18 @@ Last rate: $cost"
 # Dynamic pricing
 # ─────────────────────────────────────────────
 
-# Returns floor price in dollars for a given GPU name
+# Returns floor price in dollars for a given GPU name (always 4 decimal places, valid JSON number)
 get_price_floor() {
     local gpu_name="${1^^}"
     for rule in "${PRICE_FLOORS[@]}"; do
         local pattern="${rule%%:*}"
         local floor_cents="${rule##*:}"
         if [[ "$gpu_name" == *"${pattern^^}"* ]]; then
-            echo "scale=2; $floor_cents / 100" | bc
+            printf "%.4f\n" "$(echo "scale=4; $floor_cents / 100" | bc)"
             return
         fi
     done
-    echo "0.05"
+    echo "0.0500"
 }
 
 # Vast.ai GET helper: /machines/ requires api_key= query param (not Bearer token).
@@ -432,19 +438,34 @@ except Exception as e:
 vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
-    local end_date data
-    end_date=$(( $(date +%s) + MAX_RENTAL_DAYS * 86400 ))
-    data="{\"min_bid\": $new_price, \"listed\": true, \"end_date\": $end_date}"
-    # Try api_key param first, then Bearer token
-    curl -sf -X PUT \
+    local data http_code tmpf
+    # Ensure valid JSON decimal (bc may produce .30 without leading zero)
+    new_price=$(printf "%.4f" "$new_price")
+    data="{\"min_bid\": $new_price, \"listed\": true}"
+    tmpf=$(mktemp)
+
+    # Try api_key query param first
+    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Content-Type: application/json" \
         -d "$data" \
-        "$VASTAI_API/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" >> "$LOG_FILE" 2>&1 || \
-    curl -sf -X PUT \
+        "$VASTAI_API/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+    if [[ "$http_code" =~ ^2 ]]; then
+        rm -f "$tmpf"; return 0
+    fi
+    log "  PUT api_key HTTP ${http_code}: $(head -c 300 "$tmpf")"
+
+    # Fall back to Bearer token
+    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Authorization: Bearer $VASTAI_API_KEY" \
         -H "Content-Type: application/json" \
         -d "$data" \
-        "$VASTAI_API/machines/${machine_id}/" >> "$LOG_FILE" 2>&1
+        "$VASTAI_API/machines/${machine_id}/" 2>/dev/null)
+    if [[ "$http_code" =~ ^2 ]]; then
+        rm -f "$tmpf"; return 0
+    fi
+    log "  PUT Bearer HTTP ${http_code}: $(head -c 300 "$tmpf")"
+    rm -f "$tmpf"
+    return 1
 }
 
 vastai_pricing() {
@@ -461,6 +482,8 @@ data = json.load(sys.stdin)
 for m in data.get('machines', []):
     mid      = m.get('id', '')
     rented   = m.get('rented', False)
+    if int(m.get('num_running_instances', 0) or 0) > 0:
+        rented = True
     listed   = m.get('listed', False)
     gpu_name = m.get('gpu_name', 'unknown')
     cur_bid  = m.get('min_bid', 0)
@@ -499,7 +522,7 @@ for m in data.get('machines', []):
 
         local adjust_cents=$(( RANDOM % (PRICE_ADJUST_MAX - PRICE_ADJUST_MIN + 1) + PRICE_ADJUST_MIN ))
         local adjust
-        adjust=$(echo "scale=4; $adjust_cents / 100" | bc)
+        adjust=$(printf "%.4f" "$(echo "scale=4; $adjust_cents / 100" | bc)")
 
         # Treat $0 bid as "way below floor" — jump straight to floor
         local new_price direction
@@ -507,10 +530,10 @@ for m in data.get('machines', []):
             new_price="$floor"
             direction="↑ (was \$0 — setting to floor)"
         elif (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
-            new_price=$(echo "scale=4; $cur_bid - $adjust" | bc)
+            new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust" | bc)")
             direction="↓ (above market)"
         elif (( $(echo "$cur_bid < $market_price - 0.02" | bc -l) )); then
-            new_price=$(echo "scale=4; $cur_bid + $adjust" | bc)
+            new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust" | bc)")
             direction="↑ (below market)"
         else
             log "  Machine $mid: within 2¢ of market — no change"
