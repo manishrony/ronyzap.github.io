@@ -24,21 +24,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             events = []
             p = Path(DATA_FILE)
             if p.exists():
-                cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                # Include all events (no cutoff) so daily_earnings history shows in dashboard
                 for line in p.read_text().splitlines():
                     line = line.strip()
                     if not line:
                         continue
                     try:
                         ev = json.loads(line)
-                        if ev.get("ts", "") >= cutoff:
-                            events.append(ev)
+                        events.append(ev)
                     except Exception:
                         pass
             body = json.dumps({"host": socket.gethostname(), "events": events}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -50,6 +50,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = path.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", mime)
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)

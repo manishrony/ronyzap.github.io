@@ -238,33 +238,45 @@ function eventBadge(type) {
 }
 
 // computeRevenue(allEvents, periodStart, periodEnd)
-// Sums rental_start/end events (real-time tracked) plus daily_earnings
-// events (Vast.ai confirmed daily totals injected as historical backfill).
+// daily_earnings (Vast.ai confirmed) take priority over rental_start/end.
+// For any UTC day covered by daily_earnings, use that amount as-is.
+// rental_start/end only counts hours on days NOT covered by daily_earnings.
 function computeRevenue(allEvents, periodStart, periodEnd) {
   const pS = periodStart ? periodStart.getTime() : 0;
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
   let total = 0;
 
-  // Real-time tracked rentals
+  // Step 1: daily_earnings — ground truth; record which UTC dates are covered.
+  const covered = new Set();
+  allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
+    const dayS = new Date(e.ts).getTime();
+    const dayE = dayS + 86400000;
+    if (dayE > pS && dayS < pE) {
+      total += (e.total || 0);
+      covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
+    }
+  });
+
+  // Step 2: rental_start/end — skip hours on days already covered by daily_earnings.
   const starts = allEvents.filter(e => e.type === "rental_start");
   const ends   = allEvents.filter(e => e.type === "rental_end");
   starts.forEach(s => {
     const end  = ends.find(e => e.instance_id === s.instance_id && e.ts > s.ts);
-    const rate = parseFloat((s.rate || "$0").replace(/[^0-9.]/g, "")) || 0;
-    const rS   = new Date(s.ts).getTime();
-    const rE   = end ? new Date(end.ts).getTime() : Date.now();
-    const oS   = Math.max(rS, pS);
-    const oE   = Math.min(rE, pE);
-    if (oE > oS) total += rate * (oE - oS) / 3600000;
-  });
-
-  // Vast.ai confirmed daily earnings (historical backfill from dashboard export)
-  allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
-    const dayS = new Date(e.ts).getTime();
-    const dayE = dayS + 86400000;
-    const oS   = Math.max(dayS, pS);
-    const oE   = Math.min(dayE, pE);
-    if (oE > oS) total += (e.total || 0) * (oE - oS) / 86400000;
+    const rate = parseFloat((s.rate || "0").replace(/[^0-9.]/g, "")) || 0;
+    if (!rate) return;
+    const rS = new Date(s.ts).getTime();
+    const rE = end ? new Date(end.ts).getTime() : Date.now();
+    const oS = Math.max(rS, pS);
+    const oE = Math.min(rE, pE);
+    if (oE <= oS) return;
+    let cur = oS;
+    while (cur < oE) {
+      const d    = new Date(cur);
+      const dStr = d.toISOString().slice(0, 10);
+      const next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+      if (!covered.has(dStr)) total += rate * (Math.min(oE, next) - cur) / 3600000;
+      cur = next;
+    }
   });
 
   return total;

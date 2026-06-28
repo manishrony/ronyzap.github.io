@@ -156,16 +156,17 @@ Power: ${power_draw}W / ${power_limit}W | Fan: ${fan}%"
 # Vast.ai rental monitoring
 # ─────────────────────────────────────────────
 
-# On startup: backfill rental_start events for any active instance
+# On startup: backfill rental_start events for any currently RENTED machine
 # not yet in the JSONL log (handles monitor installed mid-rental).
+# Uses /machines/ endpoint (host view) — rented=True means someone is renting your GPU.
 vastai_init_state() {
     [[ -z "$VASTAI_API_KEY" ]] && return
 
-    log "VAST.AI INIT: checking for pre-existing active rentals..."
+    log "VAST.AI INIT: checking machines for active rentals..."
 
     local response tmpfile
     response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
-        "$VASTAI_API/instances/?owner=me" 2>/dev/null) || {
+        "$VASTAI_API/machines/?owner=me" 2>/dev/null) || {
         log "VAST.AI INIT: API call failed — skipping startup scan"
         return
     }
@@ -185,10 +186,10 @@ except Exception as e:
     print(f"[INIT] JSON parse error: {e}")
     sys.exit(0)
 
-instances = data.get('instances', [])
+machines = data.get('machines', [])
 
-# Collect instance IDs already present in the JSONL log
-seen = set()
+# Collect machine IDs already with rental_start in the JSONL log
+seen_rented = set()
 try:
     with open(jsonl) as f:
         for line in f:
@@ -198,91 +199,67 @@ try:
             try:
                 ev = json.loads(line)
                 if ev.get('type') == 'rental_start':
-                    seen.add(str(ev.get('instance_id', '')))
+                    # Match by machine_id (new) or instance_id (old events)
+                    seen_rented.add(str(ev.get('machine_id', ev.get('instance_id', ''))))
             except Exception:
                 pass
 except FileNotFoundError:
     pass
 
 count = 0
-for inst in instances:
-    iid    = str(inst.get('id', ''))
-    status = inst.get('actual_status', '')
-    if not iid or iid in seen:
+now_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+for m in machines:
+    mid      = str(m.get('id', ''))
+    rented   = m.get('rented', False)
+    gpu_name = m.get('gpu_name', 'unknown')
+    num_gpus = m.get('num_gpus', 0)
+    cur_bid  = float(m.get('min_bid', 0) or 0)
+
+    if not mid or not rented:
         continue
 
-    # Use real start_date from Vast.ai API for accurate revenue history
-    start_ts = inst.get('start_date')
-    if start_ts:
-        ts_str = datetime.datetime.utcfromtimestamp(float(start_ts)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    else:
-        ts_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-
-    num_gpus = inst.get('num_gpus', 0)
-    gpu_name = inst.get('gpu_name', 'unknown')
-    cost     = float(inst.get('dph_total', 0) or 0)
+    if mid in seen_rented:
+        print(f"[INIT] Machine {mid} already logged as rented — skipping")
+        continue
 
     event = {
-        'ts':          ts_str,
+        'ts':          now_str,
         'type':        'rental_start',
         'host':        socket.gethostname(),
-        'instance_id': iid,
+        'machine_id':  mid,
+        'instance_id': mid,
         'gpus':        f'{num_gpus}x {gpu_name}',
-        'rate':        f'${cost:.3f}/hr',
-        'status':      status,
+        'rate':        f'${cur_bid:.3f}/hr',
+        'status':      'running',
         'backfilled':  True,
     }
     with open(jsonl, 'a') as f:
         f.write(json.dumps(event) + '\n')
-    print(f"[INIT] Backfilled rental_start: instance {iid} started {ts_str} @ ${cost:.3f}/hr")
+    print(f"[INIT] Backfilled rental_start: machine {mid} ({num_gpus}x {gpu_name} @ ${cur_bid:.3f}/hr)")
     count += 1
 
 if not count:
-    print("[INIT] No backfill needed — all active instances already logged")
+    print("[INIT] No backfill needed — no newly rented machines")
 PYEOF
 
     rm -f "$tmpfile"
 }
 
-# Sync earnings from Vast.ai API: fetch past instances and write
-# rental_end events for any that ended but aren't logged yet.
+# Summarise tracked revenue from JSONL log (no API call needed — Vast.ai
+# does not expose host-side billing history via their v1 API).
+# Historical earnings are injected manually via daily_earnings events from CSV export.
 vastai_sync_earnings() {
     [[ -z "$VASTAI_API_KEY" ]] && return
 
-    log "VAST.AI EARNINGS: syncing from API..."
+    python3 - "$JSONL_FILE" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
+import sys, json, datetime
 
-    # Try fetching both active and inactive instances if API supports it
-    local response tmpfile
-    response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
-        "$VASTAI_API/instances/?owner=me&all_instances=1" 2>/dev/null) || {
-        # Fallback to active-only endpoint
-        response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
-            "$VASTAI_API/instances/?owner=me" 2>/dev/null) || {
-            log "VAST.AI EARNINGS: API call failed"
-            return
-        }
-    }
+jsonl = sys.argv[1]
+total = 0.0
+daily_total = 0.0
+today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
 
-    tmpfile=$(mktemp)
-    echo "$response" > "$tmpfile"
-
-    python3 - "$tmpfile" "$JSONL_FILE" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
-import sys, json, datetime, socket
-
-tmpf, jsonl = sys.argv[1], sys.argv[2]
-
-try:
-    with open(tmpf) as f:
-        data = json.load(f)
-except Exception as e:
-    print(f"[EARNINGS] JSON parse error: {e}")
-    sys.exit(0)
-
-instances = data.get('instances', [])
-
-# Build a map of what's already in the log
-logged_starts = {}   # instance_id -> rental_start event
-logged_ends   = set()  # instance_ids that have rental_end
 try:
     with open(jsonl) as f:
         for line in f:
@@ -291,113 +268,45 @@ try:
                 continue
             try:
                 ev = json.loads(line)
-                iid = str(ev.get('instance_id', ''))
-                if ev.get('type') == 'rental_start':
-                    logged_starts[iid] = ev
-                elif ev.get('type') == 'rental_end':
-                    logged_ends.add(iid)
+                t = ev.get('type', '')
+                if t == 'daily_earnings':
+                    total += float(ev.get('total', 0))
+                    if ev.get('date', '') == today:
+                        daily_total += float(ev.get('total', 0))
             except Exception:
                 pass
 except FileNotFoundError:
     pass
 
-new_events = []
-total_earnings = 0.0
-
-for inst in instances:
-    iid      = str(inst.get('id', ''))
-    status   = inst.get('actual_status', 'unknown')
-    start_ts = inst.get('start_date')
-    end_ts   = inst.get('end_date')
-    cost     = float(inst.get('dph_total', 0) or 0)
-    num_gpus = inst.get('num_gpus', 0)
-    gpu_name = inst.get('gpu_name', 'unknown')
-
-    if not iid or not start_ts:
-        continue
-
-    start_dt = datetime.datetime.utcfromtimestamp(float(start_ts))
-    ts_start = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-    # Backfill rental_start if missing
-    if iid not in logged_starts:
-        event = {
-            'ts':          ts_start,
-            'type':        'rental_start',
-            'host':        socket.gethostname(),
-            'instance_id': iid,
-            'gpus':        f'{num_gpus}x {gpu_name}',
-            'rate':        f'${cost:.3f}/hr',
-            'status':      status,
-            'backfilled':  True,
-        }
-        new_events.append(event)
-        print(f"[EARNINGS] Backfilled rental_start: {iid} at {ts_start} @ ${cost:.3f}/hr")
-
-    # Backfill rental_end if instance has ended and not yet logged
-    instance_ended = status in ('ended', 'cancelled', 'stopped', 'exited')
-    if instance_ended and end_ts and iid not in logged_ends:
-        end_dt = datetime.datetime.utcfromtimestamp(float(end_ts))
-        ts_end = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-        duration_h = (end_dt - start_dt).total_seconds() / 3600.0
-        earned = cost * duration_h
-        event = {
-            'ts':          ts_end,
-            'type':        'rental_end',
-            'host':        socket.gethostname(),
-            'instance_id': iid,
-            'gpus':        f'{num_gpus}x {gpu_name}',
-            'rate':        f'${cost:.3f}/hr',
-            'status':      status,
-            'earned':      round(earned, 4),
-            'backfilled':  True,
-        }
-        new_events.append(event)
-        print(f"[EARNINGS] Backfilled rental_end: {iid} at {ts_end} (${earned:.2f} earned)")
-
-    # Tally running total
-    now_dt = datetime.datetime.utcnow()
-    if end_ts and instance_ended:
-        end_dt = datetime.datetime.utcfromtimestamp(float(end_ts))
-        total_earnings += cost * (end_dt - start_dt).total_seconds() / 3600.0
-    else:
-        # Still running — count up to now
-        total_earnings += cost * (now_dt - start_dt).total_seconds() / 3600.0
-
-# Write new events sorted by timestamp
-new_events.sort(key=lambda e: e['ts'])
-if new_events:
-    with open(jsonl, 'a') as f:
-        for ev in new_events:
-            f.write(json.dumps(ev) + '\n')
-
-print(f"[EARNINGS] Total tracked earnings this month: ${total_earnings:.2f}")
+print(f"[EARNINGS] Logged daily_earnings: total=${total:.2f}  today=${daily_total:.2f}")
 PYEOF
-
-    rm -f "$tmpfile"
 }
 
+# Check machine rental status from HOST perspective.
+# Uses /machines/?owner=me — 'rented' field = someone is renting your GPU.
+# Fires rental_start/end Telegram alerts only when rented status changes.
 vastai_check() {
     [[ -z "$VASTAI_API_KEY" ]] && { log "VAST.AI: API key not set, skipping"; return; }
 
     local response
     response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
-        "$VASTAI_API/instances/?owner=me" 2>/dev/null) || {
+        "$VASTAI_API/machines/?owner=me" 2>/dev/null) || {
         log "VAST.AI: API call failed"; return
     }
 
+    # State: one line per machine: {mid}|{rented}|{num_gpus}x{gpu_name}|{bid}/hr
     local current_state
     current_state=$(echo "$response" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 lines = []
-for inst in data.get('instances', []):
-    iid    = inst.get('id', '?')
-    status = inst.get('actual_status', '?')
-    gpus   = inst.get('num_gpus', 0)
-    gpu_n  = inst.get('gpu_name', '?')
-    cost   = inst.get('dph_total', 0)
-    lines.append(f'{iid}|{status}|{gpus}x {gpu_n}|\${cost:.3f}/hr')
+for m in data.get('machines', []):
+    mid      = m.get('id', '?')
+    rented   = m.get('rented', False)
+    gpu_name = m.get('gpu_name', '?')
+    num_gpus = m.get('num_gpus', 0)
+    cur_bid  = float(m.get('min_bid', 0) or 0)
+    lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cur_bid:.3f}/hr')
 print('\n'.join(lines))
 " 2>/dev/null) || { log "VAST.AI: Parse error"; return; }
 
@@ -405,62 +314,71 @@ print('\n'.join(lines))
     [[ -f "$VASTAI_LAST_STATE_FILE" ]] && last_state=$(cat "$VASTAI_LAST_STATE_FILE")
 
     if [[ "$current_state" != "$last_state" ]]; then
-        log "VAST.AI: State changed"
+        log "VAST.AI: Machine state changed"
 
-        # New rentals (lines in current but not in last)
+        # Check each current machine for rental status changes
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            if ! grep -qF "$line" "$VASTAI_LAST_STATE_FILE" 2>/dev/null; then
-                IFS='|' read -r iid status gpus cost <<< "$line"
-                log "VAST.AI: NEW rental → ID $iid | $gpus | $cost"
-                tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
-Instance: <b>$iid</b> | GPUs: $gpus
-Rate: <b>$cost</b> | Status: $status"
-                write_event "rental_start" "{\"instance_id\":\"$iid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"$status\"}"
-            fi
-        done <<< "$current_state"
+            IFS='|' read -r mid rented gpus cost <<< "$line"
 
-        # Ended rentals (lines in last but not in current)
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            if ! echo "$current_state" | grep -qF "$line"; then
-                IFS='|' read -r iid status gpus cost <<< "$line"
-                log "VAST.AI: ENDED rental → ID $iid"
-                tg_send "🔴 <b>Vast.ai Rental ENDED</b> — $(hostname)
-Instance: <b>$iid</b> | GPUs: $gpus
-Rate was: $cost | Last status: $status"
-                write_event "rental_end" "{\"instance_id\":\"$iid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"$status\"}"
-            fi
-        done <<< "$last_state"
-
-        # Status changes within existing rentals
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            IFS='|' read -r iid status gpus cost <<< "$line"
             local old_line
-            old_line=$(grep "^${iid}|" "$VASTAI_LAST_STATE_FILE" 2>/dev/null || true)
-            if [[ -n "$old_line" && "$old_line" != "$line" ]]; then
-                IFS='|' read -r _ old_status _ _ <<< "$old_line"
-                if [[ "$old_status" != "$status" ]]; then
-                    log "VAST.AI: Instance $iid: $old_status → $status"
-                    tg_send "🔄 <b>Vast.ai Status Change</b> — $(hostname)
-Instance: <b>$iid</b> | $gpus
-$old_status → <b>$status</b> | $cost"
+            old_line=$(grep "^${mid}|" "$VASTAI_LAST_STATE_FILE" 2>/dev/null || true)
+
+            if [[ -z "$old_line" ]]; then
+                # Machine not previously tracked — log it, alert if currently rented
+                log "VAST.AI: Machine $mid | $gpus | $cost | Rented: $rented"
+                if [[ "$rented" == "True" ]]; then
+                    log "VAST.AI: Machine $mid is RENTED (detected on startup)"
+                    tg_send "✅ <b>Vast.ai Rental ACTIVE</b> — $(hostname)
+Machine: <b>$mid</b> | GPUs: $gpus
+Rate: <b>$cost</b>"
+                    write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"running\"}"
+                fi
+            else
+                local old_rented
+                IFS='|' read -r _ old_rented _ _ <<< "$old_line"
+                if [[ "$old_rented" != "$rented" ]]; then
+                    if [[ "$rented" == "True" ]]; then
+                        log "VAST.AI: Machine $mid — rental STARTED"
+                        tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
+Machine: <b>$mid</b> | GPUs: $gpus
+Rate: <b>$cost</b>"
+                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"running\"}"
+                    else
+                        log "VAST.AI: Machine $mid — rental ENDED"
+                        tg_send "🔴 <b>Vast.ai Rental ENDED</b> — $(hostname)
+Machine: <b>$mid</b> | GPUs: $gpus
+Last rate: $cost"
+                        write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"ended\"}"
+                    fi
                 fi
             fi
         done <<< "$current_state"
 
+        # Check for machines that disappeared while rented
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            IFS='|' read -r mid old_rented gpus cost <<< "$line"
+            if ! echo "$current_state" | grep -q "^${mid}|"; then
+                if [[ "$old_rented" == "True" ]]; then
+                    log "VAST.AI: Machine $mid disappeared while rented"
+                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"gone\"}"
+                fi
+            fi
+        done <<< "$last_state"
+
         echo "$current_state" > "$VASTAI_LAST_STATE_FILE"
     else
+        # No change — just log current status quietly
         if [[ -n "$current_state" ]]; then
-            log "VAST.AI: Active rentals (unchanged):"
+            log "VAST.AI: Machine status (unchanged):"
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
-                IFS='|' read -r iid status gpus cost <<< "$line"
-                log "  Instance $iid | $gpus | $cost | $status"
+                IFS='|' read -r mid rented gpus cost <<< "$line"
+                log "  Machine $mid | $gpus | $cost | Rented: $rented"
             done <<< "$current_state"
         else
-            log "VAST.AI: No active rentals."
+            log "VAST.AI: No machines found."
         fi
     fi
 }
