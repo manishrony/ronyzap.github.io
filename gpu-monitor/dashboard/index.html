@@ -238,14 +238,16 @@ function eventBadge(type) {
 }
 
 // computeRevenue(allEvents, periodStart, periodEnd)
-// Uses period-overlap so ongoing rentals count up to now,
-// and rentals started before the period still contribute.
+// Sums rental_start/end events (real-time tracked) plus daily_earnings
+// events (Vast.ai confirmed daily totals injected as historical backfill).
 function computeRevenue(allEvents, periodStart, periodEnd) {
   const pS = periodStart ? periodStart.getTime() : 0;
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
+  let total = 0;
+
+  // Real-time tracked rentals
   const starts = allEvents.filter(e => e.type === "rental_start");
   const ends   = allEvents.filter(e => e.type === "rental_end");
-  let total = 0;
   starts.forEach(s => {
     const end  = ends.find(e => e.instance_id === s.instance_id && e.ts > s.ts);
     const rate = parseFloat((s.rate || "$0").replace(/[^0-9.]/g, "")) || 0;
@@ -255,6 +257,16 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
     const oE   = Math.min(rE, pE);
     if (oE > oS) total += rate * (oE - oS) / 3600000;
   });
+
+  // Vast.ai confirmed daily earnings (historical backfill from dashboard export)
+  allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
+    const dayS = new Date(e.ts).getTime();
+    const dayE = dayS + 86400000;
+    const oS   = Math.max(dayS, pS);
+    const oE   = Math.min(dayE, pE);
+    if (oE > oS) total += (e.total || 0) * (oE - oS) / 86400000;
+  });
+
   return total;
 }
 
