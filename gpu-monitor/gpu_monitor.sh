@@ -441,27 +441,48 @@ except Exception as e:
 vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
-    local data http_code tmpf
+    local http_code tmpf
     # Ensure valid JSON decimal (bc may produce .30 without leading zero)
     new_price=$(printf "%.4f" "$new_price")
-    data="{\"min_bid\": $new_price, \"listed\": true}"
     tmpf=$(mktemp)
 
-    # v1 endpoint (read works here but update may not)
-    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
-        -H "Content-Type: application/json" \
-        -d "$data" \
-        "https://console.vast.ai/api/v1/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-    log "  PUT v1 HTTP ${http_code}: $(head -c 200 "$tmpf")"
+    # Primary: set_min_bid endpoint — PUT /machines/{id}/minbid/
+    # Body: {"client_id": "me", "price": <per_gpu_per_hour>}
+    local minbid_data="{\"client_id\": \"me\", \"price\": $new_price}"
 
-    # v0 endpoint — Vast.ai deprecated v0 instances but machine management may still be v0
     http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Content-Type: application/json" \
-        -d "$data" \
-        "https://console.vast.ai/api/v0/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+        -d "$minbid_data" \
+        "https://console.vast.ai/api/v1/machines/${machine_id}/minbid/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
     if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-    log "  PUT v0 HTTP ${http_code}: $(head -c 200 "$tmpf")"
+    log "  PUT v1/minbid HTTP ${http_code}: $(head -c 200 "$tmpf")"
+
+    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
+        -H "Content-Type: application/json" \
+        -d "$minbid_data" \
+        "https://console.vast.ai/api/v0/machines/${machine_id}/minbid/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+    log "  PUT v0/minbid HTTP ${http_code}: $(head -c 200 "$tmpf")"
+
+    # Fallback: create_asks endpoint — PUT /machines/create_asks/
+    # Sets the on-demand ask price per GPU per hour
+    local end_date
+    end_date=$(( $(date +%s) + MAX_RENTAL_DAYS * 86400 ))
+    local asks_data="{\"machine\": $machine_id, \"price_gpu\": $new_price, \"price_disk\": 0.1, \"price_inetu\": 0.0, \"price_inetd\": 0.0, \"price_min_bid\": $new_price, \"end_date\": $end_date}"
+
+    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
+        -H "Content-Type: application/json" \
+        -d "$asks_data" \
+        "https://console.vast.ai/api/v1/machines/create_asks/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+    log "  PUT v1/create_asks HTTP ${http_code}: $(head -c 200 "$tmpf")"
+
+    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
+        -H "Content-Type: application/json" \
+        -d "$asks_data" \
+        "https://console.vast.ai/api/v0/machines/create_asks/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+    log "  PUT v0/create_asks HTTP ${http_code}: $(head -c 200 "$tmpf")"
 
     rm -f "$tmpf"
     return 1
