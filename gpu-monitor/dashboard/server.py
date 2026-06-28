@@ -14,6 +14,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_data()
         elif self.path in ("/", "/index.html"):
             self._serve_file(DASH_DIR / "index.html", "text/html; charset=utf-8")
+        elif self.path in ("/combined", "/combined.html"):
+            self._serve_file(DASH_DIR / "combined.html", "text/html; charset=utf-8")
         else:
             self.send_error(404)
 

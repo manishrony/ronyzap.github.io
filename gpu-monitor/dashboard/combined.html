@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPU Rig Dashboard — Both Rigs</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  body { background:#060d1a; font-family:system-ui,sans-serif; }
+  .card  { background:#0d1f35; border:1px solid #1a3a5c; border-radius:12px; }
+  .card2 { background:#0a1a2e; border:1px solid #1a3a5c; border-radius:10px; }
+  .badge-green  { background:#052e16; color:#4ade80; border:1px solid #166534; }
+  .badge-yellow { background:#1c1002; color:#fbbf24; border:1px solid #78350f; }
+  .badge-red    { background:#1f0707; color:#f87171; border:1px solid #7f1d1d; }
+  .badge-blue   { background:#03142b; color:#60a5fa; border:1px solid #1e3a5f; }
+  .badge-purple { background:#150c2b; color:#c084fc; border:1px solid #4c1d95; }
+  .tab-active { background:#0d1f35; color:#fff; border-bottom:2px solid #3b82f6; }
+  .tab-idle   { color:#64748b; cursor:pointer; }
+  .tab-idle:hover { color:#94a3b8; }
+  .rig-card { transition:all .2s; cursor:pointer; }
+  .rig-card:hover { border-color:#3b82f6; transform:translateY(-2px); }
+  .temp-ok   { color:#4ade80; }
+  .temp-warn { color:#fbbf24; }
+  .temp-hot  { color:#f87171; }
+  .bar-fill  { transition:width .6s ease; }
+  canvas { max-height:200px; }
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:#060d1a; }
+  ::-webkit-scrollbar-thumb { background:#1a3a5c; border-radius:3px; }
+  #settings-modal { display:none; }
+  #settings-modal.open { display:flex; }
+</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+
+<!-- ── Settings modal ─────────────────────────────────────────── -->
+<div id="settings-modal" class="fixed inset-0 bg-black/70 z-50 items-center justify-center">
+  <div class="card p-6 w-full max-w-md mx-4 space-y-4">
+    <h2 class="text-lg font-bold text-white">⚙ Rig Settings</h2>
+    <div>
+      <label class="text-xs text-slate-400">Rig 1 Name</label>
+      <input id="cfg-name1" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white" value="Zappa1">
+    </div>
+    <div>
+      <label class="text-xs text-slate-400">Rig 1 API URL (e.g. http://141.152.237.39:8080)</label>
+      <input id="cfg-url1" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="http://141.152.237.39:8080">
+    </div>
+    <div>
+      <label class="text-xs text-slate-400">Rig 2 Name</label>
+      <input id="cfg-name2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white" value="Zappa2">
+    </div>
+    <div>
+      <label class="text-xs text-slate-400">Rig 2 API URL (e.g. http://141.152.237.39:8081)</label>
+      <input id="cfg-url2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="http://141.152.237.39:8081">
+    </div>
+    <div class="flex gap-3 pt-2">
+      <button onclick="saveSettings()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 rounded">Save & Refresh</button>
+      <button onclick="closeSettings()" class="px-4 bg-slate-700 hover:bg-slate-600 text-sm rounded">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Header ─────────────────────────────────────────────────── -->
+<div class="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <span class="text-2xl">⚡</span>
+    <div>
+      <h1 class="text-lg font-bold text-white">GPU Rig Dashboard</h1>
+      <p class="text-xs text-slate-500" id="last-updated">Loading…</p>
+    </div>
+  </div>
+  <div class="flex items-center gap-3">
+    <!-- Rig status pills -->
+    <span id="pill-rig1" class="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full badge-blue cursor-pointer" onclick="drilldown(0)">
+      <span class="w-2 h-2 rounded-full bg-slate-500"></span> <span id="pill-name1">Zappa1</span>
+    </span>
+    <span id="pill-rig2" class="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full badge-blue cursor-pointer" onclick="drilldown(1)">
+      <span class="w-2 h-2 rounded-full bg-slate-500"></span> <span id="pill-name2">Zappa2</span>
+    </span>
+    <span class="text-xs text-slate-500 font-mono"><span id="countdown">60</span>s</span>
+    <button onclick="openSettings()" class="text-slate-400 hover:text-white text-lg">⚙</button>
+  </div>
+</div>
+
+<!-- ════════════════════ COMBINED VIEW ════════════════════════════ -->
+<div id="view-combined">
+
+  <!-- Summary stats -->
+  <div class="p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="card p-4">
+      <p class="text-xs text-slate-500 mb-1">Total Revenue Today</p>
+      <p class="text-2xl font-bold text-emerald-400" id="c-revenue">—</p>
+      <p class="text-xs text-slate-500 mt-1" id="c-revenue-sub"></p>
+    </div>
+    <div class="card p-4">
+      <p class="text-xs text-slate-500 mb-1">Active Rentals</p>
+      <p class="text-lg font-bold text-white" id="c-rental">—</p>
+      <p class="text-xs text-slate-500 mt-1" id="c-rental-sub"></p>
+    </div>
+    <div class="card p-4">
+      <p class="text-xs text-slate-500 mb-1">Combined Avg Temp</p>
+      <p class="text-2xl font-bold" id="c-temp">—</p>
+      <p class="text-xs text-slate-500 mt-1" id="c-temp-sub"></p>
+    </div>
+    <div class="card p-4">
+      <p class="text-xs text-slate-500 mb-1">Price Changes Today</p>
+      <p class="text-2xl font-bold text-violet-400" id="c-prices">—</p>
+      <p class="text-xs text-slate-500 mt-1" id="c-prices-sub"></p>
+    </div>
+  </div>
+
+  <!-- Rig cards (clickable) -->
+  <div class="px-6 pb-4">
+    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rigs — click to drill down</p>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card rig-card p-5" id="rig-card-0" onclick="drilldown(0)">
+        <div class="flex items-start justify-between mb-4">
+          <div>
+            <p class="text-xs text-slate-500" id="rc0-sub">—</p>
+            <h2 class="text-xl font-bold text-white" id="rc0-name">Zappa1</h2>
+          </div>
+          <span id="rc0-status" class="text-xs px-2 py-1 rounded-full badge-blue">—</span>
+        </div>
+        <div class="grid grid-cols-3 gap-3 mb-4" id="rc0-stats">
+          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Avg Temp</p><p class="text-lg font-bold" id="rc0-temp">—</p></div>
+          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Power</p><p class="text-lg font-bold text-blue-400" id="rc0-power">—</p></div>
+          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Revenue</p><p class="text-lg font-bold text-emerald-400" id="rc0-rev">—</p></div>
+        </div>
+        <div id="rc0-gpus" class="space-y-1.5"></div>
+        <p class="text-xs text-blue-400 mt-3 text-right">View full details →</p>
+      </div>
+      <div class="card rig-card p-5" id="rig-card-1" onclick="drilldown(1)">
+        <div class="flex items-start justify-between mb-4">
+          <div>
+            <p class="text-xs text-slate-500" id="rc1-sub">—</p>
+            <h2 class="text-xl font-bold text-white" id="rc1-name">Zappa2</h2>
+          </div>
+          <span id="rc1-status" class="text-xs px-2 py-1 rounded-full badge-blue">—</span>
+        </div>
+        <div class="grid grid-cols-3 gap-3 mb-4">
+          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Avg Temp</p><p class="text-lg font-bold" id="rc1-temp">—</p></div>
+          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Power</p><p class="text-lg font-bold text-blue-400" id="rc1-power">—</p></div>
+          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Revenue</p><p class="text-lg font-bold text-emerald-400" id="rc1-rev">—</p></div>
+        </div>
+        <div id="rc1-gpus" class="space-y-1.5"></div>
+        <p class="text-xs text-blue-400 mt-3 text-right">View full details →</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Combined charts -->
+  <div class="px-6 pb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Temperature — Both Rigs (24h)</h2>
+      <canvas id="chart-c-temp"></canvas>
+    </div>
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Daily Revenue — Both Rigs (7d)</h2>
+      <canvas id="chart-c-rev"></canvas>
+    </div>
+  </div>
+
+  <!-- Combined event feed -->
+  <div class="px-6 pb-6">
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Live Event Feed — Both Rigs</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-slate-500 text-xs border-b border-slate-800">
+            <th class="text-left py-2 pr-3">Time</th>
+            <th class="text-left py-2 pr-3">Rig</th>
+            <th class="text-left py-2 pr-3">Type</th>
+            <th class="text-left py-2">Details</th>
+          </tr></thead>
+          <tbody id="c-events" class="divide-y divide-slate-800/50"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════ RIG DRILLDOWN VIEW ═══════════════════════ -->
+<div id="view-rig" class="hidden">
+
+  <!-- Back bar -->
+  <div class="px-6 py-3 border-b border-slate-800 flex items-center gap-4">
+    <button onclick="backToCombined()" class="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-1">← All Rigs</button>
+    <h2 class="text-base font-bold text-white" id="rig-detail-title">Zappa1</h2>
+    <span id="rig-detail-status" class="text-xs px-2 py-0.5 rounded-full badge-green"></span>
+  </div>
+
+  <!-- Per-rig tabs -->
+  <div class="flex gap-1 px-6 pt-4 border-b border-slate-800">
+    <button onclick="showRigTab('overview')" id="rtab-overview" class="tab-active px-4 py-2 text-sm font-medium rounded-t-lg">Overview</button>
+    <button onclick="showRigTab('daily')"    id="rtab-daily"    class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Daily</button>
+    <button onclick="showRigTab('weekly')"   id="rtab-weekly"   class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Weekly</button>
+  </div>
+
+  <!-- Rig Overview -->
+  <div id="rtab-content-overview" class="p-6 space-y-6">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Revenue Today</p><p class="text-2xl font-bold text-emerald-400" id="r-revenue">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Rental Status</p><p class="text-lg font-bold" id="r-rental">—</p><p class="text-xs text-slate-500" id="r-rental-sub"></p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Avg GPU Temp</p><p class="text-2xl font-bold" id="r-temp">—</p><p class="text-xs text-slate-500" id="r-temp-sub"></p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Price Changes</p><p class="text-2xl font-bold text-violet-400" id="r-prices">—</p></div>
+    </div>
+    <div>
+      <h3 class="text-sm font-semibold text-slate-400 mb-3">GPU Status</h3>
+      <div id="r-gpu-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Temperature — 24h</h3><canvas id="chart-r-temp24"></canvas></div>
+      <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Ask Price — 7d</h3><canvas id="chart-r-price7"></canvas></div>
+    </div>
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3">Recent Events</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-xs text-slate-500 border-b border-slate-800"><th class="text-left py-2 pr-4">Time</th><th class="text-left py-2 pr-4">Type</th><th class="text-left py-2">Details</th></tr></thead>
+          <tbody id="r-events" class="divide-y divide-slate-800/50"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rig Daily -->
+  <div id="rtab-content-daily" class="p-6 space-y-6 hidden">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Revenue Today</p><p class="text-2xl font-bold text-emerald-400" id="rd-revenue">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Rentals</p><p class="text-2xl font-bold text-blue-400" id="rd-rentals">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Temp Warnings</p><p class="text-2xl font-bold text-amber-400" id="rd-warns">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Price Adj.</p><p class="text-2xl font-bold text-violet-400" id="rd-prices">—</p></div>
+    </div>
+    <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Hourly Revenue — Today</h3><canvas id="chart-rd-rev"></canvas></div>
+    <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Rental Sessions</h3><div id="rd-rentals-list" class="text-sm space-y-1"></div></div>
+    <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Price Adjustments</h3><div id="rd-prices-list" class="text-sm space-y-1"></div></div>
+  </div>
+
+  <!-- Rig Weekly -->
+  <div id="rtab-content-weekly" class="p-6 space-y-6 hidden">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Revenue (7d)</p><p class="text-2xl font-bold text-emerald-400" id="rw-revenue">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Total Rentals</p><p class="text-2xl font-bold text-blue-400" id="rw-rentals">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Avg/Day</p><p class="text-2xl font-bold text-emerald-300" id="rw-avg">—</p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Price Adj.</p><p class="text-2xl font-bold text-violet-400" id="rw-prices">—</p></div>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Daily Revenue — 7d</h3><canvas id="chart-rw-rev"></canvas></div>
+      <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Temperature Trend — 7d</h3><canvas id="chart-rw-temp"></canvas></div>
+    </div>
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3">Weekly Summary</h3>
+      <div id="rw-summary"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────
+const DEFAULT_RIGS = [
+  { name:"Zappa1", url:"http://141.152.237.39:8080" },
+  { name:"Zappa2", url:"http://141.152.237.39:8081" },
+];
+
+function loadConfig() {
+  try { return JSON.parse(localStorage.getItem("rig_config")) || DEFAULT_RIGS; }
+  catch { return DEFAULT_RIGS; }
+}
+function saveConfig(cfg) { localStorage.setItem("rig_config", JSON.stringify(cfg)); }
+
+// ── State ────────────────────────────────────────────────────────────
+let RIGS = loadConfig();
+let DATA = [{events:[]}, {events:[]}];
+let activeRig = -1;  // -1 = combined, 0 = zappa1, 1 = zappa2
+let activeRigTab = "overview";
+let CHARTS = {};
+let countdown = 60;
+
+// ── Settings modal ───────────────────────────────────────────────────
+function openSettings() {
+  document.getElementById("cfg-name1").value = RIGS[0]?.name || "";
+  document.getElementById("cfg-url1").value  = RIGS[0]?.url  || "";
+  document.getElementById("cfg-name2").value = RIGS[1]?.name || "";
+  document.getElementById("cfg-url2").value  = RIGS[1]?.url  || "";
+  document.getElementById("settings-modal").classList.add("open");
+}
+function closeSettings() { document.getElementById("settings-modal").classList.remove("open"); }
+function saveSettings() {
+  RIGS = [
+    { name: document.getElementById("cfg-name1").value, url: document.getElementById("cfg-url1").value },
+    { name: document.getElementById("cfg-name2").value, url: document.getElementById("cfg-url2").value },
+  ];
+  saveConfig(RIGS);
+  closeSettings();
+  fetchAll();
+}
+
+// ── Fetch ────────────────────────────────────────────────────────────
+async function fetchRig(idx) {
+  const rig = RIGS[idx];
+  try {
+    const r = await fetch(rig.url + "/api/data?" + Date.now(), { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(r.status);
+    DATA[idx] = await r.json();
+    DATA[idx].online = true;
+  } catch {
+    DATA[idx] = DATA[idx] || { events: [] };
+    DATA[idx].online = false;
+  }
+  updatePill(idx);
+}
+
+async function fetchAll() {
+  await Promise.all([fetchRig(0), fetchRig(1)]);
+  document.getElementById("last-updated").textContent = "Last updated: " + new Date().toLocaleTimeString();
+  render();
+}
+
+function updatePill(idx) {
+  const rig = RIGS[idx];
+  const online = DATA[idx]?.online;
+  const el = document.getElementById("pill-rig" + (idx+1));
+  el.className = "inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full cursor-pointer " + (online ? "badge-green" : "badge-red");
+  el.querySelector("span").className = "w-2 h-2 rounded-full " + (online ? "bg-green-400 animate-pulse" : "bg-red-400");
+  document.getElementById("pill-name" + (idx+1)).textContent = rig.name;
+}
+
+// ── Navigation ───────────────────────────────────────────────────────
+function drilldown(idx) {
+  activeRig = idx;
+  document.getElementById("view-combined").classList.add("hidden");
+  document.getElementById("view-rig").classList.remove("hidden");
+  document.getElementById("rig-detail-title").textContent = RIGS[idx].name;
+  showRigTab("overview");
+}
+function backToCombined() {
+  activeRig = -1;
+  document.getElementById("view-combined").classList.remove("hidden");
+  document.getElementById("view-rig").classList.add("hidden");
+  render();
+}
+function showRigTab(name) {
+  activeRigTab = name;
+  ["overview","daily","weekly"].forEach(t => {
+    document.getElementById("rtab-content-" + t).classList.toggle("hidden", t !== name);
+    const el = document.getElementById("rtab-" + t);
+    el.className = t === name ? "tab-active px-4 py-2 text-sm font-medium rounded-t-lg"
+                              : "tab-idle px-4 py-2 text-sm font-medium rounded-t-lg";
+  });
+  renderRig(activeRig);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+const fmtUSD  = v => "$" + Number(v).toFixed(2);
+const fmtTS   = ts => new Date(ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+const fmtDate = ts => new Date(ts).toLocaleDateString([],{month:"short",day:"numeric"});
+const today   = () => { const d=new Date(); d.setHours(0,0,0,0); return d; };
+const daysAgo = n  => { const d=new Date(); d.setDate(d.getDate()-n); d.setHours(0,0,0,0); return d; };
+
+function eventsToday(events) { const c=today().toISOString(); return events.filter(e=>e.ts>=c); }
+function eventsIn(events, days) { const c=daysAgo(days).toISOString(); return events.filter(e=>e.ts>=c); }
+
+function tempClass(t) { return t>75?"temp-hot":t>65?"temp-warn":"temp-ok"; }
+
+function computeRevenue(events) {
+  const starts = events.filter(e=>e.type==="rental_start");
+  const ends   = events.filter(e=>e.type==="rental_end");
+  let total = 0;
+  starts.forEach(s => {
+    const end  = ends.find(e=>e.instance_id===s.instance_id && e.ts>s.ts);
+    const rate = parseFloat((s.rate||"0").replace(/[^0-9.]/g,"")) || 0;
+    const hrs  = end ? (new Date(end.ts)-new Date(s.ts))/3600000 : 0;
+    total += rate * hrs;
+  });
+  return total;
+}
+
+function lastGPUStatus(events) {
+  return [...events].filter(e=>e.type==="gpu_status").pop();
+}
+
+function eventBadge(type) {
+  const m = {gpu_status:["badge-blue","GPU"],temp_warning:["badge-red","🌡️ TEMP"],
+    rental_start:["badge-green","▶ RENTED"],rental_end:["badge-yellow","■ ENDED"],
+    price_change:["badge-purple","💰 PRICE"],startup:["badge-blue","🚀 START"]};
+  const [cls,lbl] = m[type]||["badge-blue",type];
+  return `<span class="text-xs px-2 py-0.5 rounded font-medium ${cls}">${lbl}</span>`;
+}
+
+function eventDetail(e) {
+  if (e.type==="gpu_status" && e.gpus) return e.gpus.map(g=>`GPU${g.idx} ${g.temp}°C ${g.power_draw}W Fan:${g.fan}%`).join(" | ");
+  if (e.type==="price_change") return `${e.gpu_name} x${e.num_gpus} $${e.old_price}→$${e.new_price}/hr`;
+  if (e.type==="rental_start") return `${e.gpus} @ ${e.rate}`;
+  if (e.type==="rental_end")   return `${e.gpus} ended`;
+  if (e.type==="temp_warning") return `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
+  if (e.type==="startup") return `Power ${e.power_limit}W threshold ${e.temp_threshold}°C`;
+  return "";
+}
+
+// ── Chart helpers ─────────────────────────────────────────────────────
+function dc(id) { if(CHARTS[id]){CHARTS[id].destroy();delete CHARTS[id];} }
+
+function lineChart(id, labels, datasets, yOpts={}) {
+  dc(id);
+  const el = document.getElementById(id); if(!el) return;
+  CHARTS[id] = new Chart(el, {type:"line",data:{labels,datasets},options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{legend:{labels:{color:"#94a3b8",font:{size:10}}}},
+    scales:{
+      x:{ticks:{color:"#475569",maxTicksLimit:6},grid:{color:"#0f2333"}},
+      y:{ticks:{color:"#475569"},grid:{color:"#0f2333"},...yOpts}
+    },
+    elements:{point:{radius:1.5},line:{tension:0.3}}
+  }});
+}
+
+function barChart(id, labels, datasets) {
+  dc(id);
+  const el = document.getElementById(id); if(!el) return;
+  CHARTS[id] = new Chart(el, {type:"bar",data:{labels,datasets},options:{
+    responsive:true,maintainAspectRatio:true,
+    plugins:{legend:{labels:{color:"#94a3b8",font:{size:10}}}},
+    scales:{
+      x:{ticks:{color:"#475569"},grid:{color:"#0f2333"}},
+      y:{ticks:{color:"#475569"},grid:{color:"#0f2333"},beginAtZero:true}
+    }
+  }});
+}
+
+// ── Render combined ───────────────────────────────────────────────────
+function renderCombined() {
+  const allEvs = [
+    ...DATA[0].events.map(e=>({...e,_rig:0})),
+    ...DATA[1].events.map(e=>({...e,_rig:1})),
+  ].sort((a,b)=>a.ts<b.ts?-1:1);
+
+  const todayEvs = eventsToday(allEvs);
+  const rev = DATA.reduce((s,d)=>s+computeRevenue(eventsToday(d.events)),0);
+  document.getElementById("c-revenue").textContent = fmtUSD(rev);
+  document.getElementById("c-revenue-sub").textContent = DATA.map((d,i)=>RIGS[i].name+": "+fmtUSD(computeRevenue(eventsToday(d.events)))).join(" · ");
+
+  // Rental status across both rigs
+  const rentedRigs = DATA.map((d,i) => {
+    const last = [...d.events].filter(e=>e.type==="rental_start").pop();
+    const end  = [...d.events].filter(e=>e.type==="rental_end").pop();
+    return last && (!end||end.ts<last.ts);
+  }).filter(Boolean).length;
+  document.getElementById("c-rental").textContent = rentedRigs ? rentedRigs+" Rig(s) Active" : "All Available";
+  document.getElementById("c-rental-sub").textContent = RIGS.map((r,i)=>{
+    const last = [...DATA[i].events].filter(e=>e.type==="rental_start").pop();
+    const end  = [...DATA[i].events].filter(e=>e.type==="rental_end").pop();
+    return r.name + ": " + (last&&(!end||end.ts<last.ts)?"● Active":"○ Free");
+  }).join(" · ");
+
+  // Avg temp
+  const allLast = DATA.map(d=>lastGPUStatus(d.events)).filter(Boolean);
+  const allTemps = allLast.flatMap(s=>s.gpus||[]).map(g=>g.temp);
+  if (allTemps.length) {
+    const avg = Math.round(allTemps.reduce((a,b)=>a+b,0)/allTemps.length);
+    const el = document.getElementById("c-temp");
+    el.textContent = avg+"°C";
+    el.className = "text-2xl font-bold "+tempClass(avg);
+    document.getElementById("c-temp-sub").textContent = "Max: "+Math.max(...allTemps)+"°C";
+  }
+
+  const priceChanges = todayEvs.filter(e=>e.type==="price_change");
+  document.getElementById("c-prices").textContent = priceChanges.length;
+  document.getElementById("c-prices-sub").textContent = DATA.map((d,i)=>RIGS[i].name+": "+eventsToday(d.events).filter(e=>e.type==="price_change").length).join(" · ");
+
+  // Render rig summary cards
+  DATA.forEach((d,i) => renderRigCard(i, d));
+
+  // Combined temp chart (24h)
+  const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399","#818cf8","#fb923c"];
+  const tempEvs24 = DATA.map(d=>eventsIn(d.events,1).filter(e=>e.type==="gpu_status"));
+  const allTempEvs = [...tempEvs24[0].map(e=>({...e,_rig:0})),...tempEvs24[1].map(e=>({...e,_rig:1}))].sort((a,b)=>a.ts<b.ts?-1:1);
+  if (allTempEvs.length) {
+    const labels = allTempEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts));
+    const datasets = DATA.flatMap((d,ri)=>{
+      const ev = tempEvs24[ri]; if(!ev.length) return [];
+      const gpuCount = ev[0].gpus?.length||0;
+      return Array.from({length:gpuCount},(_,gi)=>({
+        label: RIGS[ri].name+" GPU"+gi,
+        data: allTempEvs.map(e=>e._rig===ri?ev.find(x=>x.ts===e.ts)?.gpus?.[gi]?.temp??null:null),
+        borderColor: colors[(ri*4+gi)%colors.length],
+        backgroundColor:"transparent", fill:false,
+      }));
+    });
+    lineChart("chart-c-temp", labels, datasets, {suggestedMin:40,suggestedMax:90});
+  }
+
+  // Combined revenue bar chart (7d)
+  const days = Array.from({length:7},(_,i)=>daysAgo(6-i));
+  const dayLabels = days.map(d=>d.toLocaleDateString([],{weekday:"short",day:"numeric"}));
+  barChart("chart-c-rev", dayLabels, DATA.map((d,ri)=>({
+    label: RIGS[ri].name,
+    data: days.map(day=>{
+      const next=new Date(day); next.setDate(next.getDate()+1);
+      return parseFloat(computeRevenue(d.events.filter(e=>e.ts>=day.toISOString()&&e.ts<next.toISOString())).toFixed(4));
+    }),
+    backgroundColor: ri===0?"#22c55e99":"#3b82f699",
+    borderColor: ri===0?"#22c55e":"#3b82f6",
+    borderWidth:1, borderRadius:4,
+  })));
+
+  // Combined events table
+  const tbody = document.getElementById("c-events");
+  const recent = [...allEvs].reverse().slice(0,60);
+  tbody.innerHTML = recent.map(e=>`<tr class="hover:bg-slate-800/30">
+    <td class="py-1.5 pr-3 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
+    <td class="py-1.5 pr-3"><span class="text-xs px-2 py-0.5 rounded ${e._rig===0?'bg-emerald-900/50 text-emerald-400 border border-emerald-800':'bg-blue-900/50 text-blue-400 border border-blue-800'}">${RIGS[e._rig].name}</span></td>
+    <td class="py-1.5 pr-3">${eventBadge(e.type)}</td>
+    <td class="py-1.5 text-xs text-slate-400">${eventDetail(e)}</td>
+  </tr>`).join("");
+}
+
+function renderRigCard(idx, d) {
+  const last = lastGPUStatus(d.events);
+  const online = d.online !== false;
+  const todayEvs = eventsToday(d.events);
+
+  document.getElementById("rc"+idx+"-name").textContent = RIGS[idx].name;
+  document.getElementById("rc"+idx+"-sub").textContent = last ? (last.gpus?.length||0)+"x GPU" : "No data";
+
+  const statusEl = document.getElementById("rc"+idx+"-status");
+  statusEl.textContent = online ? "● Online" : "○ Offline";
+  statusEl.className = "text-xs px-2 py-1 rounded-full " + (online ? "badge-green" : "badge-red");
+
+  if (last && last.gpus?.length) {
+    const temps = last.gpus.map(g=>g.temp);
+    const powers = last.gpus.map(g=>g.power_draw);
+    const avg = Math.round(temps.reduce((a,b)=>a+b,0)/temps.length);
+    const totalPow = powers.reduce((a,b)=>a+b,0);
+    const tEl = document.getElementById("rc"+idx+"-temp");
+    tEl.textContent = avg+"°C"; tEl.className = "text-lg font-bold "+tempClass(avg);
+    document.getElementById("rc"+idx+"-power").textContent = totalPow+"W";
+
+    // Mini GPU rows
+    document.getElementById("rc"+idx+"-gpus").innerHTML = last.gpus.map(g=>`
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-500 w-10">GPU${g.idx}</span>
+        <div class="flex-1 bg-slate-800 rounded-full h-1"><div class="h-1 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div>
+        <span class="${tempClass(g.temp)} w-10 text-right">${g.temp}°C</span>
+        <span class="text-slate-500 w-14 text-right">${g.power_draw}W</span>
+        <span class="text-slate-600 w-10 text-right">F${g.fan}%</span>
+      </div>`).join("");
+  }
+
+  document.getElementById("rc"+idx+"-rev").textContent = fmtUSD(computeRevenue(todayEvs));
+}
+
+// ── Render single rig drilldown ───────────────────────────────────────
+function renderRig(idx) {
+  const d = DATA[idx];
+  const events = d.events || [];
+  const todayEvs = eventsToday(events);
+  const weekEvs  = eventsIn(events, 7);
+
+  const online = d.online !== false;
+  document.getElementById("rig-detail-status").textContent = online ? "● Online" : "○ Offline";
+  document.getElementById("rig-detail-status").className = "text-xs px-2 py-0.5 rounded-full " + (online?"badge-green":"badge-red");
+
+  const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399","#818cf8","#fb923c"];
+
+  if (activeRigTab === "overview") {
+    document.getElementById("r-revenue").textContent = fmtUSD(computeRevenue(todayEvs));
+    const lastRent = [...events].filter(e=>e.type==="rental_start").pop();
+    const lastEnd  = [...events].filter(e=>e.type==="rental_end").pop();
+    const isRented = lastRent && (!lastEnd||lastEnd.ts<lastRent.ts);
+    document.getElementById("r-rental").innerHTML = isRented ? '<span class="text-emerald-400">● Active</span>' : '<span class="text-slate-500">○ Available</span>';
+    document.getElementById("r-rental-sub").textContent = isRented ? (lastRent.gpus||"")+" @ "+(lastRent.rate||"") : "";
+
+    const last = lastGPUStatus(events);
+    if (last?.gpus?.length) {
+      const avg = Math.round(last.gpus.reduce((a,g)=>a+g.temp,0)/last.gpus.length);
+      const tEl = document.getElementById("r-temp");
+      tEl.textContent = avg+"°C"; tEl.className = "text-2xl font-bold "+tempClass(avg);
+      document.getElementById("r-temp-sub").textContent = todayEvs.filter(e=>e.type==="temp_warning").length+" warning(s) today";
+
+      document.getElementById("r-gpu-cards").innerHTML = last.gpus.map(g=>`
+        <div class="card p-4 space-y-3">
+          <div class="flex justify-between"><div><p class="text-xs text-slate-500">GPU ${g.idx}</p><p class="text-sm font-semibold">${g.name}</p></div><span class="text-xl font-bold ${tempClass(g.temp)}">${g.temp}°C</span></div>
+          <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Temp</span><span>${g.temp}°C</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div></div>
+          <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Power</span><span>${g.power_draw}W / ${g.power_limit}W</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill bg-blue-500" style="width:${Math.min(Math.round(g.power_draw/g.power_limit*100),100)}%"></div></div></div>
+          <div class="flex justify-between text-xs text-slate-400"><span>Fan <b>${g.fan}%</b></span><span class="${tempClass(g.temp)}">${g.temp>75?"HOT":g.temp>65?"WARM":"OK"}</span></div>
+        </div>`).join("");
+    }
+    document.getElementById("r-prices").textContent = todayEvs.filter(e=>e.type==="price_change").length;
+
+    const tempEvs = eventsIn(events,1).filter(e=>e.type==="gpu_status");
+    if (tempEvs.length) {
+      const gpuCount = tempEvs[0].gpus?.length||0;
+      lineChart("chart-r-temp24", tempEvs.map(e=>fmtTS(e.ts)),
+        Array.from({length:gpuCount},(_,i)=>({label:"GPU "+i, data:tempEvs.map(e=>e.gpus?.[i]?.temp??null), borderColor:colors[i], backgroundColor:"transparent", fill:false})),
+        {suggestedMin:40,suggestedMax:90});
+    }
+    const priceEvs = eventsIn(events,7).filter(e=>e.type==="price_change");
+    if (priceEvs.length) lineChart("chart-r-price7", priceEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts)),
+      [{label:"Ask $/hr",data:priceEvs.map(e=>e.new_price),borderColor:"#c084fc",backgroundColor:"#c084fc20",fill:true}]);
+
+    const tbody = document.getElementById("r-events");
+    tbody.innerHTML = [...events].reverse().slice(0,50).map(e=>`<tr class="hover:bg-slate-800/30">
+      <td class="py-1.5 pr-4 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
+      <td class="py-1.5 pr-4">${eventBadge(e.type)}</td>
+      <td class="py-1.5 text-xs text-slate-400">${eventDetail(e)}</td>
+    </tr>`).join("");
+  }
+
+  if (activeRigTab === "daily") {
+    document.getElementById("rd-revenue").textContent = fmtUSD(computeRevenue(todayEvs));
+    document.getElementById("rd-rentals").textContent = todayEvs.filter(e=>e.type==="rental_start").length;
+    document.getElementById("rd-warns").textContent   = todayEvs.filter(e=>e.type==="temp_warning").length;
+    document.getElementById("rd-prices").textContent  = todayEvs.filter(e=>e.type==="price_change").length;
+
+    const hours = Array.from({length:24},(_,i)=>i);
+    const starts = todayEvs.filter(e=>e.type==="rental_start");
+    const ends   = todayEvs.filter(e=>e.type==="rental_end");
+    barChart("chart-rd-rev", hours.map(h=>h.toString().padStart(2,"0")+":00"), [{
+      label:"Revenue/hr", backgroundColor:"#22c55e99", borderColor:"#22c55e", borderWidth:1, borderRadius:4,
+      data: hours.map(h=>{
+        let v=0; starts.forEach(s=>{
+          const end=ends.find(e=>e.instance_id===s.instance_id&&e.ts>s.ts);
+          const rate=parseFloat((s.rate||"0").replace(/[^0-9.]/g,""))||0;
+          const sh=new Date(s.ts).getHours(), eh=end?new Date(end.ts).getHours():new Date().getHours();
+          if(sh<=h&&h<=eh) v+=rate;
+        });
+        return parseFloat(v.toFixed(4));
+      }),
+    }]);
+
+    const rDiv = document.getElementById("rd-rentals-list");
+    rDiv.innerHTML = starts.length ? starts.map(s=>{
+      const e=ends.find(x=>x.instance_id===s.instance_id&&x.ts>s.ts);
+      const dur=e?((new Date(e.ts)-new Date(s.ts))/3600000).toFixed(1)+"h":"ongoing";
+      return `<div class="flex justify-between py-2 border-b border-slate-800/50 text-sm">
+        <span><span class="badge-green px-2 py-0.5 rounded text-xs">▶ ${fmtTS(s.ts)}</span> <span class="text-slate-300 ml-2">${s.gpus||""}</span></span>
+        <span><span class="text-emerald-400 font-mono">${s.rate||""}</span> <span class="text-slate-500 text-xs ml-2">${dur}</span></span>
+      </div>`;
+    }).join("") : '<p class="text-slate-500">No rentals today.</p>';
+
+    const pDiv = document.getElementById("rd-prices-list");
+    const pEvs = todayEvs.filter(e=>e.type==="price_change");
+    pDiv.innerHTML = pEvs.length ? pEvs.map(p=>`
+      <div class="flex justify-between py-2 border-b border-slate-800/50 text-sm">
+        <span class="text-slate-500 text-xs">${fmtTS(p.ts)} — ${p.gpu_name||""} x${p.num_gpus||""}</span>
+        <span class="font-mono"><span class="text-slate-400">$${p.old_price}</span> → <span class="${parseFloat(p.new_price)>parseFloat(p.old_price)?'text-emerald-400':'text-amber-400'}">$${p.new_price}</span></span>
+      </div>`).join("") : '<p class="text-slate-500">No price changes today.</p>';
+  }
+
+  if (activeRigTab === "weekly") {
+    const rev7 = computeRevenue(weekEvs);
+    document.getElementById("rw-revenue").textContent = fmtUSD(rev7);
+    document.getElementById("rw-rentals").textContent = weekEvs.filter(e=>e.type==="rental_start").length;
+    document.getElementById("rw-avg").textContent     = fmtUSD(rev7/7)+"/d";
+    document.getElementById("rw-prices").textContent  = weekEvs.filter(e=>e.type==="price_change").length;
+
+    const days = Array.from({length:7},(_,i)=>daysAgo(6-i));
+    const dayLabels = days.map(d=>d.toLocaleDateString([],{weekday:"short",day:"numeric"}));
+    barChart("chart-rw-rev", dayLabels, [{
+      label:"Revenue ($)", backgroundColor:"#22c55e99", borderColor:"#22c55e", borderWidth:1, borderRadius:4,
+      data: days.map(day=>{
+        const next=new Date(day); next.setDate(next.getDate()+1);
+        return parseFloat(computeRevenue(events.filter(e=>e.ts>=day.toISOString()&&e.ts<next.toISOString())).toFixed(4));
+      }),
+    }]);
+
+    const tempEvs = weekEvs.filter(e=>e.type==="gpu_status");
+    if (tempEvs.length) {
+      const gc = tempEvs[0].gpus?.length||0;
+      lineChart("chart-rw-temp", tempEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts)),
+        Array.from({length:gc},(_,i)=>({label:"GPU "+i,data:tempEvs.map(e=>e.gpus?.[i]?.temp??null),borderColor:colors[i],backgroundColor:"transparent",fill:false})));
+    }
+
+    const summary = days.map(d=>{
+      const next=new Date(d); next.setDate(next.getDate()+1);
+      const de=events.filter(e=>e.ts>=d.toISOString()&&e.ts<next.toISOString());
+      return {label:d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}),
+        rev:computeRevenue(de),rents:de.filter(e=>e.type==="rental_start").length,
+        warns:de.filter(e=>e.type==="temp_warning").length,prices:de.filter(e=>e.type==="price_change").length};
+    });
+    document.getElementById("rw-summary").innerHTML = `<table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+        <th class="text-left py-2">Day</th><th class="text-right py-2">Revenue</th>
+        <th class="text-right py-2">Rentals</th><th class="text-right py-2">Temp Warns</th><th class="text-right py-2">Price Adj</th>
+      </tr></thead>
+      <tbody class="divide-y divide-slate-800/50">
+        ${summary.map(r=>`<tr class="hover:bg-slate-800/20"><td class="py-2 text-slate-300">${r.label}</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(r.rev)}</td>
+          <td class="py-2 text-right text-blue-400">${r.rents}</td>
+          <td class="py-2 text-right ${r.warns>0?"text-amber-400":"text-slate-600"}">${r.warns}</td>
+          <td class="py-2 text-right text-violet-400">${r.prices}</td></tr>`).join("")}
+        <tr class="border-t border-slate-700 font-semibold">
+          <td class="py-2 text-white">Total</td>
+          <td class="py-2 text-right font-mono text-emerald-400">${fmtUSD(summary.reduce((a,r)=>a+r.rev,0))}</td>
+          <td class="py-2 text-right text-blue-400">${summary.reduce((a,r)=>a+r.rents,0)}</td>
+          <td class="py-2 text-right text-amber-400">${summary.reduce((a,r)=>a+r.warns,0)}</td>
+          <td class="py-2 text-right text-violet-400">${summary.reduce((a,r)=>a+r.prices,0)}</td>
+        </tr>
+      </tbody></table>`;
+  }
+}
+
+// ── Master render ─────────────────────────────────────────────────────
+function render() {
+  if (activeRig === -1) renderCombined();
+  else renderRig(activeRig);
+}
+
+// ── Countdown + auto-refresh ──────────────────────────────────────────
+setInterval(()=>{
+  countdown--;
+  document.getElementById("countdown").textContent = countdown;
+  if(countdown<=0){ countdown=60; fetchAll(); }
+},1000);
+
+// ── Boot ──────────────────────────────────────────────────────────────
+// Show settings if no config set yet
+if (!localStorage.getItem("rig_config")) openSettings();
+else fetchAll();
+</script>
+</body>
+</html>
