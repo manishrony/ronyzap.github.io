@@ -8,7 +8,8 @@
 # - Rental events (start/end) always alert on Telegram
 # - Max rental capped at 5 days per pricing update
 
-set -euo pipefail
+# Intentionally no set -euo pipefail — this is a resilient daemon that
+# must survive API errors, transient network failures, and bad GPU readings.
 
 LOG_FILE="/var/log/gpu_monitor.log"
 JSONL_FILE="/var/log/gpu_monitor_data.jsonl"
