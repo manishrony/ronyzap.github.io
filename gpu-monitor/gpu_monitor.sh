@@ -44,7 +44,7 @@ MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 # Logging + structured JSON events
 # ─────────────────────────────────────────────
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
 }
 
 # Append a JSON event to the JSONL data file for the dashboard
@@ -490,22 +490,25 @@ vastai_get_machines() {
 
 vastai_market_price() {
     local gpu_name="$1"
-    local url
-    url="$VASTAI_API/asks/?gpu_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name")&rentable=true&order=dph_total&limit=20"
-    # Use || echo fallback so curl HTTP errors don't propagate through the pipe
-    { curl -sf "$url" 2>/dev/null || echo '{"offers":[]}'; } | python3 -c "
+    local encoded_name
+    encoded_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name" 2>/dev/null || echo "$gpu_name")
+    # Try bundles endpoint (market search) with auth
+    local url="$VASTAI_API/bundles/?gpu_name=${encoded_name}&rentable=true&order=dph_total&limit=20&type=on_demand"
+    { curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" "$url" 2>/dev/null || echo '{}'; } | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    offers = data.get('offers', [])
-    prices = [o.get('dph_total', 0) for o in offers if o.get('dph_total', 0) > 0]
+    # Vast.ai returns 'offers' or 'instances' depending on endpoint
+    offers = data.get('offers', data.get('instances', []))
+    prices = [float(o.get('dph_total', 0) or 0) for o in offers if float(o.get('dph_total', 0) or 0) > 0]
     if prices:
         prices.sort()
         idx = max(0, len(prices)//4)  # 25th percentile
         print(f'{prices[idx]:.4f}')
     else:
         print('0')
-except:
+except Exception as e:
+    sys.stderr.write(f'market_price error: {e}\n')
     print('0')
 " 2>/dev/null
 }
@@ -565,8 +568,9 @@ for m in data.get('machines', []):
         market_price=$(vastai_market_price "$gpu_name") || market_price="0"
 
         if [[ -z "$market_price" || "$market_price" == "0" ]]; then
-            log "  Machine $mid: could not fetch market price, skipping"
-            continue
+            # No market data — target floor price so $0 machines get priced
+            market_price="$floor"
+            log "  Machine $mid: market price unavailable, targeting floor \$$floor"
         fi
 
         log "  Machine $mid: market 25th-pct=\$$market_price | floor=\$$floor | current=\$$cur_bid"
@@ -575,8 +579,12 @@ for m in data.get('machines', []):
         local adjust
         adjust=$(echo "scale=4; $adjust_cents / 100" | bc)
 
+        # Treat $0 bid as "way below floor" — jump straight to floor
         local new_price direction
-        if (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
+        if (( $(echo "${cur_bid:-0} < 0.01" | bc -l) )); then
+            new_price="$floor"
+            direction="↑ (was \$0 — setting to floor)"
+        elif (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
             new_price=$(echo "scale=4; $cur_bid - $adjust" | bc)
             direction="↓ (above market)"
         elif (( $(echo "$cur_bid < $market_price - 0.02" | bc -l) )); then
