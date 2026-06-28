@@ -211,12 +211,14 @@ now_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 for m in machines:
     mid      = str(m.get('id', ''))
     rented   = m.get('rented', False)
-    # Also check num_running_instances — API rented field can be stale
+    # current_rentals_resident is the reliable field; rented field can be stale
+    if int(m.get('current_rentals_resident', 0) or 0) > 0:
+        rented = True
     if int(m.get('num_running_instances', 0) or 0) > 0:
         rented = True
     gpu_name = m.get('gpu_name', 'unknown')
     num_gpus = m.get('num_gpus', 0)
-    cur_bid  = float(m.get('min_bid', 0) or 0)
+    cur_bid  = float(m.get('min_bid_price', m.get('min_bid', 0)) or 0)
 
     if not mid or not rented:
         continue
@@ -304,12 +306,13 @@ lines = []
 for m in data.get('machines', []):
     mid      = m.get('id', '?')
     rented   = m.get('rented', False)
-    # Also check num_running_instances — API rented field can be stale
+    if int(m.get('current_rentals_resident', 0) or 0) > 0:
+        rented = True
     if int(m.get('num_running_instances', 0) or 0) > 0:
         rented = True
     gpu_name = m.get('gpu_name', '?')
     num_gpus = m.get('num_gpus', 0)
-    cur_bid  = float(m.get('min_bid', 0) or 0)
+    cur_bid  = float(m.get('min_bid_price', m.get('min_bid', 0)) or 0)
     lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cur_bid:.3f}/hr')
 print('\n'.join(lines))
 " 2>/dev/null) || { log "VAST.AI: Parse error"; return; }
@@ -444,38 +447,21 @@ vastai_set_price() {
     data="{\"min_bid\": $new_price, \"listed\": true}"
     tmpf=$(mktemp)
 
-    # Attempt 1: PUT with trailing slash + api_key param
+    # v1 endpoint (read works here but update may not)
     http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Content-Type: application/json" \
         -d "$data" \
-        "$VASTAI_API/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+        "https://console.vast.ai/api/v1/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
     if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-    log "  PUT /machines/${machine_id}/ api_key HTTP ${http_code}: $(head -c 200 "$tmpf")"
+    log "  PUT v1 HTTP ${http_code}: $(head -c 200 "$tmpf")"
 
-    # Attempt 2: PUT without trailing slash + api_key param (some REST APIs redirect)
+    # v0 endpoint — Vast.ai deprecated v0 instances but machine management may still be v0
     http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Content-Type: application/json" \
         -d "$data" \
-        "$VASTAI_API/machines/${machine_id}?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+        "https://console.vast.ai/api/v0/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
     if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-    log "  PUT /machines/${machine_id} api_key HTTP ${http_code}: $(head -c 200 "$tmpf")"
-
-    # Attempt 3: PUT with Bearer token + trailing slash
-    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
-        -H "Authorization: Bearer $VASTAI_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "$data" \
-        "$VASTAI_API/machines/${machine_id}/" 2>/dev/null)
-    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-    log "  PUT /machines/${machine_id}/ Bearer HTTP ${http_code}: $(head -c 200 "$tmpf")"
-
-    # Attempt 4: PATCH (some APIs use PATCH for partial update)
-    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "$data" \
-        "$VASTAI_API/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-    log "  PATCH /machines/${machine_id}/ api_key HTTP ${http_code}: $(head -c 200 "$tmpf")"
+    log "  PUT v0 HTTP ${http_code}: $(head -c 200 "$tmpf")"
 
     rm -f "$tmpf"
     return 1
@@ -489,28 +475,20 @@ vastai_pricing() {
     local machines_json
     machines_json=$(vastai_get_machines) || { log "PRICING: Could not fetch machines"; return; }
 
-    # Debug: log ID fields from first machine to verify correct field for PUT URL
     echo "$machines_json" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-machines = data.get('machines', [])
-if machines:
-    m = machines[0]
-    id_fields = {k: v for k, v in m.items() if 'id' in k.lower() or k in ('hostname','listed','rented','min_bid')}
-    print(f'[PRICING DEBUG] Machine fields: {id_fields}')
-" 2>/dev/null >> "$LOG_FILE" || true
 
-    echo "$machines_json" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for m in data.get('machines', []):
     mid      = m.get('id', '')
     rented   = m.get('rented', False)
+    if int(m.get('current_rentals_resident', 0) or 0) > 0:
+        rented = True
     if int(m.get('num_running_instances', 0) or 0) > 0:
         rented = True
     listed   = m.get('listed', False)
     gpu_name = m.get('gpu_name', 'unknown')
-    cur_bid  = m.get('min_bid', 0)
+    cur_bid  = float(m.get('min_bid_price', m.get('min_bid', 0)) or 0)
     num_gpus = m.get('num_gpus', 1)
     print(f'{mid}|{rented}|{listed}|{gpu_name}|{cur_bid}|{num_gpus}')
 " 2>/dev/null | while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus; do
