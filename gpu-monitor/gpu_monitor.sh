@@ -165,8 +165,7 @@ vastai_init_state() {
     log "VAST.AI INIT: checking machines for active rentals..."
 
     local response tmpfile
-    response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
-        "$VASTAI_API/machines/?owner=me" 2>/dev/null) || {
+    response=$(vastai_get "$VASTAI_API/machines/") || {
         log "VAST.AI INIT: API call failed — skipping startup scan"
         return
     }
@@ -289,8 +288,7 @@ vastai_check() {
     [[ -z "$VASTAI_API_KEY" ]] && { log "VAST.AI: API key not set, skipping"; return; }
 
     local response
-    response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
-        "$VASTAI_API/machines/?owner=me" 2>/dev/null) || {
+    response=$(vastai_get "$VASTAI_API/machines/") || {
         log "VAST.AI: API call failed"; return
     }
 
@@ -325,15 +323,9 @@ print('\n'.join(lines))
             old_line=$(grep "^${mid}|" "$VASTAI_LAST_STATE_FILE" 2>/dev/null || true)
 
             if [[ -z "$old_line" ]]; then
-                # Machine not previously tracked — log it, alert if currently rented
-                log "VAST.AI: Machine $mid | $gpus | $cost | Rented: $rented"
-                if [[ "$rented" == "True" ]]; then
-                    log "VAST.AI: Machine $mid is RENTED (detected on startup)"
-                    tg_send "✅ <b>Vast.ai Rental ACTIVE</b> — $(hostname)
-Machine: <b>$mid</b> | GPUs: $gpus
-Rate: <b>$cost</b>"
-                    write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"running\"}"
-                fi
+                # Machine not in state file yet — just log current status.
+                # vastai_init_state() already backfilled rental_start on startup.
+                log "VAST.AI: Machine $mid | $gpus | $cost | Rented: $rented (first seen)"
             else
                 local old_rented
                 IFS='|' read -r _ old_rented _ _ <<< "$old_line"
@@ -401,22 +393,28 @@ get_price_floor() {
     echo "0.05"
 }
 
+# Vast.ai GET helper: /machines/ requires api_key= query param (not Bearer token).
+# Try api_key param first; fall back to Bearer for endpoints that need it.
+vastai_get() {
+    local url="$1"
+    local sep; [[ "$url" == *"?"* ]] && sep="&" || sep="?"
+    curl -sf "${url}${sep}api_key=${VASTAI_API_KEY}" 2>/dev/null || \
+    curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" "$url" 2>/dev/null
+}
+
 vastai_get_machines() {
-    curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
-        "$VASTAI_API/machines/?owner=me" 2>/dev/null || echo '{"machines":[]}'
+    vastai_get "$VASTAI_API/machines/" 2>/dev/null || echo '{"machines":[]}'
 }
 
 vastai_market_price() {
     local gpu_name="$1"
     local encoded_name
     encoded_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name" 2>/dev/null || echo "$gpu_name")
-    # Try bundles endpoint (market search) with auth
     local url="$VASTAI_API/bundles/?gpu_name=${encoded_name}&rentable=true&order=dph_total&limit=20&type=on_demand"
-    { curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" "$url" 2>/dev/null || echo '{}'; } | python3 -c "
+    { vastai_get "$url" 2>/dev/null || echo '{}'; } | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    # Vast.ai returns 'offers' or 'instances' depending on endpoint
     offers = data.get('offers', data.get('instances', []))
     prices = [float(o.get('dph_total', 0) or 0) for o in offers if float(o.get('dph_total', 0) or 0) > 0]
     if prices:
@@ -434,12 +432,18 @@ except Exception as e:
 vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
-    local end_date
+    local end_date data
     end_date=$(( $(date +%s) + MAX_RENTAL_DAYS * 86400 ))
+    data="{\"min_bid\": $new_price, \"listed\": true, \"end_date\": $end_date}"
+    # Try api_key param first, then Bearer token
+    curl -sf -X PUT \
+        -H "Content-Type: application/json" \
+        -d "$data" \
+        "$VASTAI_API/machines/${machine_id}/?api_key=${VASTAI_API_KEY}" >> "$LOG_FILE" 2>&1 || \
     curl -sf -X PUT \
         -H "Authorization: Bearer $VASTAI_API_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"min_bid\": $new_price, \"listed\": true, \"end_date\": $end_date}" \
+        -d "$data" \
         "$VASTAI_API/machines/${machine_id}/" >> "$LOG_FILE" 2>&1
 }
 
