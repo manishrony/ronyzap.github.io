@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
 # GPU Power Management Monitor
 # - Sets all GPUs to 500W on startup and every cycle
-# - Checks GPU temps every 20 minutes, alerts on Telegram if >75°C
-# - Monitors Vast.ai rental start/end every 20 min
-# - Dynamic pricing every 30 min: adjusts ask price 1-5 cents to stay
-#   competitive; skips if machine is rented; floor $0.30/hr for RTX 5090
+# - Checks GPU temps every hour; Telegram alert only if >75°C
+# - Monitors Vast.ai rental start/end every hour
+# - Syncs earnings from Vast.ai API on startup and every hour
+# - Dynamic pricing every 30 min; Telegram only on price change
+# - Rental events (start/end) always alert on Telegram
+# - Max rental capped at 5 days per pricing update
 
 set -euo pipefail
 
 LOG_FILE="/var/log/gpu_monitor.log"
+JSONL_FILE="/var/log/gpu_monitor_data.jsonl"
 TEMP_THRESHOLD=75        # °C — Telegram alert if exceeded
 POWER_LIMIT_DEFAULT=500  # Watts — applied to all GPUs always
-CHECK_INTERVAL=1200      # 20 minutes in seconds (GPU + rental check)
+CHECK_INTERVAL=3600      # 1 hour in seconds (GPU + rental check)
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
 
 # --- Telegram config ---
 TELEGRAM_TOKEN="8930785275:AAGFwVssjqAe5EW0e3quosU4u_D9M0XXrCo"
-TELEGRAM_CHAT_ID=""      # Auto-populated by setup.sh
+TELEGRAM_CHAT_ID=""      # Auto-populated from /etc/gpu_monitor.conf
 
 # --- Vast.ai config ---
 VASTAI_API_KEY=""
 VASTAI_API="https://console.vast.ai/api/v0"
 VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
-VASTAI_LAST_PRICE_FILE="/var/tmp/gpu_monitor_vastai_prices"
 
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
@@ -35,12 +37,30 @@ PRICE_FLOORS=(
 )
 PRICE_ADJUST_MIN=1   # minimum cents to move per cycle
 PRICE_ADJUST_MAX=5   # maximum cents to move per cycle
+MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 
 # ─────────────────────────────────────────────
-# Logging
+# Logging + structured JSON events
 # ─────────────────────────────────────────────
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+# Append a JSON event to the JSONL data file for the dashboard
+write_event() {
+    local type="$1"
+    local payload="$2"
+    python3 - <<PYEOF 2>/dev/null || true
+import json, datetime, socket, os
+event = {
+    "ts":   datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "type": "$type",
+    "host": socket.gethostname(),
+}
+event.update(json.loads(r"""$payload"""))
+with open("$JSONL_FILE", "a") as f:
+    f.write(json.dumps(event) + "\n")
+PYEOF
 }
 
 # ─────────────────────────────────────────────
@@ -99,6 +119,8 @@ nvidia-smi failed: $gpu_data"
 
     log "--- GPU Status ---"
     local overtemp=0
+    local gpu_json_arr="["
+    local first=1
     while IFS=',' read -r idx name temp power_draw power_limit fan; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
         temp=$(echo "$temp" | xargs); power_draw=$(echo "$power_draw" | xargs)
@@ -106,15 +128,23 @@ nvidia-smi failed: $gpu_data"
 
         log "  GPU $idx | $name | Temp: ${temp}°C | Power: ${power_draw}W/${power_limit}W | Fan: ${fan}%"
 
+        [[ $first -eq 0 ]] && gpu_json_arr+=","
+        gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan}"
+        first=0
+
         if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > TEMP_THRESHOLD )); then
             log "  WARNING: GPU $idx at ${temp}°C exceeds ${TEMP_THRESHOLD}°C!"
             tg_send "🌡️ <b>HIGH TEMP WARNING</b> — $(hostname)
 GPU $idx: <b>$name</b>
 Temp: <b>${temp}°C</b> (threshold: ${TEMP_THRESHOLD}°C)
 Power: ${power_draw}W / ${power_limit}W | Fan: ${fan}%"
+            write_event "temp_warning" "{\"gpu_idx\":$idx,\"gpu_name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"fan\":$fan}"
             overtemp=$((overtemp + 1))
         fi
     done <<< "$gpu_data"
+    gpu_json_arr+="]"
+
+    write_event "gpu_status" "{\"gpus\":$gpu_json_arr}"
 
     (( overtemp == 0 )) && log "  All GPUs within thermal limits." \
         || log "  WARNING: $overtemp GPU(s) over temp threshold."
@@ -124,6 +154,228 @@ Power: ${power_draw}W / ${power_limit}W | Fan: ${fan}%"
 # ─────────────────────────────────────────────
 # Vast.ai rental monitoring
 # ─────────────────────────────────────────────
+
+# On startup: backfill rental_start events for any active instance
+# not yet in the JSONL log (handles monitor installed mid-rental).
+vastai_init_state() {
+    [[ -z "$VASTAI_API_KEY" ]] && return
+
+    log "VAST.AI INIT: checking for pre-existing active rentals..."
+
+    local response tmpfile
+    response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
+        "$VASTAI_API/instances/?owner=me" 2>/dev/null) || {
+        log "VAST.AI INIT: API call failed — skipping startup scan"
+        return
+    }
+
+    tmpfile=$(mktemp)
+    echo "$response" > "$tmpfile"
+
+    python3 - "$tmpfile" "$JSONL_FILE" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
+import sys, json, datetime, socket
+
+tmpf, jsonl = sys.argv[1], sys.argv[2]
+
+try:
+    with open(tmpf) as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"[INIT] JSON parse error: {e}")
+    sys.exit(0)
+
+instances = data.get('instances', [])
+
+# Collect instance IDs already present in the JSONL log
+seen = set()
+try:
+    with open(jsonl) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+                if ev.get('type') == 'rental_start':
+                    seen.add(str(ev.get('instance_id', '')))
+            except Exception:
+                pass
+except FileNotFoundError:
+    pass
+
+count = 0
+for inst in instances:
+    iid    = str(inst.get('id', ''))
+    status = inst.get('actual_status', '')
+    if not iid or iid in seen:
+        continue
+
+    # Use real start_date from Vast.ai API for accurate revenue history
+    start_ts = inst.get('start_date')
+    if start_ts:
+        ts_str = datetime.datetime.utcfromtimestamp(float(start_ts)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    else:
+        ts_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    num_gpus = inst.get('num_gpus', 0)
+    gpu_name = inst.get('gpu_name', 'unknown')
+    cost     = float(inst.get('dph_total', 0) or 0)
+
+    event = {
+        'ts':          ts_str,
+        'type':        'rental_start',
+        'host':        socket.gethostname(),
+        'instance_id': iid,
+        'gpus':        f'{num_gpus}x {gpu_name}',
+        'rate':        f'${cost:.3f}/hr',
+        'status':      status,
+        'backfilled':  True,
+    }
+    with open(jsonl, 'a') as f:
+        f.write(json.dumps(event) + '\n')
+    print(f"[INIT] Backfilled rental_start: instance {iid} started {ts_str} @ ${cost:.3f}/hr")
+    count += 1
+
+if not count:
+    print("[INIT] No backfill needed — all active instances already logged")
+PYEOF
+
+    rm -f "$tmpfile"
+}
+
+# Sync earnings from Vast.ai API: fetch past instances and write
+# rental_end events for any that ended but aren't logged yet.
+vastai_sync_earnings() {
+    [[ -z "$VASTAI_API_KEY" ]] && return
+
+    log "VAST.AI EARNINGS: syncing from API..."
+
+    # Try fetching both active and inactive instances if API supports it
+    local response tmpfile
+    response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
+        "$VASTAI_API/instances/?owner=me&all_instances=1" 2>/dev/null) || {
+        # Fallback to active-only endpoint
+        response=$(curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
+            "$VASTAI_API/instances/?owner=me" 2>/dev/null) || {
+            log "VAST.AI EARNINGS: API call failed"
+            return
+        }
+    }
+
+    tmpfile=$(mktemp)
+    echo "$response" > "$tmpfile"
+
+    python3 - "$tmpfile" "$JSONL_FILE" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
+import sys, json, datetime, socket
+
+tmpf, jsonl = sys.argv[1], sys.argv[2]
+
+try:
+    with open(tmpf) as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"[EARNINGS] JSON parse error: {e}")
+    sys.exit(0)
+
+instances = data.get('instances', [])
+
+# Build a map of what's already in the log
+logged_starts = {}   # instance_id -> rental_start event
+logged_ends   = set()  # instance_ids that have rental_end
+try:
+    with open(jsonl) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+                iid = str(ev.get('instance_id', ''))
+                if ev.get('type') == 'rental_start':
+                    logged_starts[iid] = ev
+                elif ev.get('type') == 'rental_end':
+                    logged_ends.add(iid)
+            except Exception:
+                pass
+except FileNotFoundError:
+    pass
+
+new_events = []
+total_earnings = 0.0
+
+for inst in instances:
+    iid      = str(inst.get('id', ''))
+    status   = inst.get('actual_status', 'unknown')
+    start_ts = inst.get('start_date')
+    end_ts   = inst.get('end_date')
+    cost     = float(inst.get('dph_total', 0) or 0)
+    num_gpus = inst.get('num_gpus', 0)
+    gpu_name = inst.get('gpu_name', 'unknown')
+
+    if not iid or not start_ts:
+        continue
+
+    start_dt = datetime.datetime.utcfromtimestamp(float(start_ts))
+    ts_start = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # Backfill rental_start if missing
+    if iid not in logged_starts:
+        event = {
+            'ts':          ts_start,
+            'type':        'rental_start',
+            'host':        socket.gethostname(),
+            'instance_id': iid,
+            'gpus':        f'{num_gpus}x {gpu_name}',
+            'rate':        f'${cost:.3f}/hr',
+            'status':      status,
+            'backfilled':  True,
+        }
+        new_events.append(event)
+        print(f"[EARNINGS] Backfilled rental_start: {iid} at {ts_start} @ ${cost:.3f}/hr")
+
+    # Backfill rental_end if instance has ended and not yet logged
+    instance_ended = status in ('ended', 'cancelled', 'stopped', 'exited')
+    if instance_ended and end_ts and iid not in logged_ends:
+        end_dt = datetime.datetime.utcfromtimestamp(float(end_ts))
+        ts_end = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        duration_h = (end_dt - start_dt).total_seconds() / 3600.0
+        earned = cost * duration_h
+        event = {
+            'ts':          ts_end,
+            'type':        'rental_end',
+            'host':        socket.gethostname(),
+            'instance_id': iid,
+            'gpus':        f'{num_gpus}x {gpu_name}',
+            'rate':        f'${cost:.3f}/hr',
+            'status':      status,
+            'earned':      round(earned, 4),
+            'backfilled':  True,
+        }
+        new_events.append(event)
+        print(f"[EARNINGS] Backfilled rental_end: {iid} at {ts_end} (${earned:.2f} earned)")
+
+    # Tally running total
+    now_dt = datetime.datetime.utcnow()
+    if end_ts and instance_ended:
+        end_dt = datetime.datetime.utcfromtimestamp(float(end_ts))
+        total_earnings += cost * (end_dt - start_dt).total_seconds() / 3600.0
+    else:
+        # Still running — count up to now
+        total_earnings += cost * (now_dt - start_dt).total_seconds() / 3600.0
+
+# Write new events sorted by timestamp
+new_events.sort(key=lambda e: e['ts'])
+if new_events:
+    with open(jsonl, 'a') as f:
+        for ev in new_events:
+            f.write(json.dumps(ev) + '\n')
+
+print(f"[EARNINGS] Total tracked earnings this month: ${total_earnings:.2f}")
+PYEOF
+
+    rm -f "$tmpfile"
+}
+
 vastai_check() {
     [[ -z "$VASTAI_API_KEY" ]] && { log "VAST.AI: API key not set, skipping"; return; }
 
@@ -154,6 +406,7 @@ print('\n'.join(lines))
     if [[ "$current_state" != "$last_state" ]]; then
         log "VAST.AI: State changed"
 
+        # New rentals (lines in current but not in last)
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             if ! grep -qF "$line" "$VASTAI_LAST_STATE_FILE" 2>/dev/null; then
@@ -162,9 +415,11 @@ print('\n'.join(lines))
                 tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
 Instance: <b>$iid</b> | GPUs: $gpus
 Rate: <b>$cost</b> | Status: $status"
+                write_event "rental_start" "{\"instance_id\":\"$iid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"$status\"}"
             fi
         done <<< "$current_state"
 
+        # Ended rentals (lines in last but not in current)
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             if ! echo "$current_state" | grep -qF "$line"; then
@@ -173,9 +428,11 @@ Rate: <b>$cost</b> | Status: $status"
                 tg_send "🔴 <b>Vast.ai Rental ENDED</b> — $(hostname)
 Instance: <b>$iid</b> | GPUs: $gpus
 Rate was: $cost | Last status: $status"
+                write_event "rental_end" "{\"instance_id\":\"$iid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"$status\"}"
             fi
         done <<< "$last_state"
 
+        # Status changes within existing rentals
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             IFS='|' read -r iid status gpus cost <<< "$line"
@@ -183,19 +440,19 @@ Rate was: $cost | Last status: $status"
             old_line=$(grep "^${iid}|" "$VASTAI_LAST_STATE_FILE" 2>/dev/null || true)
             if [[ -n "$old_line" && "$old_line" != "$line" ]]; then
                 IFS='|' read -r _ old_status _ _ <<< "$old_line"
-                [[ "$old_status" != "$status" ]] && {
+                if [[ "$old_status" != "$status" ]]; then
                     log "VAST.AI: Instance $iid: $old_status → $status"
                     tg_send "🔄 <b>Vast.ai Status Change</b> — $(hostname)
 Instance: <b>$iid</b> | $gpus
 $old_status → <b>$status</b> | $cost"
-                }
+                fi
             fi
         done <<< "$current_state"
 
         echo "$current_state" > "$VASTAI_LAST_STATE_FILE"
     else
         if [[ -n "$current_state" ]]; then
-            log "VAST.AI: Active rentals:"
+            log "VAST.AI: Active rentals (unchanged):"
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
                 IFS='|' read -r iid status gpus cost <<< "$line"
@@ -213,7 +470,7 @@ $old_status → <b>$status</b> | $cost"
 
 # Returns floor price in dollars for a given GPU name
 get_price_floor() {
-    local gpu_name="${1^^}"   # uppercase
+    local gpu_name="${1^^}"
     for rule in "${PRICE_FLOORS[@]}"; do
         local pattern="${rule%%:*}"
         local floor_cents="${rule##*:}"
@@ -222,16 +479,14 @@ get_price_floor() {
             return
         fi
     done
-    echo "0.05"   # default floor: 5 cents
+    echo "0.05"
 }
 
-# Fetch your hosted machines from Vast.ai (host API)
 vastai_get_machines() {
     curl -sf -H "Authorization: Bearer $VASTAI_API_KEY" \
         "$VASTAI_API/machines/?owner=me" 2>/dev/null
 }
 
-# Fetch market listings for a specific GPU to get competitive price
 vastai_market_price() {
     local gpu_name="$1"
     curl -sf "$VASTAI_API/asks/?gpu_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name")&rentable=true&order=dph_total&limit=20" \
@@ -243,8 +498,7 @@ try:
     prices = [o.get('dph_total', 0) for o in offers if o.get('dph_total', 0) > 0]
     if prices:
         prices.sort()
-        # Use 25th percentile — competitive but not lowest
-        idx = max(0, len(prices)//4)
+        idx = max(0, len(prices)//4)  # 25th percentile
         print(f'{prices[idx]:.4f}')
     else:
         print('0')
@@ -253,14 +507,15 @@ except:
 " 2>/dev/null
 }
 
-# Update ask price for a machine
 vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
+    local end_date
+    end_date=$(( $(date +%s) + MAX_RENTAL_DAYS * 86400 ))
     curl -sf -X PUT \
         -H "Authorization: Bearer $VASTAI_API_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"min_bid\": $new_price, \"listed\": true}" \
+        -d "{\"min_bid\": $new_price, \"listed\": true, \"end_date\": $end_date}" \
         "$VASTAI_API/machines/${machine_id}/" >> "$LOG_FILE" 2>&1
 }
 
@@ -275,8 +530,7 @@ vastai_pricing() {
     echo "$machines_json" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-machines = data.get('machines', [])
-for m in machines:
+for m in data.get('machines', []):
     mid      = m.get('id', '')
     rented   = m.get('rented', False)
     listed   = m.get('listed', False)
@@ -288,15 +542,14 @@ for m in machines:
 
         [[ -z "$mid" ]] && continue
 
-        log "  Machine $mid | GPU: $gpu_name x$num_gpus | Listed: $listed | Rented: $rented | Current bid: \$$cur_bid/hr"
+        log "  Machine $mid | GPU: $gpu_name x$num_gpus | Listed: $listed | Rented: $rented | Bid: \$$cur_bid/hr"
 
-        # Skip if currently rented — never touch pricing of active rentals
+        # Never adjust pricing on active rentals
         if [[ "$rented" == "True" ]]; then
             log "  Machine $mid: RENTED — skipping price adjustment"
             continue
         fi
 
-        # Skip if not listed
         if [[ "$listed" != "True" ]]; then
             log "  Machine $mid: not listed — skipping"
             continue
@@ -313,46 +566,49 @@ for m in machines:
             continue
         fi
 
-        log "  Machine $mid: market 25th-pct = \$$market_price/hr | floor = \$$floor/hr | current = \$$cur_bid/hr"
+        log "  Machine $mid: market 25th-pct=\$$market_price | floor=\$$floor | current=\$$cur_bid"
 
-        # Calculate adjustment (1-5 cents random to avoid synchronized movement)
         local adjust_cents=$(( RANDOM % (PRICE_ADJUST_MAX - PRICE_ADJUST_MIN + 1) + PRICE_ADJUST_MIN ))
         local adjust
         adjust=$(echo "scale=4; $adjust_cents / 100" | bc)
 
-        local new_price
-        # If we're above market, come down; if below or at market, nudge up slightly
+        local new_price direction
         if (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
             new_price=$(echo "scale=4; $cur_bid - $adjust" | bc)
-            local direction="↓ (above market)"
+            direction="↓ (above market)"
         elif (( $(echo "$cur_bid < $market_price - 0.02" | bc -l) )); then
             new_price=$(echo "scale=4; $cur_bid + $adjust" | bc)
-            local direction="↑ (below market)"
+            direction="↑ (below market)"
         else
-            log "  Machine $mid: price within 2 cents of market — no change"
+            log "  Machine $mid: within 2¢ of market — no change"
             continue
         fi
 
-        # Enforce floor
+        # Enforce price floor
         if (( $(echo "$new_price < $floor" | bc -l) )); then
             new_price="$floor"
-            local direction="↑ floored at \$$floor"
+            direction="↑ floored at \$$floor"
         fi
 
-        # Only update if price actually changed meaningfully
         if (( $(echo "($new_price - $cur_bid)^2 < 0.0001" | bc -l) )); then
             log "  Machine $mid: negligible change, skipping"
             continue
         fi
 
-        log "  Machine $mid: adjusting \$$cur_bid → \$$new_price/hr $direction"
+        local expire_date
+        expire_date=$(date -d "+${MAX_RENTAL_DAYS} days" '+%Y-%m-%d' 2>/dev/null \
+            || date -v "+${MAX_RENTAL_DAYS}d" '+%Y-%m-%d' 2>/dev/null \
+            || echo "in ${MAX_RENTAL_DAYS} days")
+
+        log "  Machine $mid: \$$cur_bid → \$$new_price/hr $direction (max rental: $expire_date)"
 
         if vastai_set_price "$mid" "$new_price"; then
             log "  Machine $mid: price updated OK"
             tg_send "💰 <b>Price Adjusted</b> — $(hostname)
 Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
 <b>\$$cur_bid → \$$new_price/hr</b> $direction
-Market rate: \$$market_price/hr | Floor: \$$floor/hr"
+Market: \$$market_price/hr | Floor: \$$floor/hr | Max: ${MAX_RENTAL_DAYS}d"
+            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"floor\":$floor,\"expire_date\":\"$expire_date\"}"
         else
             log "  Machine $mid: price update FAILED"
         fi
@@ -375,18 +631,24 @@ main() {
     log "GPU Monitor started (PID $$) on $host"
     log "Default power limit : ${POWER_LIMIT_DEFAULT}W per GPU"
     log "Temp threshold      : ${TEMP_THRESHOLD}°C"
-    log "GPU/rental interval : ${CHECK_INTERVAL}s (20 min)"
+    log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour)"
     log "Pricing interval    : ${PRICE_INTERVAL}s (30 min)"
     log "Telegram : $([ -n "$TELEGRAM_CHAT_ID" ] && echo 'configured' || echo 'NOT configured — run setup.sh')"
     log "Vast.ai  : $([ -n "$VASTAI_API_KEY"   ] && echo 'configured' || echo 'NOT configured')"
     log "======================================"
 
+    touch "$JSONL_FILE" && chmod 644 "$JSONL_FILE"
     enable_persistence_mode
     set_power_limits
+    write_event "startup" "{\"power_limit\":$POWER_LIMIT_DEFAULT,\"temp_threshold\":$TEMP_THRESHOLD}"
+
+    # Sync past rental events from Vast.ai API (backfills revenue history)
+    vastai_init_state
+    vastai_sync_earnings
 
     tg_send "🚀 <b>GPU Monitor Started</b> — $host
 Power limit: ${POWER_LIMIT_DEFAULT}W/GPU | Temp alert: ${TEMP_THRESHOLD}°C
-GPU check: every 20 min | Pricing: every 30 min"
+Checks: every hour | Pricing: every 30 min"
 
     local last_price_check=0
 
@@ -396,10 +658,10 @@ GPU check: every 20 min | Pricing: every 30 min"
 
         log ">>> Cycle start"
         vastai_check
+        vastai_sync_earnings
         set_power_limits
         check_gpus
 
-        # Run pricing every 30 min
         if (( now - last_price_check >= PRICE_INTERVAL )); then
             vastai_pricing
             last_price_check=$now
