@@ -263,7 +263,13 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   const ends   = allEvents.filter(e => e.type === "rental_end");
   starts.forEach(s => {
     const end  = ends.find(e => e.instance_id === s.instance_id && e.ts > s.ts);
-    const rate = parseFloat((s.rate || "0").replace(/[^0-9.]/g, "")) || 0;
+    let rate = parseFloat((s.rate || "0").replace(/[^0-9.]/g, "")) || 0;
+    // If rental_start has $0 rate (backfilled before price was set), estimate from price_change
+    if (!rate) {
+      const mid = String(s.machine_id || s.instance_id || "");
+      const pc = allEvents.filter(e => e.type === "price_change" && String(e.machine_id || "") === mid);
+      if (pc.length) rate = parseFloat(pc[pc.length - 1].new_price) || 0;
+    }
     if (!rate) return;
     const rS = new Date(s.ts).getTime();
     const rE = end ? new Date(end.ts).getTime() : Date.now();

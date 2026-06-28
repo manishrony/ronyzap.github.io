@@ -230,6 +230,26 @@ for m in machines:
         print(f"[INIT] Machine {mid} already logged as rented — skipping")
         continue
 
+    # If min_bid_price is 0, try to get rate from last price_change event in the log
+    if cur_bid <= 0:
+        try:
+            with open(jsonl) as ff:
+                for ll in ff:
+                    try:
+                        evv = json.loads(ll.strip())
+                        if evv.get('type') == 'price_change' and str(evv.get('machine_id', '')) == mid:
+                            p = float(evv.get('new_price', 0) or 0)
+                            if p > 0:
+                                cur_bid = p
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    if cur_bid <= 0:
+        print(f"[INIT] Machine {mid}: rate unknown, skipping backfill (will retry next cycle)")
+        continue
+
     event = {
         'ts':          now_str,
         'type':        'rental_start',
