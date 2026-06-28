@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # GPU Power Management Monitor
+# - Sets all GPUs to 500W on startup
 # - Checks every 20 minutes
-# - Reduces power limit to 500W per GPU if temp exceeds 75°C
+# - Logs a warning if temp exceeds 75°C
 # - Logs all events with timestamps
 
 set -euo pipefail
 
 LOG_FILE="/var/log/gpu_monitor.log"
-TEMP_THRESHOLD=75       # °C
-POWER_LIMIT_HIGH=500    # Watts applied when temp exceeds threshold
+TEMP_THRESHOLD=75       # °C — warn if exceeded
+POWER_LIMIT_DEFAULT=500 # Watts — applied to all GPUs on startup and every cycle
 CHECK_INTERVAL=1200     # 20 minutes in seconds
 
 # --- Rental platform config (edit for your platform) ---
@@ -73,17 +74,17 @@ for inst in data.get('instances', []):
     esac
 }
 
-throttle_gpu() {
-    local gpu_index=$1
-    local current_temp=$2
-    local gpu_name=$3
-
-    log "THROTTLE: GPU $gpu_index ($gpu_name) temp=${current_temp}°C > ${TEMP_THRESHOLD}°C — setting power limit to ${POWER_LIMIT_HIGH}W"
-    if nvidia-smi -i "$gpu_index" --power-limit="$POWER_LIMIT_HIGH" >> "$LOG_FILE" 2>&1; then
-        log "THROTTLE: GPU $gpu_index power limit set to ${POWER_LIMIT_HIGH}W OK"
-    else
-        log "THROTTLE ERROR: Failed to set power limit on GPU $gpu_index (need sudo / persistence mode?)"
-    fi
+set_power_limits() {
+    log "Setting all GPUs to ${POWER_LIMIT_DEFAULT}W..."
+    local gpu_count
+    gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader,nounits | wc -l)
+    for (( i=0; i<gpu_count; i++ )); do
+        if nvidia-smi -i "$i" --power-limit="$POWER_LIMIT_DEFAULT" >> "$LOG_FILE" 2>&1; then
+            log "  GPU $i power limit set to ${POWER_LIMIT_DEFAULT}W OK"
+        else
+            log "  GPU $i power limit ERROR (need root / persistence mode?)"
+        fi
+    done
 }
 
 check_gpus() {
@@ -96,7 +97,7 @@ check_gpus() {
     }
 
     log "--- GPU Status ---"
-    local throttled=0
+    local overtemp=0
     while IFS=',' read -r idx name temp power_draw power_limit fan; do
         idx=$(echo "$idx" | xargs)
         name=$(echo "$name" | xargs)
@@ -108,15 +109,15 @@ check_gpus() {
         log "  GPU $idx | $name | Temp: ${temp}°C | Power: ${power_draw}W / ${power_limit}W | Fan: ${fan}%"
 
         if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > TEMP_THRESHOLD )); then
-            throttle_gpu "$idx" "$temp" "$name"
-            throttled=$((throttled + 1))
+            log "  WARNING: GPU $idx temp ${temp}°C exceeds ${TEMP_THRESHOLD}°C threshold!"
+            overtemp=$((overtemp + 1))
         fi
     done <<< "$gpu_data"
 
-    if (( throttled == 0 )); then
+    if (( overtemp == 0 )); then
         log "  All GPUs within thermal limits."
     else
-        log "  $throttled GPU(s) throttled this cycle."
+        log "  WARNING: $overtemp GPU(s) over temperature threshold."
     fi
     log "--- End GPU Status ---"
 }
@@ -130,16 +131,19 @@ enable_persistence_mode() {
 main() {
     log "======================================"
     log "GPU Monitor started (PID $$)"
-    log "Threshold: ${TEMP_THRESHOLD}°C → ${POWER_LIMIT_HIGH}W cap"
+    log "Default power limit: ${POWER_LIMIT_DEFAULT}W per GPU"
+    log "Temp warning threshold: ${TEMP_THRESHOLD}°C"
     log "Interval: ${CHECK_INTERVAL}s (20 min)"
     log "Log: $LOG_FILE"
     log "======================================"
 
     enable_persistence_mode
+    set_power_limits
 
     while true; do
         log ">>> Cycle start"
         check_rental_status
+        set_power_limits
         check_gpus
         log ">>> Sleeping ${CHECK_INTERVAL}s until next check"
         sleep "$CHECK_INTERVAL"
