@@ -45,19 +45,20 @@
       <input id="cfg-name1" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white" value="Zappa1">
     </div>
     <div>
-      <label class="text-xs text-slate-400">Rig 1 API URL (e.g. http://141.152.237.39:8080)</label>
-      <input id="cfg-url1" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="http://141.152.237.39:8080">
+      <label class="text-xs text-slate-400">Rig 1 API URL (local IP e.g. http://192.168.1.171:8080)</label>
+      <input id="cfg-url1" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="http://192.168.1.171:8080">
     </div>
     <div>
       <label class="text-xs text-slate-400">Rig 2 Name</label>
       <input id="cfg-name2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white" value="Zappa2">
     </div>
     <div>
-      <label class="text-xs text-slate-400">Rig 2 API URL (e.g. http://141.152.237.39:8081)</label>
-      <input id="cfg-url2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="http://141.152.237.39:8081">
+      <label class="text-xs text-slate-400">Rig 2 API URL (local IP e.g. http://192.168.1.196:8081)</label>
+      <input id="cfg-url2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="http://192.168.1.196:8081">
     </div>
     <div class="flex gap-3 pt-2">
       <button onclick="saveSettings()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 rounded">Save & Refresh</button>
+      <button onclick="resetSettings()" class="px-4 bg-slate-600 hover:bg-slate-500 text-sm rounded">Use Defaults</button>
       <button onclick="closeSettings()" class="px-4 bg-slate-700 hover:bg-slate-600 text-sm rounded">Cancel</button>
     </div>
   </div>
@@ -310,8 +311,8 @@
 <script>
 // ── Config ──────────────────────────────────────────────────────────
 const DEFAULT_RIGS = [
-  { name:"Zappa1", url:"http://141.152.237.39:8080" },
-  { name:"Zappa2", url:"http://141.152.237.39:8081" },
+  { name:"Zappa1", url:"http://192.168.1.171:8080" },
+  { name:"Zappa2", url:"http://192.168.1.196:8081" },
 ];
 
 function loadConfig() {
@@ -339,6 +340,12 @@ function openSettings() {
   document.getElementById("settings-modal").classList.add("open");
 }
 function closeSettings() { document.getElementById("settings-modal").classList.remove("open"); }
+function resetSettings() {
+  document.getElementById("cfg-name1").value = DEFAULT_RIGS[0].name;
+  document.getElementById("cfg-url1").value  = DEFAULT_RIGS[0].url;
+  document.getElementById("cfg-name2").value = DEFAULT_RIGS[1].name;
+  document.getElementById("cfg-url2").value  = DEFAULT_RIGS[1].url;
+}
 function saveSettings() {
   RIGS = [
     { name: document.getElementById("cfg-name1").value, url: document.getElementById("cfg-url1").value },
