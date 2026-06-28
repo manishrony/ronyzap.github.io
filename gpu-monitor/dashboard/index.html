@@ -204,10 +204,10 @@ const fmtTS  = ts => { const d = new Date(ts); return d.toLocaleTimeString([], {
 const fmtDate = ts => new Date(ts).toLocaleDateString([], {month:"short",day:"numeric"});
 
 function today() {
-  const d = new Date(); d.setHours(0,0,0,0); return d;
+  const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()));
 }
 function daysAgo(n) {
-  const d = new Date(); d.setDate(d.getDate() - n); d.setHours(0,0,0,0); return d;
+  const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()-n));
 }
 function eventsIn(days) {
   const cutoff = daysAgo(days).toISOString();
@@ -247,13 +247,14 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   let total = 0;
 
   // Step 1: daily_earnings — ground truth; record which UTC dates are covered.
+  // Only mark covered if total > 0 — $0 entries mean billing not yet finalised.
   const covered = new Set();
   allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
     const dayS = new Date(e.ts).getTime();
     const dayE = dayS + 86400000;
     if (dayE > pS && dayS < pE) {
       total += (e.total || 0);
-      covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
+      if ((e.total || 0) > 0) covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
     }
   });
 

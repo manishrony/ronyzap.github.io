@@ -356,7 +356,7 @@ function showRigTab(name) {
 const fmtUSD  = v => "$" + Number(v).toFixed(2);
 const fmtTS   = ts => new Date(ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
 const fmtDate = ts => new Date(ts).toLocaleDateString([],{month:"short",day:"numeric"});
-const today   = () => { const d=new Date(); d.setHours(0,0,0,0); return d; };
+const today   = () => { const d=new Date(); return new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate())); };
 const daysAgo = n  => { const d=new Date(); d.setDate(d.getDate()-n); d.setHours(0,0,0,0); return d; };
 
 function eventsToday(events) { const c=today().toISOString(); return events.filter(e=>e.ts>=c); }
@@ -374,13 +374,15 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   let total = 0;
 
   // Step 1: daily_earnings — ground truth; record which UTC dates are covered.
+  // Only mark a date covered if total > 0 — $0 entries mean billing not yet finalised,
+  // so rental_start hours should fill in for that day.
   const covered = new Set();
   allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
     const dayS = new Date(e.ts).getTime();
     const dayE = dayS + 86400000;
     if (dayE > pS && dayS < pE) {
       total += (e.total || 0);
-      covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
+      if ((e.total || 0) > 0) covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
     }
   });
 

@@ -210,6 +210,9 @@ now_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
 for m in machines:
     mid      = str(m.get('id', ''))
+    # Only manage machines that belong to this rig (by hostname)
+    if m.get('hostname', '') != socket.gethostname():
+        continue
     rented   = m.get('rented', False)
     # current_rentals_resident is the reliable field; rented field can be stale
     if int(m.get('current_rentals_resident', 0) or 0) > 0:
@@ -300,10 +303,13 @@ vastai_check() {
     # State: one line per machine: {mid}|{rented}|{num_gpus}x{gpu_name}|{bid}/hr
     local current_state
     current_state=$(echo "$response" | python3 -c "
-import sys, json
+import sys, json, socket
 data = json.load(sys.stdin)
+hn = socket.gethostname()
 lines = []
 for m in data.get('machines', []):
+    if m.get('hostname', '') != hn:
+        continue
     mid      = m.get('id', '?')
     rented   = m.get('rented', False)
     if int(m.get('current_rentals_resident', 0) or 0) > 0:
@@ -470,9 +476,12 @@ vastai_pricing() {
 
     echo "$machines_json" | python3 -c "
 
-import sys, json
+import sys, json, socket
 data = json.load(sys.stdin)
+hn = socket.gethostname()
 for m in data.get('machines', []):
+    if m.get('hostname', '') != hn:
+        continue
     mid      = m.get('id', '')
     rented   = m.get('rented', False)
     if int(m.get('current_rentals_resident', 0) or 0) > 0:
