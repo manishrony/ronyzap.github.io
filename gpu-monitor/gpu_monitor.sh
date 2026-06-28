@@ -547,11 +547,15 @@ for m in data.get('machines', []):
         local adjust
         adjust=$(printf "%.4f" "$(echo "scale=4; $adjust_cents / 100" | bc)")
 
-        # Treat $0 bid as "way below floor" — jump straight to floor
         local new_price direction
         if (( $(echo "${cur_bid:-0} < 0.01" | bc -l) )); then
+            # $0 bid — jump straight to floor
             new_price="$floor"
             direction="↑ (was \$0 — setting to floor)"
+        elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
+            # Below floor — enforce floor regardless of market
+            new_price="$floor"
+            direction="↑ (below floor \$$floor)"
         elif (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust" | bc)")
             direction="↓ (above market)"
@@ -563,7 +567,7 @@ for m in data.get('machines', []):
             continue
         fi
 
-        # Enforce price floor
+        # Enforce price floor (catches edge cases after adjustment)
         if (( $(echo "$new_price < $floor" | bc -l) )); then
             new_price="$floor"
             direction="↑ floored at \$$floor"
