@@ -5,6 +5,7 @@
 # - Monitors Vast.ai rental start/end every 20 min
 # - Dynamic pricing every 30 min: adjusts ask price 1-5 cents to stay
 #   competitive; skips if machine is rented; floor $0.30/hr for RTX 5090
+# - Max rental duration capped at 5 days on every pricing update
 
 set -euo pipefail
 
@@ -35,6 +36,7 @@ PRICE_FLOORS=(
 )
 PRICE_ADJUST_MIN=1   # minimum cents to move per cycle
 PRICE_ADJUST_MAX=5   # maximum cents to move per cycle
+MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 
 # ─────────────────────────────────────────────
 # Logging
@@ -253,14 +255,16 @@ except:
 " 2>/dev/null
 }
 
-# Update ask price for a machine
+# Update ask price for a machine, capping max rental to MAX_RENTAL_DAYS
 vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
+    local end_date
+    end_date=$(( $(date +%s) + MAX_RENTAL_DAYS * 86400 ))
     curl -sf -X PUT \
         -H "Authorization: Bearer $VASTAI_API_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"min_bid\": $new_price, \"listed\": true}" \
+        -d "{\"min_bid\": $new_price, \"listed\": true, \"end_date\": $end_date}" \
         "$VASTAI_API/machines/${machine_id}/" >> "$LOG_FILE" 2>&1
 }
 
@@ -347,12 +351,18 @@ for m in machines:
 
         log "  Machine $mid: adjusting \$$cur_bid → \$$new_price/hr $direction"
 
+        local expire_date
+        expire_date=$(date -d "+${MAX_RENTAL_DAYS} days" '+%Y-%m-%d' 2>/dev/null \
+            || date -v "+${MAX_RENTAL_DAYS}d" '+%Y-%m-%d' 2>/dev/null \
+            || echo "in ${MAX_RENTAL_DAYS} days")
+
         if vastai_set_price "$mid" "$new_price"; then
-            log "  Machine $mid: price updated OK"
+            log "  Machine $mid: price updated OK (expires $expire_date)"
             tg_send "💰 <b>Price Adjusted</b> — $(hostname)
 Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
 <b>\$$cur_bid → \$$new_price/hr</b> $direction
-Market rate: \$$market_price/hr | Floor: \$$floor/hr"
+Market: \$$market_price/hr | Floor: \$$floor/hr
+Max rental: <b>${MAX_RENTAL_DAYS} days</b> (until $expire_date)"
         else
             log "  Machine $mid: price update FAILED"
         fi
