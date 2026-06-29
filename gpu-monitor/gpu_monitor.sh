@@ -113,8 +113,6 @@ check_gpus() {
         --query-gpu=index,name,temperature.gpu,power.draw,power.limit,fan.speed \
         --format=csv,noheader,nounits 2>&1) || {
         log "ERROR: nvidia-smi failed: $gpu_data"
-        tg_send "❌ <b>GPU Monitor ERROR</b> — $(hostname)
-nvidia-smi failed: $gpu_data"
         return 1
     }
 
@@ -135,10 +133,6 @@ nvidia-smi failed: $gpu_data"
 
         if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > TEMP_THRESHOLD )); then
             log "  WARNING: GPU $idx at ${temp}°C exceeds ${TEMP_THRESHOLD}°C!"
-            tg_send "🌡️ <b>HIGH TEMP WARNING</b> — $(hostname)
-GPU $idx: <b>$name</b>
-Temp: <b>${temp}°C</b> (threshold: ${TEMP_THRESHOLD}°C)
-Power: ${power_draw}W / ${power_limit}W | Fan: ${fan}%"
             write_event "temp_warning" "{\"gpu_idx\":$idx,\"gpu_name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"fan\":$fan}"
             overtemp=$((overtemp + 1))
         fi
@@ -675,10 +669,6 @@ main() {
     # Sync past rental events from Vast.ai API (backfills revenue history)
     vastai_init_state
     vastai_sync_earnings
-
-    tg_send "🚀 <b>GPU Monitor Started</b> — $host
-Power limit: ${POWER_LIMIT_DEFAULT}W/GPU | Temp alert: ${TEMP_THRESHOLD}°C
-Checks: every hour | Pricing: every 30 min"
 
     local last_price_check=0
 
