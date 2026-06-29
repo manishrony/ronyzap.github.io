@@ -25,6 +25,7 @@ mkdir -p "$DASH_DEST"
 cp "$DASH_SRC/server.py"      "$DASH_DEST/"
 cp "$DASH_SRC/index.html"     "$DASH_DEST/"
 cp "$DASH_SRC/combined.html"  "$DASH_DEST/"
+cp "$DASH_SRC/market.html"    "$DASH_DEST/"
 
 echo "[*] Writing gpu-monitor systemd service..."
 cat > "$MONITOR_SVC" <<EOF

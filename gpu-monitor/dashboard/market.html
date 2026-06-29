@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPU Market Analysis</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  body { background:#060d1a; font-family:system-ui,sans-serif; }
+  .card  { background:#0d1f35; border:1px solid #1a3a5c; border-radius:12px; }
+  .badge-green  { background:#052e16; color:#4ade80; border:1px solid #166534; }
+  .badge-yellow { background:#1c1002; color:#fbbf24; border:1px solid #78350f; }
+  .badge-red    { background:#1f0707; color:#f87171; border:1px solid #7f1d1d; }
+  .badge-blue   { background:#03142b; color:#60a5fa; border:1px solid #1e3a5f; }
+  .tab-active { background:#0d1f35; color:#fff; border-bottom:2px solid #3b82f6; }
+  .tab-idle   { color:#64748b; cursor:pointer; }
+  .tab-idle:hover { color:#94a3b8; }
+  canvas { max-height:220px; }
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:#060d1a; }
+  ::-webkit-scrollbar-thumb { background:#1a3a5c; border-radius:3px; }
+  th { font-weight:500; }
+</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+
+<!-- Header -->
+<div class="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <a href="/combined" class="text-slate-500 hover:text-slate-300 text-sm">← Combined</a>
+    <span class="text-slate-700">|</span>
+    <span class="text-xl">📈</span>
+    <div>
+      <h1 class="text-lg font-bold text-white">Market Analysis</h1>
+      <p class="text-xs text-slate-500" id="last-updated">Loading…</p>
+    </div>
+  </div>
+  <div class="flex items-center gap-3">
+    <span class="text-xs text-slate-600" id="countdown"></span>
+    <button onclick="fetchAll()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded">Refresh</button>
+  </div>
+</div>
+
+<!-- Rig tabs -->
+<div class="px-6 pt-4">
+  <div class="flex gap-0 border-b border-slate-700" id="rig-tabs"></div>
+</div>
+
+<!-- Main content -->
+<div class="px-6 py-4 space-y-4" id="main-content">
+  <div class="text-slate-500 text-sm">Loading…</div>
+</div>
+
+<script>
+// ── Config (same localStorage key as combined.html) ───────────────────
+const DEFAULT_RIGS = [
+  { name:"Zappa1", url:"" },
+  { name:"Zappa2", url:"http://192.168.1.196:8081" },
+];
+function loadConfig() {
+  try { return JSON.parse(localStorage.getItem("rig_config")) || DEFAULT_RIGS; }
+  catch { return DEFAULT_RIGS; }
+}
+let RIGS = loadConfig();
+let DATA = {};
+let activeRig = 0;
+let trendChart = null;
+let countdown = 300;
+
+// ── Time slot ─────────────────────────────────────────────────────────
+function getSlot(ts) {
+  const h = new Date(ts).getUTCHours();
+  return h < 8 ? 'AM' : h < 16 ? 'PM' : 'EVE';
+}
+
+// ── Fetch ─────────────────────────────────────────────────────────────
+async function fetchRig(idx) {
+  const rig = RIGS[idx];
+  const base = rig.url || window.location.origin;
+  try {
+    const r = await fetch(base + "/api/data?" + Date.now(), {signal: AbortSignal.timeout(8000)});
+    if (!r.ok) throw new Error();
+    const json = await r.json();
+    DATA[idx] = {
+      online: true,
+      snaps:  (json.events||[]).filter(e => e.type === 'market_snapshot'),
+      prices: (json.events||[]).filter(e => e.type === 'price_change'),
+    };
+  } catch {
+    DATA[idx] = { online: false, snaps: [], prices: [] };
+  }
+}
+
+async function fetchAll() {
+  await Promise.all(RIGS.map((_,i) => fetchRig(i)));
+  document.getElementById("last-updated").textContent = "Updated: " + new Date().toLocaleTimeString();
+  buildTabs();
+  render();
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────
+function buildTabs() {
+  const container = document.getElementById("rig-tabs");
+  container.innerHTML = RIGS.map((r, i) => {
+    const d = DATA[i];
+    const dot = d?.online ? '●' : '○';
+    const dotColor = d?.online ? 'text-green-400' : 'text-red-400';
+    return `<button onclick="selectRig(${i})" id="rtab-${i}"
+      class="px-5 py-2.5 text-sm font-medium ${i===activeRig?'tab-active':'tab-idle'}">
+      <span class="${dotColor}">${dot}</span> ${r.name}
+    </button>`;
+  }).join('');
+}
+
+function selectRig(i) {
+  activeRig = i;
+  if (trendChart) { trendChart.destroy(); trendChart = null; }
+  buildTabs();
+  render();
+}
+
+// ── Main render ───────────────────────────────────────────────────────
+function render() {
+  const d = DATA[activeRig];
+  const rig = RIGS[activeRig];
+  const content = document.getElementById("main-content");
+
+  if (!d?.online) {
+    content.innerHTML = `<div class="card p-8 text-center text-slate-400">
+      <div class="text-3xl mb-3">○</div>
+      <div class="font-medium">${rig.name} is offline</div>
+      <div class="text-sm text-slate-600 mt-1">Check that the dashboard service is running</div>
+    </div>`;
+    return;
+  }
+
+  const snaps = d.snaps;
+  if (!snaps.length) {
+    content.innerHTML = `<div class="card p-8 text-center text-slate-400">
+      <div class="text-3xl mb-3">📊</div>
+      <div class="font-medium">No market data yet</div>
+      <div class="text-sm text-slate-600 mt-1">Market snapshots collect every 30 min during pricing cycles.<br>Check back after the next pricing run.</div>
+    </div>`;
+    return;
+  }
+
+  const latest = snaps[snaps.length - 1];
+  const myPrice = latest.my_price  || 0;
+  const median  = latest.median    || 0;
+  const p25     = latest.p25       || 0;
+  const p75     = latest.p75       || 0;
+  const mean    = latest.mean      || 0;
+  const count   = latest.count     || 0;
+  const minP    = latest.min       || 0;
+  const maxP    = latest.max       || 0;
+
+  let statusClass = 'badge-green', statusText = '▲ Above Median';
+  if      (myPrice < median - 0.02) { statusClass = 'badge-red';    statusText = '▼ Below Median'; }
+  else if (myPrice < median + 0.01) { statusClass = 'badge-yellow'; statusText = '≈ At Median'; }
+
+  const pctOfMedian = median > 0 ? ((myPrice / median) * 100).toFixed(0) : '—';
+
+  content.innerHTML = `
+    <!-- Current Market Overview -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">P25 (Floor)</div>
+        <div class="text-xl font-bold text-green-400">$${p25.toFixed(3)}</div>
+        <div class="text-xs text-slate-600 mt-1">/hr</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Median</div>
+        <div class="text-xl font-bold text-blue-400">$${median.toFixed(3)}</div>
+        <div class="text-xs text-slate-600 mt-1">/hr · midpoint</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">P75</div>
+        <div class="text-xl font-bold text-purple-400">$${p75.toFixed(3)}</div>
+        <div class="text-xs text-slate-600 mt-1">/hr · top tier</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Mean / Range</div>
+        <div class="text-xl font-bold text-slate-200">$${mean.toFixed(3)}</div>
+        <div class="text-xs text-slate-600 mt-1">$${minP.toFixed(2)}–$${maxP.toFixed(2)} · ${count} listings</div>
+      </div>
+      <div class="card p-4 border-blue-800">
+        <div class="text-xs text-slate-500 mb-1">My Price</div>
+        <div class="text-xl font-bold ${myPrice>=median?'text-green-400':'text-red-400'}">$${myPrice.toFixed(3)}</div>
+        <div class="mt-1 flex items-center gap-1.5">
+          <span class="text-xs px-1.5 py-0.5 rounded-full border ${statusClass}">${statusText}</span>
+          <span class="text-xs text-slate-600">${pctOfMedian}% of median</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- GPU info + snapshot time -->
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 px-1">
+      <span>GPU: <span class="text-slate-300">${latest.gpu_name||'—'} ×${latest.num_gpus||''}</span></span>
+      <span>·</span>
+      <span>Snapshot: <span class="text-slate-300">${new Date(latest.ts).toLocaleString()}</span></span>
+      <span>·</span>
+      <span>Below median alert: throttled to once / 4h via Telegram</span>
+    </div>
+
+    <!-- Trend chart -->
+    <div class="card p-5">
+      <div class="text-sm font-semibold text-slate-300 mb-4">14-Day Price Trend</div>
+      <canvas id="trend-chart"></canvas>
+    </div>
+
+    <!-- Daily table -->
+    <div class="card p-5">
+      <div class="text-sm font-semibold text-slate-300 mb-1">Daily Market by Time of Day</div>
+      <div class="text-xs text-slate-600 mb-4">Each cell: market median | your price — green = at/above, red = below</div>
+      ${buildDailyTable(snaps)}
+    </div>
+  `;
+
+  buildTrendChart(snaps);
+}
+
+// ── Daily breakdown table ─────────────────────────────────────────────
+function buildDailyTable(snaps) {
+  const byDay = {};
+  snaps.forEach(e => {
+    if (!e.ts) return;
+    const date = e.ts.slice(0, 10);
+    const slot = getSlot(e.ts);
+    if (!byDay[date]) byDay[date] = { AM:[], PM:[], EVE:[] };
+    byDay[date][slot].push(e);
+  });
+
+  const days = Object.keys(byDay).sort().slice(-21).reverse();
+  if (!days.length) return '<div class="text-slate-500 text-sm">No data yet</div>';
+
+  const avgField = (arr, field) => arr.length ? arr.reduce((a,e)=>a+(e[field]||0),0)/arr.length : null;
+
+  const th = 'px-3 py-2 text-left text-xs text-slate-400';
+  const td = 'px-3 py-2.5 text-xs';
+  const bdr = 'border-l border-slate-700/40';
+
+  const slotCell = (evs) => {
+    if (!evs.length) return `<td class="${td} ${bdr} text-slate-700">—</td><td class="${td} text-slate-700">—</td>`;
+    const med  = avgField(evs, 'median');
+    const mine = evs[evs.length-1].my_price || 0;
+    const col  = mine >= med - 0.005 ? 'text-green-400' : 'text-red-400';
+    return `<td class="${td} ${bdr} text-slate-300">$${med.toFixed(3)}</td>
+            <td class="${td} ${col} font-medium">$${mine.toFixed(3)}</td>`;
+  };
+
+  const header = `<thead>
+    <tr class="border-b border-slate-700">
+      <th class="${th}">Date</th>
+      <th class="${th} ${bdr}" colspan="2">Morning (0–8 UTC)</th>
+      <th class="${th} ${bdr}" colspan="2">Midday (8–16 UTC)</th>
+      <th class="${th} ${bdr}" colspan="2">Evening (16–24 UTC)</th>
+    </tr>
+    <tr class="border-b border-slate-700/30 text-slate-600 text-xs">
+      <th></th>
+      <th class="${th} ${bdr}">Market</th><th class="${th}">Mine</th>
+      <th class="${th} ${bdr}">Market</th><th class="${th}">Mine</th>
+      <th class="${th} ${bdr}">Market</th><th class="${th}">Mine</th>
+    </tr>
+  </thead>`;
+
+  const rows = days.map(date => {
+    const s = byDay[date];
+    return `<tr class="border-b border-slate-700/20 hover:bg-slate-800/20">
+      <td class="${td} text-slate-400">${date}</td>
+      ${slotCell(s.AM)}${slotCell(s.PM)}${slotCell(s.EVE)}
+    </tr>`;
+  }).join('');
+
+  return `<div class="overflow-x-auto"><table class="w-full">${header}<tbody>${rows}</tbody></table></div>`;
+}
+
+// ── Trend chart ───────────────────────────────────────────────────────
+function buildTrendChart(snaps) {
+  const byDay = {};
+  snaps.forEach(e => {
+    if (!e.ts || !e.median) return;
+    const date = e.ts.slice(0, 10);
+    if (!byDay[date]) byDay[date] = { p25:[], median:[], p75:[], mine:[] };
+    byDay[date].p25.push(e.p25 || 0);
+    byDay[date].median.push(e.median);
+    byDay[date].p75.push(e.p75 || 0);
+    byDay[date].mine.push(e.my_price || 0);
+  });
+
+  const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
+  const days = Object.keys(byDay).sort().slice(-14);
+
+  const labels   = days.map(d => d.slice(5));
+  const p25Data  = days.map(d => avg(byDay[d].p25));
+  const medData  = days.map(d => avg(byDay[d].median));
+  const p75Data  = days.map(d => avg(byDay[d].p75));
+  const mineData = days.map(d => avg(byDay[d].mine));
+
+  const ctx = document.getElementById("trend-chart");
+  if (!ctx) return;
+  if (trendChart) { trendChart.destroy(); trendChart = null; }
+
+  trendChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'P75',
+          data: p75Data,
+          borderColor: '#a78bfa',
+          backgroundColor: 'rgba(167,139,250,0.07)',
+          tension: 0.35,
+          pointRadius: 2,
+          borderWidth: 1.5,
+        },
+        {
+          label: 'Median',
+          data: medData,
+          borderColor: '#60a5fa',
+          backgroundColor: 'rgba(96,165,250,0.08)',
+          tension: 0.35,
+          pointRadius: 3,
+          borderWidth: 2,
+        },
+        {
+          label: 'P25',
+          data: p25Data,
+          borderColor: '#4ade80',
+          backgroundColor: 'rgba(74,222,128,0.07)',
+          tension: 0.35,
+          pointRadius: 2,
+          borderWidth: 1.5,
+        },
+        {
+          label: 'My Price',
+          data: mineData,
+          borderColor: '#fbbf24',
+          backgroundColor: 'rgba(0,0,0,0)',
+          tension: 0.2,
+          pointRadius: 3,
+          borderWidth: 2,
+          borderDash: [5, 3],
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: { color: '#475569', font: { size: 10 } }
+        },
+        y: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: {
+            color: '#475569',
+            font: { size: 10 },
+            callback: v => '$' + v.toFixed(2)
+          }
+        }
+      },
+      plugins: {
+        legend: {
+          labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 24, padding: 16 }
+        },
+        tooltip: {
+          backgroundColor: '#0d1f35',
+          borderColor: '#1a3a5c',
+          borderWidth: 1,
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: $${ctx.parsed.y?.toFixed(4) ?? '—'}`
+          }
+        }
+      }
+    }
+  });
+}
+
+// ── Auto-refresh ──────────────────────────────────────────────────────
+setInterval(() => {
+  countdown--;
+  const el = document.getElementById("countdown");
+  if (el) el.textContent = countdown + "s";
+  if (countdown <= 0) { countdown = 300; fetchAll(); }
+}, 1000);
+
+fetchAll();
+</script>
+</body>
+</html>

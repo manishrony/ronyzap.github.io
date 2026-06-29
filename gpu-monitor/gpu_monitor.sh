@@ -441,26 +441,34 @@ vastai_get_machines() {
     vastai_get "$VASTAI_API/machines/" 2>/dev/null || echo '{"machines":[]}'
 }
 
-vastai_market_price() {
+vastai_market_stats() {
     local gpu_name="$1"
     local encoded_name
     encoded_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name" 2>/dev/null || echo "$gpu_name")
-    local url="$VASTAI_API/bundles/?gpu_name=${encoded_name}&rentable=true&order=dph_total&limit=20&type=on_demand"
+    local url="$VASTAI_API/bundles/?gpu_name=${encoded_name}&rentable=true&order=dph_total&limit=50&type=on_demand"
     { vastai_get "$url" 2>/dev/null || echo '{}'; } | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
     offers = data.get('offers', data.get('instances', []))
-    prices = [float(o.get('dph_total', 0) or 0) for o in offers if float(o.get('dph_total', 0) or 0) > 0]
+    prices = sorted([float(o.get('dph_total', 0) or 0) for o in offers if float(o.get('dph_total', 0) or 0) > 0])
     if prices:
-        prices.sort()
-        idx = max(0, len(prices)//4)  # 25th percentile
-        print(f'{prices[idx]:.4f}')
+        n = len(prices)
+        def pct(p): return prices[min(n-1, int(p*(n-1)/100))]
+        print(json.dumps({
+            'p25':    round(pct(25), 4),
+            'median': round(pct(50), 4),
+            'p75':    round(pct(75), 4),
+            'mean':   round(sum(prices)/n, 4),
+            'min':    round(prices[0], 4),
+            'max':    round(prices[-1], 4),
+            'count':  n
+        }))
     else:
-        print('0')
+        print('null')
 except Exception as e:
-    sys.stderr.write(f'market_price error: {e}\n')
-    print('0')
+    sys.stderr.write(f'market_stats error: {e}\n')
+    print('null')
 " 2>/dev/null
 }
 
@@ -519,7 +527,55 @@ for m in data.get('machines', []):
 
         log "  Machine $mid | GPU: $gpu_name x$num_gpus | Listed: $listed | Rented: $rented | Bid: \$$cur_bid/hr"
 
-        # Never adjust pricing on active rentals
+        local floor
+        floor=$(get_price_floor "$gpu_name")
+
+        # Fetch full market stats, write snapshot, send below-median alert
+        local stats_json market_price market_median
+        stats_json=$(vastai_market_stats "$gpu_name")
+
+        if [[ -n "$stats_json" && "$stats_json" != "null" ]]; then
+            market_price=$(  echo "$stats_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'{d[\"p25\"]:.4f}')"   2>/dev/null || echo "0")
+            market_median=$( echo "$stats_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'{d[\"median\"]:.4f}')" 2>/dev/null || echo "0")
+
+            # Write market_snapshot event for the dashboard market analysis page
+            local snap_json
+            snap_json=$(echo "$stats_json" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+d.update({'machine_id':'$mid','gpu_name':'$gpu_name','num_gpus':$num_gpus,'my_price':$cur_bid,'below_median':($cur_bid < d.get('median',99))})
+print(json.dumps(d))
+" 2>/dev/null)
+            [[ -n "$snap_json" ]] && write_event "market_snapshot" "$snap_json"
+
+            # Below-median Telegram alert (throttled to once per 4 hours per machine)
+            if [[ -n "$market_median" && "$market_median" != "0" ]] && \
+               (( $(echo "$cur_bid < $market_median - 0.02" | bc -l) )); then
+                local alert_file="/var/tmp/gpu_mkt_alert_${mid}"
+                local now_ts last_ts=0
+                now_ts=$(date +%s)
+                [[ -f "$alert_file" ]] && last_ts=$(cat "$alert_file" 2>/dev/null || echo 0)
+                if (( now_ts - last_ts > 14400 )); then
+                    local rented_tag=""
+                    [[ "$rented" == "True" ]] && rented_tag="
+<i>Currently rented — auto-pricing paused. Check market page for trends.</i>"
+                    tg_send "⚠️ <b>Price Below Market</b> — $(hostname)
+Machine <b>$mid</b> | $gpu_name x${num_gpus}
+Your price: <b>\$$cur_bid/hr</b>
+Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
+                    echo "$now_ts" > "$alert_file"
+                    log "  BELOW-MARKET ALERT sent: \$$cur_bid < median \$$market_median"
+                fi
+            else
+                rm -f "/var/tmp/gpu_mkt_alert_${mid}" 2>/dev/null || true
+            fi
+        else
+            market_price="0"
+            market_median="0"
+            log "  Machine $mid: market data unavailable"
+        fi
+
+        # Skip price adjustment on active rentals or unlisted machines
         if [[ "$rented" == "True" ]]; then
             log "  Machine $mid: RENTED — skipping price adjustment"
             continue
@@ -530,19 +586,12 @@ for m in data.get('machines', []):
             continue
         fi
 
-        local floor
-        floor=$(get_price_floor "$gpu_name")
-
-        local market_price
-        market_price=$(vastai_market_price "$gpu_name") || market_price="0"
-
         if [[ -z "$market_price" || "$market_price" == "0" ]]; then
-            # No market data — target floor price so $0 machines get priced
             market_price="$floor"
             log "  Machine $mid: market price unavailable, targeting floor \$$floor"
         fi
 
-        log "  Machine $mid: market 25th-pct=\$$market_price | floor=\$$floor | current=\$$cur_bid"
+        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | floor=\$$floor | current=\$$cur_bid"
 
         local adjust_cents=$(( RANDOM % (PRICE_ADJUST_MAX - PRICE_ADJUST_MIN + 1) + PRICE_ADJUST_MIN ))
         local adjust
@@ -550,11 +599,9 @@ for m in data.get('machines', []):
 
         local new_price direction
         if (( $(echo "${cur_bid:-0} < 0.01" | bc -l) )); then
-            # $0 bid — jump straight to floor
             new_price="$floor"
             direction="↑ (was \$0 — setting to floor)"
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
-            # Below floor — enforce floor regardless of market
             new_price="$floor"
             direction="↑ (below floor \$$floor)"
         elif (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
@@ -568,7 +615,6 @@ for m in data.get('machines', []):
             continue
         fi
 
-        # Enforce price floor (catches edge cases after adjustment)
         if (( $(echo "$new_price < $floor" | bc -l) )); then
             new_price="$floor"
             direction="↑ floored at \$$floor"
@@ -591,8 +637,8 @@ for m in data.get('machines', []):
             tg_send "💰 <b>Price Adjusted</b> — $(hostname)
 Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
 <b>\$$cur_bid → \$$new_price/hr</b> $direction
-Market: \$$market_price/hr | Floor: \$$floor/hr | Max: ${MAX_RENTAL_DAYS}d"
-            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"floor\":$floor,\"expire_date\":\"$expire_date\"}"
+Market p25: \$$market_price/hr | Median: \$$market_median/hr | Floor: \$$floor/hr"
+            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"market_median\":$market_median,\"floor\":$floor,\"expire_date\":\"$expire_date\"}"
         else
             log "  Machine $mid: price update FAILED"
         fi
