@@ -445,7 +445,7 @@ function renderOverview() {
   const tbody = document.getElementById("events-table");
   tbody.innerHTML = recentEvs.map(e => {
     let detail = "";
-    if (e.type === "gpu_status" && e.gpus) detail = e.gpus.map(g => `GPU${g.idx} ${g.temp}°C ${g.power_draw}W Fan:${g.fan}%`).join(" | ");
+    if (e.type === "gpu_status" && e.gpus) detail = e.gpus.map(g => `GPU${g.idx} ${g.temp}°C ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ");
     else if (e.type === "price_change") detail = `${e.gpu_name} x${e.num_gpus} | $${e.old_price} → $${e.new_price}/hr (market $${e.market_price})`;
     else if (e.type === "rental_start") detail = `${e.gpus} @ ${e.rate}`;
     else if (e.type === "rental_end")   detail = `${e.gpus} ended`;
@@ -478,7 +478,7 @@ function renderGPUCards(last) {
         </div>
       </div>
       <div>
-        <div class="flex justify-between text-xs text-slate-500 mb-1"><span>Power</span><span>${g.power_draw}W / ${g.power_limit}W</span></div>
+        <div class="flex justify-between text-xs text-slate-500 mb-1"><span>Power</span><span>${Number(g.power_draw).toFixed(1)}W / ${Number(g.power_limit).toFixed(0)}W</span></div>
         <div class="w-full bg-slate-800 rounded-full h-1.5">
           <div class="h-1.5 rounded-full bar-fill bg-blue-500" style="width:${Math.min(powerPct,100)}%"></div>
         </div>

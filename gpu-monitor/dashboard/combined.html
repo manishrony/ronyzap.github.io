@@ -506,7 +506,7 @@ function eventBadge(type) {
 }
 
 function eventDetail(e) {
-  if (e.type==="gpu_status" && e.gpus) return e.gpus.map(g=>`GPU${g.idx} ${g.temp}°C ${g.power_draw}W Fan:${g.fan}%`).join(" | ");
+  if (e.type==="gpu_status" && e.gpus) return e.gpus.map(g=>`GPU${g.idx} ${g.temp}°C ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ");
   if (e.type==="price_change") return `${e.gpu_name} x${e.num_gpus} $${e.old_price}→$${e.new_price}/hr`;
   if (e.type==="rental_start") return `${e.gpus} @ ${e.rate}`;
   if (e.type==="rental_end")   return `${e.gpus} ended`;
@@ -653,7 +653,7 @@ function renderRigCard(idx, d) {
     const totalPow = powers.reduce((a,b)=>a+b,0);
     const tEl = document.getElementById("rc"+idx+"-temp");
     tEl.textContent = avg+"°C"; tEl.className = "text-lg font-bold "+tempClass(avg);
-    document.getElementById("rc"+idx+"-power").textContent = totalPow+"W";
+    document.getElementById("rc"+idx+"-power").textContent = totalPow.toFixed(1)+"W";
 
     // Mini GPU rows
     document.getElementById("rc"+idx+"-gpus").innerHTML = last.gpus.map(g=>`
@@ -661,7 +661,7 @@ function renderRigCard(idx, d) {
         <span class="text-slate-500 w-10">GPU${g.idx}</span>
         <div class="flex-1 bg-slate-800 rounded-full h-1"><div class="h-1 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div>
         <span class="${tempClass(g.temp)} w-10 text-right">${g.temp}°C</span>
-        <span class="text-slate-500 w-14 text-right">${g.power_draw}W</span>
+        <span class="text-slate-500 w-14 text-right">${Number(g.power_draw).toFixed(1)}W</span>
         <span class="text-slate-600 w-10 text-right">F${g.fan}%</span>
       </div>`).join("");
   }
@@ -701,7 +701,7 @@ function renderRig(idx) {
         <div class="card p-4 space-y-3">
           <div class="flex justify-between"><div><p class="text-xs text-slate-500">GPU ${g.idx}</p><p class="text-sm font-semibold">${g.name}</p></div><span class="text-xl font-bold ${tempClass(g.temp)}">${g.temp}°C</span></div>
           <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Temp</span><span>${g.temp}°C</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div></div>
-          <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Power</span><span>${g.power_draw}W / ${g.power_limit}W</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill bg-blue-500" style="width:${Math.min(Math.round(g.power_draw/g.power_limit*100),100)}%"></div></div></div>
+          <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Power</span><span>${Number(g.power_draw).toFixed(1)}W / ${Number(g.power_limit).toFixed(0)}W</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill bg-blue-500" style="width:${Math.min(Math.round(g.power_draw/g.power_limit*100),100)}%"></div></div></div>
           <div class="flex justify-between text-xs text-slate-400"><span>Fan <b>${g.fan}%</b></span><span class="${tempClass(g.temp)}">${g.temp>75?"HOT":g.temp>65?"WARM":"OK"}</span></div>
         </div>`).join("");
     }
