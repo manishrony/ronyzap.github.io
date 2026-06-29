@@ -444,15 +444,13 @@ function tempClass(t) { return t>75?"temp-hot":t>65?"temp-warn":"temp-ok"; }
 // computeRevenue(allEvents, periodStart, periodEnd)
 // daily_earnings (Vast.ai confirmed) take priority over rental_start/end.
 // For any UTC day covered by daily_earnings, use that amount as-is.
-// rental_start/end only counts hours on days NOT covered by daily_earnings.
+// rental_start/end estimates on uncovered days. Duplicate rental_start events
+// (from service restarts) are collapsed — only one open session per machine.
 function computeRevenue(allEvents, periodStart, periodEnd) {
   const pS = periodStart ? periodStart.getTime() : 0;
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
   let total = 0;
 
-  // Step 1: daily_earnings — ground truth; record which UTC dates are covered.
-  // Only mark a date covered if total > 0 — $0 entries mean billing not yet finalised,
-  // so rental_start hours should fill in for that day.
   const covered = new Set();
   allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
     const dayS = new Date(e.ts).getTime();
@@ -463,33 +461,44 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
     }
   });
 
-  // Step 2: rental_start/end — skip hours on days already covered by daily_earnings.
-  const starts = allEvents.filter(e => e.type === "rental_start");
-  const ends   = allEvents.filter(e => e.type === "rental_end");
-  starts.forEach(s => {
-    const end  = ends.find(e => e.instance_id === s.instance_id && e.ts > s.ts);
-    let rate = parseFloat((s.rate || "0").replace(/[^0-9.]/g, "")) || 0;
-    // If rental_start has $0 rate (backfilled before price was set), estimate from price_change
-    if (!rate) {
-      const mid = String(s.machine_id || s.instance_id || "");
-      const pc = allEvents.filter(e => e.type === "price_change" && String(e.machine_id || "") === mid);
-      if (pc.length) rate = parseFloat(pc[pc.length - 1].new_price) || 0;
+  // Build per-machine non-overlapping sessions to handle duplicate rental_start events
+  const sessions = {};
+  const sorted = [...allEvents].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0);
+  for (const e of sorted) {
+    const mid = String(e.machine_id || e.instance_id || "");
+    if (!mid) continue;
+    if (e.type === "rental_start") {
+      if (!sessions[mid]) sessions[mid] = [];
+      const list = sessions[mid];
+      if (!list.length || list[list.length - 1].end !== null) {
+        let rate = parseFloat((e.rate || "0").replace(/[^0-9.]/g, "")) || 0;
+        if (!rate) {
+          const pc = allEvents.filter(x => x.type === "price_change" && String(x.machine_id || "") === mid);
+          if (pc.length) rate = parseFloat(pc[pc.length - 1].new_price) || 0;
+        }
+        list.push({ start: new Date(e.ts).getTime(), end: null, rate });
+      }
+    } else if (e.type === "rental_end") {
+      const list = sessions[mid];
+      if (list && list.length && list[list.length - 1].end === null)
+        list[list.length - 1].end = new Date(e.ts).getTime();
     }
-    if (!rate) return;
-    const rS = new Date(s.ts).getTime();
-    const rE = end ? new Date(end.ts).getTime() : Date.now();
-    const oS = Math.max(rS, pS);
-    const oE = Math.min(rE, pE);
-    if (oE <= oS) return;
-    let cur = oS;
-    while (cur < oE) {
-      const d    = new Date(cur);
-      const dStr = d.toISOString().slice(0, 10);
-      const next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
-      if (!covered.has(dStr)) total += rate * (Math.min(oE, next) - cur) / 3600000;
-      cur = next;
+  }
+  for (const list of Object.values(sessions)) {
+    for (const { start: rS, end: rEraw, rate } of list) {
+      if (!rate) continue;
+      const rE = rEraw !== null ? rEraw : Date.now();
+      const oS = Math.max(rS, pS), oE = Math.min(rE, pE);
+      if (oE <= oS) continue;
+      let cur = oS;
+      while (cur < oE) {
+        const d = new Date(cur), dStr = d.toISOString().slice(0, 10);
+        const next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+        if (!covered.has(dStr)) total += rate * (Math.min(oE, next) - cur) / 3600000;
+        cur = next;
+      }
     }
-  });
+  }
 
   return total;
 }

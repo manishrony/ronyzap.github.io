@@ -181,8 +181,8 @@ except Exception as e:
 
 machines = data.get('machines', [])
 
-# Collect machine IDs already with rental_start in the JSONL log
-seen_rented = set()
+# Track machines with an OPEN rental (rental_start not yet followed by rental_end)
+open_rentals = set()
 try:
     with open(jsonl) as f:
         for line in f:
@@ -191,9 +191,11 @@ try:
                 continue
             try:
                 ev = json.loads(line)
+                mid = str(ev.get('machine_id', ev.get('instance_id', '')))
                 if ev.get('type') == 'rental_start':
-                    # Match by machine_id (new) or instance_id (old events)
-                    seen_rented.add(str(ev.get('machine_id', ev.get('instance_id', ''))))
+                    open_rentals.add(mid)
+                elif ev.get('type') == 'rental_end':
+                    open_rentals.discard(mid)
             except Exception:
                 pass
 except FileNotFoundError:
@@ -220,8 +222,8 @@ for m in machines:
     if not mid or not rented:
         continue
 
-    if mid in seen_rented:
-        print(f"[INIT] Machine {mid} already logged as rented — skipping")
+    if mid in open_rentals:
+        print(f"[INIT] Machine {mid} already has open rental — skipping")
         continue
 
     # If min_bid_price is 0, try to get rate from last price_change event in the log
