@@ -44,8 +44,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        except BrokenPipeError:
+            pass
         except Exception as e:
-            self.send_error(500, str(e))
+            try: self.send_error(500, str(e))
+            except BrokenPipeError: pass
 
     def _serve_file(self, path, mime):
         try:
@@ -56,11 +59,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+        except BrokenPipeError:
+            pass
         except Exception:
-            self.send_error(404)
+            try: self.send_error(404)
+            except BrokenPipeError: pass
 
     def log_message(self, *_):
-        pass  # suppress access logs
+        pass
+
+    def handle_error(self, request, client_address):
+        pass  # suppress BrokenPipeError and connection reset noise
 
 if __name__ == "__main__":
     srv = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
