@@ -56,7 +56,7 @@
 // ── Config (same localStorage key as combined.html) ───────────────────
 const DEFAULT_RIGS = [
   { name:"Zappa1", url:"" },
-  { name:"Zappa2", url:"http://192.168.1.196:8081" },
+  { name:"Zappa2", url:"peer" },
 ];
 function loadConfig() {
   try { return JSON.parse(localStorage.getItem("rig_config")) || DEFAULT_RIGS; }
@@ -77,9 +77,10 @@ function getSlot(ts) {
 // ── Fetch ─────────────────────────────────────────────────────────────
 async function fetchRig(idx) {
   const rig = RIGS[idx];
-  const base = rig.url || window.location.origin;
+  const base = (!rig.url || rig.url === "peer") ? window.location.origin : rig.url;
+  const path = (rig.url === "peer") ? "/api/peer" : "/api/data";
   try {
-    const r = await fetch(base + "/api/data?" + Date.now(), {signal: AbortSignal.timeout(8000)});
+    const r = await fetch(base + path + "?" + Date.now(), {signal: AbortSignal.timeout(8000)});
     if (!r.ok) throw new Error();
     const json = await r.json();
     DATA[idx] = {

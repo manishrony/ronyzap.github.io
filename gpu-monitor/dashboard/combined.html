@@ -53,8 +53,8 @@
       <input id="cfg-name2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white" value="Zappa2">
     </div>
     <div>
-      <label class="text-xs text-slate-400">Rig 2 API URL (local IP e.g. http://192.168.1.196:8081)</label>
-      <input id="cfg-url2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="http://192.168.1.196:8081">
+      <label class="text-xs text-slate-400">Rig 2 API URL — use "peer" to proxy through this server (works from internet)</label>
+      <input id="cfg-url2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="peer">
     </div>
     <div class="flex gap-3 pt-2">
       <button onclick="saveSettings()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 rounded">Save & Refresh</button>
@@ -312,7 +312,7 @@
 // ── Config ──────────────────────────────────────────────────────────
 const DEFAULT_RIGS = [
   { name:"Zappa1", url:"" },
-  { name:"Zappa2", url:"http://192.168.1.196:8081" },
+  { name:"Zappa2", url:"peer" },
 ];
 
 function loadConfig() {
@@ -359,9 +359,10 @@ function saveSettings() {
 // ── Fetch ────────────────────────────────────────────────────────────
 async function fetchRig(idx) {
   const rig = RIGS[idx];
-  const base = rig.url || window.location.origin;
+  const base = (!rig.url || rig.url === "peer") ? window.location.origin : rig.url;
+  const path = (rig.url === "peer") ? "/api/peer" : "/api/data";
   try {
-    const r = await fetch(base + "/api/data?" + Date.now(), { signal: AbortSignal.timeout(8000) });
+    const r = await fetch(base + path + "?" + Date.now(), { signal: AbortSignal.timeout(8000) });
     if (!r.ok) throw new Error(r.status);
     DATA[idx] = await r.json();
     DATA[idx].online = true;
