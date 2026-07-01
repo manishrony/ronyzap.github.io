@@ -459,10 +459,16 @@ print(urllib.parse.quote(q))
         log "  market_stats: bundles API returned no data for '$gpu_name'"
         echo "null"; return
     fi
-    echo "$raw" | python3 - "$gpu_name" <<'PYEOF' 2>>"$LOG_FILE"
+    # Write raw JSON to a temp file — avoids bash stdin conflict between pipe and heredoc.
+    # "echo $raw | python3 - <<'PYEOF'" causes heredoc to win over pipe, leaving stdin empty.
+    local raw_file
+    raw_file=$(mktemp)
+    printf '%s' "$raw" > "$raw_file"
+    python3 - "$gpu_name" "$raw_file" <<'PYEOF' 2>>"$LOG_FILE"
 import sys, json
 try:
-    data = json.load(sys.stdin)
+    with open(sys.argv[2]) as _f:
+        data = json.load(_f)
     gpu_filter = sys.argv[1].upper() if len(sys.argv) > 1 else ''
     offers = data.get('offers', data.get('instances', data.get('bundles', [])))
     if not offers:
@@ -489,6 +495,7 @@ except Exception as e:
     sys.stderr.write(f'market_stats error: {e}\n')
     print('null')
 PYEOF
+    rm -f "$raw_file"
 }
 
 vastai_set_price() {
@@ -511,8 +518,8 @@ obj = {
     'machine':            int(sys.argv[1]),
     'price_gpu':          float(sys.argv[2]),
     'price_disk':         0.1,
-    'price_inetu':        0.1,
-    'price_inetd':        0.1,
+    'price_inetu':        0.05,
+    'price_inetd':        0.05,
     'price_min_bid':      float(sys.argv[3]),
     'min_chunk':          1,
     'end_date':           int(sys.argv[4]) if sys.argv[4] != '0' else None,
