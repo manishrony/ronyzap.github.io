@@ -441,12 +441,24 @@ vastai_market_stats() {
     local gpu_name="$1"
     local encoded_name
     encoded_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name" 2>/dev/null || echo "$gpu_name")
-    local url="$VASTAI_API/bundles/?gpu_name=${encoded_name}&rentable=true&order=dph_total&limit=50&type=on_demand"
-    { vastai_get "$url" 2>/dev/null || echo '{}'; } | python3 -c "
+    # Try v0 first (bundles search lives here), then v1 fallback; drop type=on_demand (not a valid filter)
+    local raw=""
+    for base_url in "https://console.vast.ai/api/v0/bundles" "https://console.vast.ai/api/v1/bundles"; do
+        local url="${base_url}/?gpu_name=${encoded_name}&rentable=true&order=dph_total&limit=50"
+        raw=$(vastai_get "$url" 2>/dev/null || true)
+        [[ -n "$raw" && "$raw" != "{}" && "$raw" != "[]" ]] && break
+    done
+    if [[ -z "$raw" ]]; then
+        log "  market_stats: bundles API returned empty for '$gpu_name'"
+        echo "null"; return
+    fi
+    echo "$raw" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    offers = data.get('offers', data.get('instances', []))
+    offers = data.get('offers', data.get('instances', data.get('bundles', [])))
+    if not offers:
+        import sys; sys.stderr.write(f'market_stats: no offers key; got keys={list(data.keys())[:8]}\n')
     prices = sorted([float(o.get('dph_total', 0) or 0) for o in offers if float(o.get('dph_total', 0) or 0) > 0])
     if prices:
         n = len(prices)
@@ -465,7 +477,7 @@ try:
 except Exception as e:
     sys.stderr.write(f'market_stats error: {e}\n')
     print('null')
-" 2>/dev/null
+" 2>> "$LOG_FILE"
 }
 
 vastai_set_price() {
@@ -625,6 +637,11 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
             new_price="$floor"
             direction="↑ (below floor \$$floor)"
+        elif (( $(echo "$cur_bid > $market_price * 5" | bc -l) )); then
+            # Severely mispriced (>5x market): jump directly to just above market instead of trickling down
+            new_price=$(printf "%.4f" "$(echo "scale=4; $market_price + 0.05" | bc)")
+            (( $(echo "$new_price < $floor" | bc -l) )) && new_price="$floor"
+            direction="↓↓ (severely above market — resetting)"
         elif (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust" | bc)")
             direction="↓ (above market)"
