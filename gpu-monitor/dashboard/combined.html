@@ -503,6 +503,34 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   return total;
 }
 
+// Count rental sessions that OVERLAP with [periodStart, periodEnd] (not just started in period)
+function countRentals(allEvents, periodStart, periodEnd) {
+  const pS = periodStart ? periodStart.getTime() : 0;
+  const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
+  const sessions = {};
+  for (const e of [...allEvents].sort((a,b)=>a.ts<b.ts?-1:a.ts>b.ts?1:0)) {
+    const mid = String(e.machine_id || e.instance_id || "");
+    if (!mid) continue;
+    if (e.type === "rental_start") {
+      if (!sessions[mid]) sessions[mid] = [];
+      const list = sessions[mid];
+      if (!list.length || list[list.length-1].end !== null)
+        list.push({start: new Date(e.ts).getTime(), end: null});
+    } else if (e.type === "rental_end") {
+      const list = sessions[mid];
+      if (list && list.length && list[list.length-1].end === null)
+        list[list.length-1].end = new Date(e.ts).getTime();
+    }
+  }
+  let count = 0;
+  for (const list of Object.values(sessions))
+    for (const {start:rS, end:rEraw} of list) {
+      const rE = rEraw !== null ? rEraw : Date.now();
+      if (rE > pS && rS < pE) count++;
+    }
+  return count;
+}
+
 function lastGPUStatus(events) {
   return [...events].filter(e=>e.type==="gpu_status").pop();
 }
@@ -542,10 +570,14 @@ function lineChart(id, labels, datasets, yOpts={}) {
   }});
 }
 
-function barChart(id, labels, datasets) {
+function barChart(id, labels, datasets, color) {
   dc(id);
   const el = document.getElementById(id); if(!el) return;
-  CHARTS[id] = new Chart(el, {type:"bar",data:{labels,datasets},options:{
+  // Accept either a plain values array or dataset-objects array
+  const ds = (Array.isArray(datasets) && datasets.length > 0 && typeof datasets[0] !== 'object')
+    ? [{label:"Revenue ($)", backgroundColor:(color||"#22c55e")+"99", borderColor:color||"#22c55e", borderWidth:1, borderRadius:4, data:datasets}]
+    : datasets;
+  CHARTS[id] = new Chart(el, {type:"bar",data:{labels,datasets:ds},options:{
     responsive:true,maintainAspectRatio:true,
     plugins:{legend:{labels:{color:"#94a3b8",font:{size:10}}}},
     scales:{
@@ -861,7 +893,7 @@ function renderRigAllMonths(events) {
 
   document.getElementById("rm-stat1-label").textContent = "Revenue This Month";
   document.getElementById("rm-revenue").textContent = fmtUSD(mRev);
-  document.getElementById("rm-rentals").textContent  = mEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("rm-rentals").textContent  = countRentals(events, mS, mCap);
   document.getElementById("rm-avg").textContent      = fmtUSD(mRev/daysElapsed)+"/day";
   document.getElementById("rm-prices").textContent   = mEvs.filter(e=>e.type==="price_change").length;
 
@@ -876,7 +908,7 @@ function renderRigAllMonths(events) {
     const{start,end}=monthRange(y,m);const cap=end>now?now:end;
     const evs=events.filter(e=>e.ts>=start.toISOString()&&e.ts<end.toISOString());
     return{ym,label:new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"long",year:"numeric"}),
-      rev:computeRevenue(events,start,cap),rents:evs.filter(e=>e.type==="rental_start").length,
+      rev:computeRevenue(events,start,cap),rents:countRentals(events,start,cap),
       warns:evs.filter(e=>e.type==="temp_warning").length,prices:evs.filter(e=>e.type==="price_change").length};
   });
   document.getElementById("rm-table-label").textContent = "All Months — click to drill in";
@@ -918,7 +950,7 @@ function renderRigMonthDetail(events, year, month) {
 
   document.getElementById("rm-stat1-label").textContent = label;
   document.getElementById("rm-revenue").textContent = fmtUSD(rev);
-  document.getElementById("rm-rentals").textContent  = evs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("rm-rentals").textContent  = countRentals(events, start, cap);
   document.getElementById("rm-avg").textContent      = fmtUSD(rev/daysElapsed)+"/day";
   document.getElementById("rm-prices").textContent   = evs.filter(e=>e.type==="price_change").length;
 
@@ -992,7 +1024,7 @@ function renderRigAllYears(events) {
 
   document.getElementById("ry-stat1-label").textContent="Revenue "+curY;
   document.getElementById("ry-revenue").textContent=fmtUSD(yRev);
-  document.getElementById("ry-rentals").textContent=yEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("ry-rentals").textContent=countRentals(events,yS,yCap);
   document.getElementById("ry-avg").textContent=fmtUSD(yRev/moEl)+"/mo";
   document.getElementById("ry-days").textContent=yEvs.filter(e=>e.type==="daily_earnings"&&(e.total||0)>0).length;
 

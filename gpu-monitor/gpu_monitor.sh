@@ -498,8 +498,12 @@ vastai_pricing() {
     local machines_json
     machines_json=$(vastai_get_machines) || { log "PRICING: Could not fetch machines"; return; }
 
+    # Write machine list to temp file; reading from a file (not a pipe) keeps the
+    # while loop in the current shell — functions, write_event, and variable
+    # assignments all work correctly without subshell interference.
+    local tmpfile
+    tmpfile=$(mktemp)
     echo "$machines_json" | python3 -c "
-
 import sys, json, socket
 data = json.load(sys.stdin)
 hn = socket.gethostname()
@@ -517,7 +521,9 @@ for m in data.get('machines', []):
     cur_bid  = float(m.get('min_bid_price', m.get('min_bid', 0)) or 0)
     num_gpus = m.get('num_gpus', 1)
     print(f'{mid}|{rented}|{listed}|{gpu_name}|{cur_bid}|{num_gpus}')
-" 2>/dev/null | while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus; do
+" 2>/dev/null > "$tmpfile"
+
+    while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus; do
 
         [[ -z "$mid" ]] && continue
 
@@ -526,22 +532,44 @@ for m in data.get('machines', []):
         local floor
         floor=$(get_price_floor "$gpu_name")
 
-        # Fetch full market stats, write snapshot, send below-median alert
+        # Fetch market stats; parse p25 + median in one Python call (avoids
+        # quoting fragility of separate inline python -c expressions)
         local stats_json market_price market_median
         stats_json=$(vastai_market_stats "$gpu_name")
 
         if [[ -n "$stats_json" && "$stats_json" != "null" ]]; then
-            market_price=$(  echo "$stats_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'{d[\"p25\"]:.4f}')"   2>/dev/null || echo "0")
-            market_median=$( echo "$stats_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'{d[\"median\"]:.4f}')" 2>/dev/null || echo "0")
+            local mraw
+            mraw=$(python3 - "$stats_json" <<'PYEOF' 2>/dev/null
+import json, sys
+d = json.loads(sys.argv[1])
+print(f"{d.get('p25', 0):.4f}")
+print(f"{d.get('median', 0):.4f}")
+PYEOF
+)
+            market_price=$(printf '%s\n' "$mraw" | sed -n '1p')
+            market_median=$(printf '%s\n' "$mraw" | sed -n '2p')
+            [[ -z "$market_price"  ]] && market_price="0"
+            [[ -z "$market_median" ]] && market_median="0"
 
-            # Write market_snapshot event for the dashboard market analysis page
+            # Write market_snapshot event — pass JSON via argv to avoid shell quoting issues
             local snap_json
-            snap_json=$(echo "$stats_json" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-d.update({'machine_id':'$mid','gpu_name':'$gpu_name','num_gpus':$num_gpus,'my_price':$cur_bid,'below_median':($cur_bid < d.get('median',99))})
-print(json.dumps(d))
-" 2>/dev/null)
+            snap_json=$(python3 - "$stats_json" "$mid" "$gpu_name" "$num_gpus" "$cur_bid" <<'PYEOF' 2>/dev/null
+import json, sys
+stats   = json.loads(sys.argv[1])
+mid_v   = sys.argv[2]
+gpu_n   = sys.argv[3]
+n_gpus  = int(sys.argv[4])
+my_p    = float(sys.argv[5])
+stats.update({
+    'machine_id':   mid_v,
+    'gpu_name':     gpu_n,
+    'num_gpus':     n_gpus,
+    'my_price':     my_p,
+    'below_median': my_p < stats.get('median', 99),
+})
+print(json.dumps(stats))
+PYEOF
+)
             [[ -n "$snap_json" ]] && write_event "market_snapshot" "$snap_json"
 
             # Below-median Telegram alert (throttled to once per 4 hours per machine)
@@ -636,8 +664,9 @@ Market p25: \$$market_price/hr | Median: \$$market_median/hr | Floor: \$$floor/h
             log "  Machine $mid: price update FAILED"
         fi
 
-    done
+    done < "$tmpfile"
 
+    rm -f "$tmpfile"
     log "--- End Pricing Check ---"
 }
 

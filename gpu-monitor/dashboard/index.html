@@ -358,6 +358,34 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   return total;
 }
 
+// Count rental sessions overlapping [periodStart, periodEnd]
+function countRentals(allEvents, periodStart, periodEnd) {
+  const pS = periodStart ? periodStart.getTime() : 0;
+  const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
+  const sessions = {};
+  for (const e of [...allEvents].sort((a,b)=>a.ts<b.ts?-1:a.ts>b.ts?1:0)) {
+    const mid = String(e.machine_id || e.instance_id || "");
+    if (!mid) continue;
+    if (e.type === "rental_start") {
+      if (!sessions[mid]) sessions[mid] = [];
+      const list = sessions[mid];
+      if (!list.length || list[list.length-1].end !== null)
+        list.push({start: new Date(e.ts).getTime(), end: null});
+    } else if (e.type === "rental_end") {
+      const list = sessions[mid];
+      if (list && list.length && list[list.length-1].end === null)
+        list[list.length-1].end = new Date(e.ts).getTime();
+    }
+  }
+  let count = 0;
+  for (const list of Object.values(sessions))
+    for (const {start:rS, end:rEraw} of list) {
+      const rE = rEraw !== null ? rEraw : Date.now();
+      if (rE > pS && rS < pE) count++;
+    }
+  return count;
+}
+
 function lastGPUStatus() {
   return [...STATE.events].filter(e => e.type === "gpu_status").pop() || null;
 }
@@ -645,7 +673,7 @@ function renderAllMonths() {
 
   document.getElementById("mo-stat1-label").textContent = "Revenue This Month";
   document.getElementById("mo-revenue").textContent = fmtUSD(mRev);
-  document.getElementById("mo-rentals").textContent  = mEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("mo-rentals").textContent  = countRentals(STATE.events, mS, mCap);
   document.getElementById("mo-avg").textContent      = fmtUSD(mRev / daysElapsed) + "/day";
   document.getElementById("mo-prices").textContent   = mEvs.filter(e=>e.type==="price_change").length;
 
@@ -669,7 +697,7 @@ function renderAllMonths() {
     const evs = STATE.events.filter(e => e.ts >= start.toISOString() && e.ts < end.toISOString());
     return { ym, label: new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"long",year:"numeric"}),
       rev: computeRevenue(STATE.events, start, cap),
-      rents: evs.filter(e=>e.type==="rental_start").length,
+      rents: countRentals(STATE.events, start, cap),
       warns: evs.filter(e=>e.type==="temp_warning").length,
       prices: evs.filter(e=>e.type==="price_change").length };
   });
