@@ -439,41 +439,52 @@ vastai_get_machines() {
 
 vastai_market_stats() {
     local gpu_name="$1"
-    local raw="" url encoded_q
-    # Try multiple q-parameter formats — Vast.ai CLI uses operator-style {"eq":...} inside q.
-    # Also try no filter (get all, filter client-side) as last resort.
-    local -a q_variants
-    q_variants=(
-        "$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':{'eq':sys.argv[1]},'rentable':{'eq':True},'type':{'eq':'on_demand'}})))" "$gpu_name" 2>/dev/null)"
-        "$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':{'eq':sys.argv[1]},'rentable':{'eq':True}})))" "$gpu_name" 2>/dev/null)"
-        "$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':sys.argv[1],'rentable':True})))" "$gpu_name" 2>/dev/null)"
-        "$(python3 -c "import urllib.parse,json; print(urllib.parse.quote(json.dumps({'rentable':{'eq':True}})))" 2>/dev/null)"
-    )
+    local raw="" url resp http_code tmpf
+    tmpf=$(mktemp)
+
+    # Use curl -s (no -f) so we capture error bodies for diagnosis.
+    # Try no-filter first (get all, filter client-side), then q= variants.
+    local encoded_q_op encoded_q_simple
+    encoded_q_op=$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':{'eq':sys.argv[1]},'rentable':{'eq':True}})))" "$gpu_name" 2>/dev/null || echo "")
+    encoded_q_simple=$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':sys.argv[1],'rentable':True})))" "$gpu_name" 2>/dev/null || echo "")
+
     for base_url in "https://cloud.vast.ai/api/v0/bundles" "https://console.vast.ai/api/v0/bundles"; do
-        for encoded_q in "${q_variants[@]}"; do
-            [[ -z "$encoded_q" ]] && continue
-            url="${base_url}/?q=${encoded_q}"
-            raw=$(vastai_get "$url" 2>/dev/null || true)
+        local sep; [[ "${base_url}" == *"?"* ]] && sep="&" || sep="?"
+        for suffix in "" "?q=${encoded_q_op}" "?q=${encoded_q_simple}"; do
+            [[ "$suffix" == "?q=" ]] && continue
+            if [[ -z "$suffix" ]]; then
+                url="${base_url}/${sep}api_key=${VASTAI_API_KEY}"
+            else
+                url="${base_url}/${suffix}&api_key=${VASTAI_API_KEY}"
+            fi
+            http_code=$(curl -s -o "$tmpf" -w "%{http_code}" "$url" 2>/dev/null)
+            resp=$(cat "$tmpf" 2>/dev/null)
             local n_offers
-            n_offers=$(echo "$raw" | python3 -c "
+            n_offers=$(echo "$resp" | python3 -c "
 import sys,json
 try:
     d=json.load(sys.stdin)
     if d.get('success') is False:
-        import sys as s; s.stderr.write(f'API err: {d.get(\"msg\",d.get(\"error\",\"\"))}\n')
+        sys.stderr.write(f'bundles {sys.argv[1]} HTTP ${http_code}: {d.get(\"msg\",d.get(\"error\",\"\"))[:120]}\n')
         print('0'); exit()
     arr=d.get('offers',d.get('instances',d.get('bundles',[])))
+    sys.stderr.write(f'bundles {sys.argv[1]} HTTP ${http_code}: {len(arr)} offers\n')
     print(str(len(arr)))
-except Exception as e: print('0')
-" 2>>"$LOG_FILE" || echo "0")
+except Exception as e:
+    sys.stderr.write(f'bundles {sys.argv[1]} HTTP ${http_code} parse err: {e} | body[:80]={repr(sys.argv[2][:80])}\n')
+    print('0')
+" "$suffix" "$resp" 2>>"$LOG_FILE" || echo "0")
             if [[ "$n_offers" -gt 0 ]]; then
+                raw="$resp"
+                rm -f "$tmpf"
                 break 2
             fi
-            raw=""
         done
     done
+    rm -f "$tmpf"
+
     if [[ -z "$raw" ]]; then
-        log "  market_stats: all bundles API formats failed for '$gpu_name'"
+        log "  market_stats: all bundles API variants failed for '$gpu_name' — check log for HTTP details"
         echo "null"; return
     fi
     echo "$raw" | python3 - "$gpu_name" <<'PYEOF' 2>>"$LOG_FILE"
