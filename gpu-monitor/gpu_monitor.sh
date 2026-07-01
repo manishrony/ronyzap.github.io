@@ -439,17 +439,25 @@ vastai_get_machines() {
 
 vastai_market_stats() {
     local gpu_name="$1"
-    local encoded_name
-    encoded_name=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$gpu_name" 2>/dev/null || echo "$gpu_name")
-    # Try v0 first (bundles search lives here), then v1 fallback; drop type=on_demand (not a valid filter)
+    # Filters must be inside a JSON 'q' parameter — bare query params are rejected by the API.
+    local encoded_q
+    encoded_q=$(python3 -c "
+import urllib.parse, json, sys
+q = json.dumps({'gpu_name': sys.argv[1], 'rentable': True, 'order_by': 'dph_total+asc', 'limit': 50})
+print(urllib.parse.quote(q))
+" "$gpu_name" 2>/dev/null || echo "")
     local raw=""
-    for base_url in "https://console.vast.ai/api/v0/bundles" "https://console.vast.ai/api/v1/bundles"; do
-        local url="${base_url}/?gpu_name=${encoded_name}&rentable=true&order=dph_total&limit=50"
+    for base_url in "https://console.vast.ai/api/v0/bundles" "https://cloud.vast.ai/api/v0/bundles"; do
+        local url="${base_url}/?q=${encoded_q}"
         raw=$(vastai_get "$url" 2>/dev/null || true)
-        [[ -n "$raw" && "$raw" != "{}" && "$raw" != "[]" ]] && break
+        # Skip error responses (success:false) and empty results
+        local is_ok
+        is_ok=$(echo "$raw" | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if d.get('success',True) is not False else 'err')" 2>/dev/null || echo "err")
+        [[ "$is_ok" == "ok" && -n "$raw" && "$raw" != "{}" && "$raw" != "[]" ]] && break
+        raw=""
     done
     if [[ -z "$raw" ]]; then
-        log "  market_stats: bundles API returned empty for '$gpu_name'"
+        log "  market_stats: bundles API returned no data for '$gpu_name'"
         echo "null"; return
     fi
     echo "$raw" | python3 -c "
@@ -489,30 +497,21 @@ vastai_set_price() {
 
     local ask_body="{\"price_gpu\":$new_price,\"price_disk\":0.1,\"price_inetsend\":0.1,\"price_inetrecv\":0.1}"
 
-    # Try every known variant — cloud.vast.ai is the real API host, console.vast.ai is the web frontend.
-    local base url
+    # /asks/ endpoint only accepts POST (creates/updates the on-demand listing price).
+    # PUT returns 404 "predicate mismatch for machine_asks_DELETE_json".
+    local base url meth
     for base in "https://cloud.vast.ai" "https://console.vast.ai"; do
         for ver in "v0" "v1"; do
             url="${base}/api/${ver}/machines/${machine_id}/asks/"
-
-            # api_key query param
-            http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
-                -H "Content-Type: application/json" \
-                -d "$ask_body" \
-                "${url}?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-            resp=$(head -c 200 "$tmpf" 2>/dev/null)
-            log "  PUT ${base##*/}/${ver}/asks/ api_key HTTP ${http_code}: $resp"
-            if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-
-            # Bearer token
-            http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
-                -H "Content-Type: application/json" \
-                -H "Authorization: Bearer ${VASTAI_API_KEY}" \
-                -d "$ask_body" \
-                "$url" 2>/dev/null)
-            resp=$(head -c 200 "$tmpf" 2>/dev/null)
-            log "  PUT ${base##*/}/${ver}/asks/ Bearer HTTP ${http_code}: $resp"
-            if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+            for meth in "POST" "PUT"; do
+                http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X "$meth" \
+                    -H "Content-Type: application/json" \
+                    -d "$ask_body" \
+                    "${url}?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+                resp=$(head -c 200 "$tmpf" 2>/dev/null)
+                log "  $meth ${base##*/}/${ver}/asks/ HTTP ${http_code}: $resp"
+                if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+            done
         done
     done
 
