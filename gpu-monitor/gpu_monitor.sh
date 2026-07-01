@@ -487,28 +487,43 @@ vastai_set_price() {
     new_price=$(printf "%.4f" "$new_price")
     tmpf=$(mktemp)
 
-    # Primary: /asks/ sets the on-demand listing price (price_gpu field)
-    # This is what Vast.ai console displays and renters see.
-    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
-        -H "Content-Type: application/json" \
-        -d "{\"price_gpu\":$new_price,\"price_disk\":0.1,\"price_inetsend\":0.1,\"price_inetrecv\":0.1}" \
-        "https://console.vast.ai/api/v0/machines/${machine_id}/asks/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-    resp=$(head -c 300 "$tmpf" 2>/dev/null)
-    log "  PUT /asks/ HTTP ${http_code}: $resp"
-    if [[ "$http_code" =~ ^2 ]]; then
-        rm -f "$tmpf"; return 0
-    fi
+    local ask_body="{\"price_gpu\":$new_price,\"price_disk\":0.1,\"price_inetsend\":0.1,\"price_inetrecv\":0.1}"
 
-    # Fallback: /minbid/ (interruptible floor — still useful as secondary)
+    # Try every known variant — cloud.vast.ai is the real API host, console.vast.ai is the web frontend.
+    local base url
+    for base in "https://cloud.vast.ai" "https://console.vast.ai"; do
+        for ver in "v0" "v1"; do
+            url="${base}/api/${ver}/machines/${machine_id}/asks/"
+
+            # api_key query param
+            http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
+                -H "Content-Type: application/json" \
+                -d "$ask_body" \
+                "${url}?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+            resp=$(head -c 200 "$tmpf" 2>/dev/null)
+            log "  PUT ${base##*/}/${ver}/asks/ api_key HTTP ${http_code}: $resp"
+            if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+
+            # Bearer token
+            http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${VASTAI_API_KEY}" \
+                -d "$ask_body" \
+                "$url" 2>/dev/null)
+            resp=$(head -c 200 "$tmpf" 2>/dev/null)
+            log "  PUT ${base##*/}/${ver}/asks/ Bearer HTTP ${http_code}: $resp"
+            if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
+        done
+    done
+
+    # Last resort: /minbid/ sets the interruptible bid floor (does NOT update console listing price)
     http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Content-Type: application/json" \
         -d "{\"client_id\":\"me\",\"price\":$new_price}" \
         "https://console.vast.ai/api/v0/machines/${machine_id}/minbid/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-    resp=$(head -c 300 "$tmpf" 2>/dev/null)
+    resp=$(head -c 200 "$tmpf" 2>/dev/null)
     log "  PUT /minbid/ HTTP ${http_code}: $resp"
-    if [[ "$http_code" =~ ^2 ]]; then
-        rm -f "$tmpf"; return 0
-    fi
+    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
 
     rm -f "$tmpf"
     return 1
