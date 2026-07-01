@@ -217,7 +217,7 @@ for m in machines:
         rented = True
     gpu_name = m.get('gpu_name', 'unknown')
     num_gpus = m.get('num_gpus', 0)
-    cur_bid  = float(m.get('min_bid_price', m.get('min_bid', 0)) or 0)
+    cur_bid  = float(m.get('listed_gpu_cost') or m.get('min_bid_price', m.get('min_bid', 0)) or 0)
 
     if not mid or not rented:
         continue
@@ -334,7 +334,7 @@ for m in data.get('machines', []):
         rented = True
     gpu_name = m.get('gpu_name', '?')
     num_gpus = m.get('num_gpus', 0)
-    cur_bid  = float(m.get('min_bid_price', m.get('min_bid', 0)) or 0)
+    cur_bid  = float(m.get('listed_gpu_cost') or m.get('min_bid_price', m.get('min_bid', 0)) or 0)
     lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cur_bid:.3f}/hr')
 print('\n'.join(lines))
 " 2>/dev/null) || { log "VAST.AI: Parse error"; return; }
@@ -439,52 +439,24 @@ vastai_get_machines() {
 
 vastai_market_stats() {
     local gpu_name="$1"
-    local raw="" url resp http_code tmpf
-    tmpf=$(mktemp)
-
-    # Use curl -s (no -f) so we capture error bodies for diagnosis.
-    # Try no-filter first (get all, filter client-side), then q= variants.
-    local encoded_q_op encoded_q_simple
-    encoded_q_op=$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':{'eq':sys.argv[1]},'rentable':{'eq':True}})))" "$gpu_name" 2>/dev/null || echo "")
-    encoded_q_simple=$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':sys.argv[1],'rentable':True})))" "$gpu_name" 2>/dev/null || echo "")
-
+    # Confirmed working format: operator-style {"eq":...} inside q parameter.
+    local encoded_q
+    encoded_q=$(python3 -c "
+import urllib.parse, json, sys
+q = json.dumps({'gpu_name': {'eq': sys.argv[1]}, 'rentable': {'eq': True}})
+print(urllib.parse.quote(q))
+" "$gpu_name" 2>/dev/null || echo "")
+    local raw=""
     for base_url in "https://cloud.vast.ai/api/v0/bundles" "https://console.vast.ai/api/v0/bundles"; do
-        local sep; [[ "${base_url}" == *"?"* ]] && sep="&" || sep="?"
-        for suffix in "" "?q=${encoded_q_op}" "?q=${encoded_q_simple}"; do
-            [[ "$suffix" == "?q=" ]] && continue
-            if [[ -z "$suffix" ]]; then
-                url="${base_url}/${sep}api_key=${VASTAI_API_KEY}"
-            else
-                url="${base_url}/${suffix}&api_key=${VASTAI_API_KEY}"
-            fi
-            http_code=$(curl -s -o "$tmpf" -w "%{http_code}" "$url" 2>/dev/null)
-            resp=$(cat "$tmpf" 2>/dev/null)
-            local n_offers
-            n_offers=$(echo "$resp" | python3 -c "
-import sys,json
-try:
-    d=json.load(sys.stdin)
-    if d.get('success') is False:
-        sys.stderr.write(f'bundles {sys.argv[1]} HTTP ${http_code}: {d.get(\"msg\",d.get(\"error\",\"\"))[:120]}\n')
-        print('0'); exit()
-    arr=d.get('offers',d.get('instances',d.get('bundles',[])))
-    sys.stderr.write(f'bundles {sys.argv[1]} HTTP ${http_code}: {len(arr)} offers\n')
-    print(str(len(arr)))
-except Exception as e:
-    sys.stderr.write(f'bundles {sys.argv[1]} HTTP ${http_code} parse err: {e} | body[:80]={repr(sys.argv[2][:80])}\n')
-    print('0')
-" "$suffix" "$resp" 2>>"$LOG_FILE" || echo "0")
-            if [[ "$n_offers" -gt 0 ]]; then
-                raw="$resp"
-                rm -f "$tmpf"
-                break 2
-            fi
-        done
+        local url="${base_url}/?q=${encoded_q}"
+        raw=$(vastai_get "$url" 2>/dev/null || true)
+        local n
+        n=$(echo "$raw" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('offers',d.get('bundles',[]))))" 2>/dev/null || echo "0")
+        [[ "$n" -gt 0 ]] && break
+        raw=""
     done
-    rm -f "$tmpf"
-
     if [[ -z "$raw" ]]; then
-        log "  market_stats: all bundles API variants failed for '$gpu_name' — check log for HTTP details"
+        log "  market_stats: bundles API returned no data for '$gpu_name'"
         echo "null"; return
     fi
     echo "$raw" | python3 - "$gpu_name" <<'PYEOF' 2>>"$LOG_FILE"
@@ -522,38 +494,49 @@ PYEOF
 vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
-    local http_code tmpf resp
+    local floor_price="${3:-0.10}"
+    local http_code tmpf resp end_ts body
     new_price=$(printf "%.4f" "$new_price")
+    floor_price=$(printf "%.4f" "$floor_price")
     tmpf=$(mktemp)
 
-    local ask_body="{\"price_gpu\":$new_price,\"price_disk\":0.1,\"price_inetsend\":0.1,\"price_inetrecv\":0.1}"
+    # Listing end = now + MAX_RENTAL_DAYS (Unix epoch). Extends the listing on every price update.
+    end_ts=$(date -d "+${MAX_RENTAL_DAYS} days" '+%s' 2>/dev/null || \
+             python3 -c "import time; print(int(time.time() + ${MAX_RENTAL_DAYS}*86400))" 2>/dev/null || \
+             echo "0")
 
-    # /asks/ endpoint only accepts POST (creates/updates the on-demand listing price).
-    # PUT returns 404 "predicate mismatch for machine_asks_DELETE_json".
-    local base url meth
-    for base in "https://cloud.vast.ai" "https://console.vast.ai"; do
-        for ver in "v0" "v1"; do
-            url="${base}/api/${ver}/machines/${machine_id}/asks/"
-            for meth in "POST" "PUT"; do
-                http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X "$meth" \
-                    -H "Content-Type: application/json" \
-                    -d "$ask_body" \
-                    "${url}?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-                resp=$(head -c 200 "$tmpf" 2>/dev/null)
-                log "  $meth ${base##*/}/${ver}/asks/ HTTP ${http_code}: $resp"
-                if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-            done
-        done
+    body=$(python3 -c "
+import json, sys
+obj = {
+    'machine':            int(sys.argv[1]),
+    'price_gpu':          float(sys.argv[2]),
+    'price_disk':         0.1,
+    'price_inetu':        0.1,
+    'price_inetd':        0.1,
+    'price_min_bid':      float(sys.argv[3]),
+    'min_chunk':          1,
+    'end_date':           int(sys.argv[4]) if sys.argv[4] != '0' else None,
+    'credit_discount_max': 0,
+}
+print(json.dumps(obj))
+" "$machine_id" "$new_price" "$floor_price" "$end_ts" 2>/dev/null)
+
+    if [[ -z "$body" ]]; then
+        log "  ERROR: could not build create_asks body"; rm -f "$tmpf"; return 1
+    fi
+
+    # PUT /api/v0/machines/create_asks/ sets the on-demand listing price
+    # (the blue-button price in the Vast.ai console). Confirmed correct endpoint.
+    for base in "https://console.vast.ai" "https://cloud.vast.ai"; do
+        http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${VASTAI_API_KEY}" \
+            -d "$body" \
+            "${base}/api/v0/machines/create_asks/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+        resp=$(head -c 300 "$tmpf" 2>/dev/null)
+        log "  PUT ${base##*/}/create_asks/ HTTP ${http_code}: ${resp:0:200}"
+        if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
     done
-
-    # Last resort: /minbid/ sets the interruptible bid floor (does NOT update console listing price)
-    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
-        -H "Content-Type: application/json" \
-        -d "{\"client_id\":\"me\",\"price\":$new_price}" \
-        "https://console.vast.ai/api/v0/machines/${machine_id}/minbid/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-    resp=$(head -c 200 "$tmpf" 2>/dev/null)
-    log "  PUT /minbid/ HTTP ${http_code}: $resp"
-    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
 
     rm -f "$tmpf"
     return 1
@@ -587,14 +570,11 @@ for m in data.get('machines', []):
         rented = True
     listed   = m.get('listed', False)
     gpu_name = m.get('gpu_name', 'unknown')
-    # ask / ask_price is the on-demand listing price visible in Vast.ai console.
-    # min_bid_price is the interruptible floor — only use it as a last fallback.
-    ask_v      = m.get('ask')
-    ask_p_v    = m.get('ask_price')
-    min_bid_v  = m.get('min_bid_price', m.get('min_bid', 0))
-    cur_bid    = float(ask_v or ask_p_v or min_bid_v or 0)
-    import sys as _sys
-    _sys.stderr.write(f'DEBUG machine {mid}: ask={ask_v} ask_price={ask_p_v} min_bid_price={min_bid_v} cur_bid={cur_bid}\n')
+    # listed_gpu_cost is the on-demand listing price (the blue-button price in Vast.ai console).
+    # min_bid_price is the interruptible bid floor — use as fallback only.
+    listed_v  = m.get('listed_gpu_cost')
+    min_bid_v = m.get('min_bid_price', m.get('min_bid', 0))
+    cur_bid   = float(listed_v or min_bid_v or 0)
     num_gpus = m.get('num_gpus', 1)
     print(f'{mid}|{rented}|{listed}|{gpu_name}|{cur_bid}|{num_gpus}')
 " 2>> "$LOG_FILE" > "$tmpfile"
@@ -734,7 +714,7 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
 
         log "  Machine $mid: \$$cur_bid → \$$new_price/hr $direction (max rental: $expire_date)"
 
-        if vastai_set_price "$mid" "$new_price"; then
+        if vastai_set_price "$mid" "$new_price" "$floor"; then
             log "  Machine $mid: price updated OK"
             tg_send "💰 <b>Price Adjusted</b> — $(hostname)
 Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
