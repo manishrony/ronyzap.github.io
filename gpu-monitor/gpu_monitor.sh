@@ -542,10 +542,17 @@ for m in data.get('machines', []):
         rented = True
     listed   = m.get('listed', False)
     gpu_name = m.get('gpu_name', 'unknown')
-    cur_bid  = float(m.get('min_bid_price', m.get('min_bid', 0)) or 0)
+    # ask / ask_price is the on-demand listing price visible in Vast.ai console.
+    # min_bid_price is the interruptible floor — only use it as a last fallback.
+    ask_v      = m.get('ask')
+    ask_p_v    = m.get('ask_price')
+    min_bid_v  = m.get('min_bid_price', m.get('min_bid', 0))
+    cur_bid    = float(ask_v or ask_p_v or min_bid_v or 0)
+    import sys as _sys
+    _sys.stderr.write(f'DEBUG machine {mid}: ask={ask_v} ask_price={ask_p_v} min_bid_price={min_bid_v} cur_bid={cur_bid}\n')
     num_gpus = m.get('num_gpus', 1)
     print(f'{mid}|{rented}|{listed}|{gpu_name}|{cur_bid}|{num_gpus}')
-" 2>/dev/null > "$tmpfile"
+" 2>> "$LOG_FILE" > "$tmpfile"
 
     while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus; do
 
