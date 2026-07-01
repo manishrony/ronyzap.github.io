@@ -439,34 +439,54 @@ vastai_get_machines() {
 
 vastai_market_stats() {
     local gpu_name="$1"
-    # Filters must be inside a JSON 'q' parameter — bare query params are rejected by the API.
-    local encoded_q
-    encoded_q=$(python3 -c "
-import urllib.parse, json, sys
-q = json.dumps({'gpu_name': sys.argv[1], 'rentable': True, 'order_by': 'dph_total+asc', 'limit': 50})
-print(urllib.parse.quote(q))
-" "$gpu_name" 2>/dev/null || echo "")
-    local raw=""
-    for base_url in "https://console.vast.ai/api/v0/bundles" "https://cloud.vast.ai/api/v0/bundles"; do
-        local url="${base_url}/?q=${encoded_q}"
-        raw=$(vastai_get "$url" 2>/dev/null || true)
-        # Skip error responses (success:false) and empty results
-        local is_ok
-        is_ok=$(echo "$raw" | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if d.get('success',True) is not False else 'err')" 2>/dev/null || echo "err")
-        [[ "$is_ok" == "ok" && -n "$raw" && "$raw" != "{}" && "$raw" != "[]" ]] && break
-        raw=""
+    local raw="" url encoded_q
+    # Try multiple q-parameter formats — Vast.ai CLI uses operator-style {"eq":...} inside q.
+    # Also try no filter (get all, filter client-side) as last resort.
+    local -a q_variants
+    q_variants=(
+        "$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':{'eq':sys.argv[1]},'rentable':{'eq':True},'type':{'eq':'on_demand'}})))" "$gpu_name" 2>/dev/null)"
+        "$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':{'eq':sys.argv[1]},'rentable':{'eq':True}})))" "$gpu_name" 2>/dev/null)"
+        "$(python3 -c "import urllib.parse,json,sys; print(urllib.parse.quote(json.dumps({'gpu_name':sys.argv[1],'rentable':True})))" "$gpu_name" 2>/dev/null)"
+        "$(python3 -c "import urllib.parse,json; print(urllib.parse.quote(json.dumps({'rentable':{'eq':True}})))" 2>/dev/null)"
+    )
+    for base_url in "https://cloud.vast.ai/api/v0/bundles" "https://console.vast.ai/api/v0/bundles"; do
+        for encoded_q in "${q_variants[@]}"; do
+            [[ -z "$encoded_q" ]] && continue
+            url="${base_url}/?q=${encoded_q}"
+            raw=$(vastai_get "$url" 2>/dev/null || true)
+            local n_offers
+            n_offers=$(echo "$raw" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    if d.get('success') is False:
+        import sys as s; s.stderr.write(f'API err: {d.get(\"msg\",d.get(\"error\",\"\"))}\n')
+        print('0'); exit()
+    arr=d.get('offers',d.get('instances',d.get('bundles',[])))
+    print(str(len(arr)))
+except Exception as e: print('0')
+" 2>>"$LOG_FILE" || echo "0")
+            if [[ "$n_offers" -gt 0 ]]; then
+                break 2
+            fi
+            raw=""
+        done
     done
     if [[ -z "$raw" ]]; then
-        log "  market_stats: bundles API returned no data for '$gpu_name'"
+        log "  market_stats: all bundles API formats failed for '$gpu_name'"
         echo "null"; return
     fi
-    echo "$raw" | python3 -c "
+    echo "$raw" | python3 - "$gpu_name" <<'PYEOF' 2>>"$LOG_FILE"
 import sys, json
 try:
     data = json.load(sys.stdin)
+    gpu_filter = sys.argv[1].upper() if len(sys.argv) > 1 else ''
     offers = data.get('offers', data.get('instances', data.get('bundles', [])))
     if not offers:
-        import sys; sys.stderr.write(f'market_stats: no offers key; got keys={list(data.keys())[:8]}\n')
+        sys.stderr.write(f'market_stats: no offers key; got keys={list(data.keys())[:8]}\n')
+    # Filter by GPU name similarity when the API returned unfiltered results
+    if gpu_filter:
+        offers = [o for o in offers if gpu_filter in str(o.get('gpu_name', '')).upper()]
     prices = sorted([float(o.get('dph_total', 0) or 0) for o in offers if float(o.get('dph_total', 0) or 0) > 0])
     if prices:
         n = len(prices)
@@ -485,7 +505,7 @@ try:
 except Exception as e:
     sys.stderr.write(f'market_stats error: {e}\n')
     print('null')
-" 2>> "$LOG_FILE"
+PYEOF
 }
 
 vastai_set_price() {
