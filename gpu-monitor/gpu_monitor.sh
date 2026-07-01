@@ -571,16 +571,13 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
             log "  Machine $mid: market data unavailable"
         fi
 
-        # Skip price adjustment on active rentals or unlisted machines
-        if [[ "$rented" == "True" ]]; then
-            log "  Machine $mid: RENTED — skipping price adjustment"
-            continue
-        fi
-
+        # Skip unlisted machines (fully rented machines auto-unlist on Vast.ai)
         if [[ "$listed" != "True" ]]; then
-            log "  Machine $mid: not listed — skipping"
+            log "  Machine $mid: not listed — skipping price adjustment"
             continue
         fi
+        # Partially rented (Min-GPU:1) still has free slots — adjust pricing for them
+        [[ "$rented" == "True" ]] && log "  Machine $mid: partially rented, adjusting price for free slot(s)"
 
         if [[ -z "$market_price" || "$market_price" == "0" ]]; then
             market_price="$floor"
