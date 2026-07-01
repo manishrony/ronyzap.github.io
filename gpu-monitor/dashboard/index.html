@@ -68,6 +68,8 @@
       <p class="text-xs text-slate-500 mb-1">Active Rental</p>
       <p class="text-lg font-bold text-white" id="stat-rental-status">—</p>
       <p class="text-xs text-slate-500 mt-1" id="stat-rental-sub"></p>
+      <p class="text-xs text-emerald-400 mt-1 font-mono" id="stat-rental-rate"></p>
+      <p class="text-xs text-slate-400 mt-0.5" id="stat-rental-end"></p>
     </div>
     <div class="card p-4">
       <p class="text-xs text-slate-500 mb-1">Avg GPU Temp</p>
@@ -445,6 +447,11 @@ function renderOverview() {
   document.getElementById("stat-rental-sub").textContent = isRented
     ? (lastRentStart.gpus || "") + " @ " + (lastRentStart.rate || "")
     : "No active rental";
+  const latestPC = [...STATE.events].filter(e => e.type === "price_change").pop();
+  const rateEl = document.getElementById("stat-rental-rate");
+  const endEl = document.getElementById("stat-rental-end");
+  if (rateEl) rateEl.textContent = latestPC?.new_price ? "Listed: $" + Number(latestPC.new_price).toFixed(4) + "/hr" : "";
+  if (endEl) endEl.textContent = latestPC?.expire_date ? "Ends: " + latestPC.expire_date : "";
 
   const last = lastGPUStatus();
   if (last && last.gpus && last.gpus.length) {
