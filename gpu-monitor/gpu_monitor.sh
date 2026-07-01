@@ -483,20 +483,32 @@ except Exception as e:
 vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
-    local http_code tmpf
-    # Ensure valid JSON decimal (bc may produce .30 without leading zero)
+    local http_code tmpf resp
     new_price=$(printf "%.4f" "$new_price")
-    # Confirmed working endpoint: PUT /api/v0/machines/{id}/minbid/
-    # Body: {"client_id": "me", "price": <per_gpu_per_hour>}
-    local data="{\"client_id\": \"me\", \"price\": $new_price}"
     tmpf=$(mktemp)
 
+    # Primary: /asks/ sets the on-demand listing price (price_gpu field)
+    # This is what Vast.ai console displays and renters see.
     http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
         -H "Content-Type: application/json" \
-        -d "$data" \
+        -d "{\"price_gpu\":$new_price,\"price_disk\":0.1,\"price_inetsend\":0.1,\"price_inetrecv\":0.1}" \
+        "https://console.vast.ai/api/v0/machines/${machine_id}/asks/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
+    resp=$(head -c 300 "$tmpf" 2>/dev/null)
+    log "  PUT /asks/ HTTP ${http_code}: $resp"
+    if [[ "$http_code" =~ ^2 ]]; then
+        rm -f "$tmpf"; return 0
+    fi
+
+    # Fallback: /minbid/ (interruptible floor — still useful as secondary)
+    http_code=$(curl -s -o "$tmpf" -w "%{http_code}" -X PUT \
+        -H "Content-Type: application/json" \
+        -d "{\"client_id\":\"me\",\"price\":$new_price}" \
         "https://console.vast.ai/api/v0/machines/${machine_id}/minbid/?api_key=${VASTAI_API_KEY}" 2>/dev/null)
-    if [[ "$http_code" =~ ^2 ]]; then rm -f "$tmpf"; return 0; fi
-    log "  PUT v0/minbid HTTP ${http_code}: $(head -c 200 "$tmpf")"
+    resp=$(head -c 300 "$tmpf" 2>/dev/null)
+    log "  PUT /minbid/ HTTP ${http_code}: $resp"
+    if [[ "$http_code" =~ ^2 ]]; then
+        rm -f "$tmpf"; return 0
+    fi
 
     rm -f "$tmpf"
     return 1
