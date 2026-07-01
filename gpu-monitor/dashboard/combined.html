@@ -364,13 +364,21 @@ async function fetchRig(idx) {
   try {
     const r = await fetch(base + path + "?" + Date.now(), { signal: AbortSignal.timeout(8000) });
     if (!r.ok) throw new Error(r.status);
-    DATA[idx] = await r.json();
-    DATA[idx].online = true;
+    const d = await r.json();
+    // Peer proxy errors return HTTP 200 with {error:...} — treat as offline
+    d.online = !d.error;
+    DATA[idx] = d;
+    // Cache the real hostname so it survives offline periods
+    if (d.host) RIGS[idx].lastKnownHost = d.host;
   } catch {
     DATA[idx] = DATA[idx] || { events: [] };
     DATA[idx].online = false;
   }
   updatePill(idx);
+}
+
+function rigName(idx) {
+  return DATA[idx]?.host || RIGS[idx].lastKnownHost || RIGS[idx].name;
 }
 
 async function fetchAll() {
@@ -385,7 +393,7 @@ function updatePill(idx) {
   const el = document.getElementById("pill-rig" + (idx+1));
   el.className = "inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full cursor-pointer " + (online ? "badge-green" : "badge-red");
   el.querySelector("span").className = "w-2 h-2 rounded-full " + (online ? "bg-green-400 animate-pulse" : "bg-red-400");
-  document.getElementById("pill-name" + (idx+1)).textContent = DATA[idx]?.host || rig.name;
+  document.getElementById("pill-name" + (idx+1)).textContent = rigName(idx);
 }
 
 // ── Navigation ───────────────────────────────────────────────────────
@@ -393,7 +401,7 @@ function drilldown(idx) {
   activeRig = idx;
   document.getElementById("view-combined").classList.add("hidden");
   document.getElementById("view-rig").classList.remove("hidden");
-  document.getElementById("rig-detail-title").textContent = DATA[idx]?.host || RIGS[idx].name;
+  document.getElementById("rig-detail-title").textContent = rigName(idx);
   showRigTab("overview");
 }
 function backToCombined() {
@@ -599,7 +607,7 @@ function renderCombined() {
   const rev30d = DATA.reduce((s,d)=>s+computeRevenue(d.events, daysAgo(30), new Date()),0);
   document.getElementById("c-revenue").textContent    = fmtUSD(rev);
   document.getElementById("c-revenue-30d").textContent = fmtUSD(rev30d);
-  document.getElementById("c-revenue-sub").textContent = DATA.map((d,i)=>(d.host||RIGS[i].name)+": "+fmtUSD(computeRevenue(d.events, today(), new Date()))).join(" · ");
+  document.getElementById("c-revenue-sub").textContent = DATA.map((_,i)=>rigName(i)+": "+fmtUSD(computeRevenue(DATA[i].events, today(), new Date()))).join(" · ");
 
   // Rental status across both rigs
   const rentedRigs = DATA.map((d,i) => {
@@ -611,7 +619,7 @@ function renderCombined() {
   document.getElementById("c-rental-sub").textContent = RIGS.map((r,i)=>{
     const last = [...DATA[i].events].filter(e=>e.type==="rental_start").pop();
     const end  = [...DATA[i].events].filter(e=>e.type==="rental_end").pop();
-    return (DATA[i].host||r.name) + ": " + (last&&(!end||end.ts<last.ts)?"● Active":"○ Free");
+    return rigName(i) + ": " + (last&&(!end||end.ts<last.ts)?"● Active":"○ Free");
   }).join(" · ");
 
   // Avg temp
@@ -627,7 +635,7 @@ function renderCombined() {
 
   const priceChanges = todayEvs.filter(e=>e.type==="price_change");
   document.getElementById("c-prices").textContent = priceChanges.length;
-  document.getElementById("c-prices-sub").textContent = DATA.map((d,i)=>(d.host||RIGS[i].name)+": "+eventsToday(d.events).filter(e=>e.type==="price_change").length).join(" · ");
+  document.getElementById("c-prices-sub").textContent = DATA.map((_,i)=>rigName(i)+": "+eventsToday(DATA[i].events).filter(e=>e.type==="price_change").length).join(" · ");
 
   // Render rig summary cards
   DATA.forEach((d,i) => renderRigCard(i, d));
@@ -642,7 +650,7 @@ function renderCombined() {
       const ev = tempEvs24[ri]; if(!ev.length) return [];
       const gpuCount = ev[0].gpus?.length||0;
       return Array.from({length:gpuCount},(_,gi)=>({
-        label: RIGS[ri].name+" GPU"+gi,
+        label: rigName(ri)+" GPU"+gi,
         data: allTempEvs.map(e=>e._rig===ri?ev.find(x=>x.ts===e.ts)?.gpus?.[gi]?.temp??null:null),
         borderColor: colors[(ri*4+gi)%colors.length],
         backgroundColor:"transparent", fill:false,
@@ -655,7 +663,7 @@ function renderCombined() {
   const days = Array.from({length:7},(_,i)=>daysAgo(6-i));
   const dayLabels = days.map(d=>d.toLocaleDateString([],{weekday:"short",day:"numeric"}));
   barChart("chart-c-rev", dayLabels, DATA.map((d,ri)=>({
-    label: RIGS[ri].name,
+    label: rigName(ri),
     data: days.map(day=>{
       const next=new Date(day); next.setDate(next.getDate()+1);
       return parseFloat(computeRevenue(d.events, day, next).toFixed(4));
@@ -670,7 +678,7 @@ function renderCombined() {
   const recent = [...allEvs].reverse().slice(0,60);
   tbody.innerHTML = recent.map(e=>`<tr class="hover:bg-slate-800/30">
     <td class="py-1.5 pr-3 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
-    <td class="py-1.5 pr-3"><span class="text-xs px-2 py-0.5 rounded ${e._rig===0?'bg-emerald-900/50 text-emerald-400 border border-emerald-800':'bg-blue-900/50 text-blue-400 border border-blue-800'}">${DATA[e._rig]?.host||RIGS[e._rig].name}</span></td>
+    <td class="py-1.5 pr-3"><span class="text-xs px-2 py-0.5 rounded ${e._rig===0?'bg-emerald-900/50 text-emerald-400 border border-emerald-800':'bg-blue-900/50 text-blue-400 border border-blue-800'}">${rigName(e._rig)}</span></td>
     <td class="py-1.5 pr-3">${eventBadge(e.type)}</td>
     <td class="py-1.5 text-xs text-slate-400">${eventDetail(e)}</td>
   </tr>`).join("");
@@ -681,7 +689,7 @@ function renderRigCard(idx, d) {
   const online = d.online !== false;
   const todayEvs = eventsToday(d.events);
 
-  const displayName = d.host || RIGS[idx].name;
+  const displayName = rigName(idx);
   document.getElementById("rc"+idx+"-name").textContent = displayName;
   document.getElementById("rc"+idx+"-sub").textContent = last ? (last.gpus?.length||0)+"x GPU" : "No data";
 
