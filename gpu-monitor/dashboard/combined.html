@@ -553,7 +553,7 @@ function eventBadge(type) {
 
 function eventDetail(e) {
   if (e.type==="gpu_status" && e.gpus) return e.gpus.map(g=>`GPU${g.idx} ${g.temp}°C ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ");
-  if (e.type==="price_change") return `${e.gpu_name} x${e.num_gpus} $${e.old_price}→$${e.new_price}/hr`;
+  if (e.type==="price_change") return `${e.gpu_name} x${e.num_gpus} $${Number(e.old_price).toFixed(2)}→$${Number(e.new_price).toFixed(2)}/hr`;
   if (e.type==="rental_start") return `${e.gpus} @ ${e.rate}`;
   if (e.type==="rental_end")   return `${e.gpus} ended`;
   if (e.type==="temp_warning") return `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
@@ -810,7 +810,7 @@ function renderRig(idx) {
     pDiv.innerHTML = pEvs.length ? pEvs.map(p=>`
       <div class="flex justify-between py-2 border-b border-slate-800/50 text-sm">
         <span class="text-slate-500 text-xs">${fmtTS(p.ts)} — ${p.gpu_name||""} x${p.num_gpus||""}</span>
-        <span class="font-mono"><span class="text-slate-400">$${p.old_price}</span> → <span class="${parseFloat(p.new_price)>parseFloat(p.old_price)?'text-emerald-400':'text-amber-400'}">$${p.new_price}</span></span>
+        <span class="font-mono"><span class="text-slate-400">$${Number(p.old_price).toFixed(2)}</span> → <span class="${parseFloat(p.new_price)>parseFloat(p.old_price)?'text-emerald-400':'text-amber-400'}">$${Number(p.new_price).toFixed(2)}</span></span>
       </div>`).join("") : '<p class="text-slate-500">No price changes today.</p>';
   }
 

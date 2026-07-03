@@ -596,6 +596,9 @@ for m in data.get('machines', []):
 
         [[ -z "$mid" ]] && continue
 
+        # Round cur_bid to 4 decimal places to avoid floating point noise in logs/events
+        cur_bid=$(printf "%.4f" "$cur_bid" 2>/dev/null || echo "$cur_bid")
+
         log "  Machine $mid | GPU: $gpu_name x$num_gpus | Listed: $listed | Rented: $rented | Bid: \$$cur_bid/hr"
 
         local floor
