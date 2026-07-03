@@ -152,6 +152,73 @@ check_gpus() {
 }
 
 # ─────────────────────────────────────────────
+# GPU fault detection (Xid / NVRM PCIe errors)
+# ─────────────────────────────────────────────
+
+# Tracks the dmesg sequence number seen last cycle to avoid re-alerting.
+GPU_FAULT_LAST_SEQ_FILE="/var/tmp/gpu_monitor_fault_seq"
+
+check_gpu_faults() {
+    # Read last seen dmesg sequence number (or 0 on first run)
+    local last_seq=0
+    [[ -f "$GPU_FAULT_LAST_SEQ_FILE" ]] && last_seq=$(cat "$GPU_FAULT_LAST_SEQ_FILE" 2>/dev/null || echo 0)
+
+    # Grab dmesg with sequence numbers, filter to only new entries
+    local new_faults
+    new_faults=$(dmesg --notime --level=err,warn --facility=kern 2>/dev/null \
+        | grep -iE "NVRM|Xid|badf[0-9a-f]{4}|gpu.*error|gpuHandleSanityCheck" \
+        || true)
+
+    # Also scan without level filter in case NVRM logs as info
+    local nvrm_faults
+    nvrm_faults=$(dmesg -T 2>/dev/null \
+        | grep -iE "Xid \(|badf[0-9a-f]{4}|gpuHandleSanityCheck|NVRM:.*error|NVRM:.*fault|NVRM:.*GPU[0-9]" \
+        | tail -20 \
+        || true)
+
+    # Save current dmesg line count as new watermark
+    local cur_count
+    cur_count=$(dmesg 2>/dev/null | wc -l || echo 0)
+
+    # Only alert on lines beyond last watermark
+    if [[ "$cur_count" -le "$last_seq" ]]; then
+        echo "$cur_count" > "$GPU_FAULT_LAST_SEQ_FILE"
+        return
+    fi
+
+    local new_lines
+    new_lines=$(dmesg 2>/dev/null | tail -n +"$((last_seq + 1))" \
+        | grep -iE "Xid \(|badf[0-9a-f]{4}|gpuHandleSanityCheck|NVRM:.*error|NVRM:.*fault|NVRM:.*GPU[0-9]" \
+        || true)
+
+    echo "$cur_count" > "$GPU_FAULT_LAST_SEQ_FILE"
+
+    [[ -z "$new_lines" ]] && return
+
+    log "  GPU FAULT DETECTED in dmesg:"
+    while IFS= read -r fault_line; do
+        [[ -z "$fault_line" ]] && continue
+        log "    $fault_line"
+
+        # Extract GPU index hint if present
+        local gpu_hint=""
+        if echo "$fault_line" | grep -qiE "GPU([0-9]+)"; then
+            gpu_hint=$(echo "$fault_line" | grep -oiE "GPU[0-9]+" | head -1)
+        fi
+
+        # Write dashboard event
+        local escaped
+        escaped=$(echo "$fault_line" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null || echo "\"$fault_line\"")
+        write_event "gpu_fault" "{\"message\":${escaped},\"gpu_hint\":\"${gpu_hint}\"}"
+
+        # Telegram alert
+        tg_send "⚠️ <b>GPU Fault — $(hostname)</b>
+${gpu_hint:+GPU: <b>$gpu_hint</b>
+}$(echo "$fault_line" | head -c 300)"
+    done <<< "$new_lines"
+}
+
+# ─────────────────────────────────────────────
 # Vast.ai rental monitoring
 # ─────────────────────────────────────────────
 
@@ -786,6 +853,7 @@ main() {
         vastai_sync_earnings
         set_power_limits
         check_gpus
+        check_gpu_faults
 
         if (( now - last_price_check >= PRICE_INTERVAL )); then
             vastai_pricing

@@ -553,6 +553,7 @@ function lastGPUStatus(events) {
 
 function eventBadge(type) {
   const m = {gpu_status:["badge-blue","GPU"],temp_warning:["badge-red","🌡️ TEMP"],
+    gpu_fault:["badge-red","⚡ FAULT"],
     rental_start:["badge-green","▶ RENTED"],rental_end:["badge-yellow","■ ENDED"],
     price_change:["badge-purple","💰 PRICE"],startup:["badge-blue","🚀 START"]};
   const [cls,lbl] = m[type]||["badge-blue",type];
@@ -561,6 +562,7 @@ function eventBadge(type) {
 
 function eventDetail(e) {
   if (e.type==="gpu_status" && e.gpus) return e.gpus.map(g=>`GPU${g.idx} ${g.temp}°C ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ");
+  if (e.type==="gpu_fault") return (e.gpu_hint ? e.gpu_hint+": " : "") + (e.message||"").slice(0,120);
   if (e.type==="price_change") return `${e.gpu_name} x${e.num_gpus} $${Number(e.old_price).toFixed(2)}→$${Number(e.new_price).toFixed(2)}/hr`;
   if (e.type==="rental_start") return `${e.gpus} @ ${e.rate}`;
   if (e.type==="rental_end")   return `${e.gpus} ended`;
@@ -779,7 +781,9 @@ function renderRig(idx) {
       const avg = Math.round(last.gpus.reduce((a,g)=>a+g.temp,0)/last.gpus.length);
       const tEl = document.getElementById("r-temp");
       tEl.textContent = avg+"°C"; tEl.className = "text-2xl font-bold "+tempClass(avg);
-      document.getElementById("r-temp-sub").textContent = todayEvs.filter(e=>e.type==="temp_warning").length+" warning(s) today";
+      const tempWarns = todayEvs.filter(e=>e.type==="temp_warning").length;
+      const faults = events.filter(e=>e.type==="gpu_fault").length;
+      document.getElementById("r-temp-sub").textContent = tempWarns+" warning(s) today"+(faults?" · "+faults+" fault(s)":"");
 
       document.getElementById("r-gpu-cards").innerHTML = last.gpus.map(g=>`
         <div class="card p-4 space-y-3">
