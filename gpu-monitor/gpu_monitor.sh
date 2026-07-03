@@ -43,7 +43,7 @@ MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 # --- Listing ancillary prices (applied on every price update) ---
 PRICE_INET_UP=0.002    # $/GB upload   (~$2/TB)
 PRICE_INET_DOWN=0.002  # $/GB download (~$2/TB)
-# price_disk is hardcoded to $0.0036/GB/month (0.36 cents) — never adjusted dynamically
+# price_disk is hardcoded to $0.36/GB/month — never adjusted dynamically
 
 # ─────────────────────────────────────────────
 # Logging + structured JSON events
@@ -522,7 +522,7 @@ import json, sys
 obj = {
     'machine':            int(sys.argv[1]),
     'price_gpu':          float(sys.argv[2]),
-    'price_disk':         0.0036,
+    'price_disk':         0.36,
     'price_inetu':        float(sys.argv[5]),
     'price_inetd':        float(sys.argv[6]),
     'price_min_bid':      float(sys.argv[3]),
