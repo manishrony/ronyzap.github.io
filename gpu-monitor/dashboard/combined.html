@@ -551,6 +551,15 @@ function lastGPUStatus(events) {
   return [...events].filter(e=>e.type==="gpu_status").pop();
 }
 
+function lastRentalSlots(events) {
+  // Returns map of gpu_idx -> {rented, instance_id, rate} from most recent gpu_rental_status event
+  const ev = [...events].filter(e=>e.type==="gpu_rental_status").pop();
+  if (!ev || !ev.slots) return {};
+  const map = {};
+  ev.slots.forEach(s => { map[s.gpu_idx] = s; });
+  return map;
+}
+
 function eventBadge(type) {
   const m = {gpu_status:["badge-blue","GPU"],temp_warning:["badge-red","🌡️ TEMP"],
     gpu_fault:["badge-red","⚡ FAULT"],
@@ -716,15 +725,22 @@ function renderRigCard(idx, d) {
     tEl.textContent = avg+"°C"; tEl.className = "text-lg font-bold "+tempClass(avg);
     document.getElementById("rc"+idx+"-power").textContent = totalPow.toFixed(1)+"W";
 
-    // Mini GPU rows
-    document.getElementById("rc"+idx+"-gpus").innerHTML = last.gpus.map(g=>`
+    // Mini GPU rows with per-GPU rental status
+    const slots = lastRentalSlots(d.events);
+    document.getElementById("rc"+idx+"-gpus").innerHTML = last.gpus.map(g=>{
+      const slot = slots[g.idx];
+      const rentedDot = slot?.rented
+        ? `<span class="text-emerald-400 font-bold" title="Rented @ $${slot.rate}/hr">●</span>`
+        : `<span class="text-slate-700" title="Free">○</span>`;
+      return `
       <div class="flex items-center gap-2 text-xs">
         <span class="text-slate-500 w-10">GPU${g.idx}</span>
+        ${rentedDot}
         <div class="flex-1 bg-slate-800 rounded-full h-1"><div class="h-1 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div>
-        <span class="${tempClass(g.temp)} w-10 text-right">${g.temp}°C</span>
+        <span class="${tempClass(g.temp)} w-8 text-right">${g.temp}°C</span>
         <span class="text-slate-500 w-14 text-right">${Number(g.power_draw).toFixed(1)}W</span>
-        <span class="text-slate-600 w-10 text-right">F${g.fan}%</span>
-      </div>`).join("");
+      </div>`;
+    }).join("");
   }
 
   document.getElementById("rc"+idx+"-rev").textContent = fmtUSD(computeRevenue(d.events, today(), new Date()));
@@ -785,13 +801,23 @@ function renderRig(idx) {
       const faults = events.filter(e=>e.type==="gpu_fault").length;
       document.getElementById("r-temp-sub").textContent = tempWarns+" warning(s) today"+(faults?" · "+faults+" fault(s)":"");
 
-      document.getElementById("r-gpu-cards").innerHTML = last.gpus.map(g=>`
+      const rigSlots = lastRentalSlots(events);
+      document.getElementById("r-gpu-cards").innerHTML = last.gpus.map(g=>{
+        const slot = rigSlots[g.idx];
+        const rentalBadge = slot?.rented
+          ? `<span class="text-xs px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-400 border border-emerald-700/50">● $${slot.rate}/hr</span>`
+          : `<span class="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-500">○ Free</span>`;
+        return `
         <div class="card p-4 space-y-3">
-          <div class="flex justify-between"><div><p class="text-xs text-slate-500">GPU ${g.idx}</p><p class="text-sm font-semibold">${g.name}</p></div><span class="text-xl font-bold ${tempClass(g.temp)}">${g.temp}°C</span></div>
+          <div class="flex justify-between items-start">
+            <div><p class="text-xs text-slate-500">GPU ${g.idx}</p><p class="text-sm font-semibold">${g.name}</p></div>
+            <div class="flex flex-col items-end gap-1"><span class="text-xl font-bold ${tempClass(g.temp)}">${g.temp}°C</span>${rentalBadge}</div>
+          </div>
           <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Temp</span><span>${g.temp}°C</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div></div>
           <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Power</span><span>${Number(g.power_draw).toFixed(1)}W / ${Number(g.power_limit).toFixed(0)}W</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill bg-blue-500" style="width:${Math.min(Math.round(g.power_draw/g.power_limit*100),100)}%"></div></div></div>
           <div class="flex justify-between text-xs text-slate-400"><span>Fan <b>${g.fan}%</b></span><span class="${tempClass(g.temp)}">${g.temp>75?"HOT":g.temp>65?"WARM":"OK"}</span></div>
-        </div>`).join("");
+        </div>`;
+      }).join("");
     }
     document.getElementById("r-prices").textContent = todayEvs.filter(e=>e.type==="price_change").length;
 

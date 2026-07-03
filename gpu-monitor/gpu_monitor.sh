@@ -377,6 +377,48 @@ print(f"[EARNINGS] Logged daily_earnings: total=${total:.2f}  today=${daily_tota
 PYEOF
 }
 
+# Fetch per-GPU rental slot assignments from instances API.
+# Returns JSON: {"<machine_id>": {"<gpu_idx>": {"instance_id":"C.x","rate":0.42}, ...}}
+vastai_fetch_gpu_slots() {
+    local raw
+    # Try cloud then console — instances endpoint works with API key auth
+    for base in "https://console.vast.ai" "https://cloud.vast.ai"; do
+        raw=$(curl -sf -H "Authorization: Bearer ${VASTAI_API_KEY}" \
+            "${base}/api/v0/instances/?api_key=${VASTAI_API_KEY}" 2>/dev/null || true)
+        [[ -n "$raw" ]] && break
+    done
+    [[ -z "$raw" ]] && echo "{}" && return
+
+    python3 -c "
+import json, sys, socket
+try:
+    data = json.loads(sys.stdin.read())
+    hn = socket.gethostname()
+    instances = data.get('instances', data if isinstance(data, list) else [])
+    result = {}
+    for inst in instances:
+        mid = str(inst.get('machine_id', inst.get('machine', '')))
+        if not mid:
+            continue
+        # gpu_ids is a list of GPU slot indices used by this instance
+        gpu_ids = inst.get('gpu_ids', inst.get('gpus', []))
+        if not gpu_ids:
+            # Fall back: assume starts at slot 0 for num_gpus count
+            n = int(inst.get('num_gpus', 1) or 1)
+            gpu_ids = list(range(n))
+        rate = float(inst.get('dph_total', inst.get('dph_base', 0)) or 0)
+        iid  = str(inst.get('id', ''))
+        if mid not in result:
+            result[mid] = {}
+        for g in gpu_ids:
+            result[mid][str(g)] = {'instance_id': iid, 'rate': round(rate / max(len(gpu_ids),1), 4)}
+    print(json.dumps(result))
+except Exception as e:
+    import sys as _s; _s.stderr.write(str(e)+'\n')
+    print('{}')
+" <<< "$raw" 2>/dev/null || echo "{}"
+}
+
 # Check machine rental status from HOST perspective.
 # Uses /machines/?owner=me — 'rented' field = someone is renting your GPU.
 # Fires rental_start/end Telegram alerts only when rented status changes.
@@ -387,6 +429,10 @@ vastai_check() {
     response=$(vastai_get "$VASTAI_API/machines/") || {
         log "VAST.AI: API call failed"; return
     }
+
+    # Fetch per-GPU slot assignments from instances API
+    local gpu_slots_json
+    gpu_slots_json=$(vastai_fetch_gpu_slots)
 
     # State: one line per machine: {mid}|{rented}|{num_gpus}x{gpu_name}|{bid}/hr
     local current_state
@@ -475,6 +521,30 @@ Last rate: $cost"
         else
             log "VAST.AI: No machines found."
         fi
+    fi
+
+    # Write per-GPU rental status event every cycle (for dashboard GPU cards)
+    if [[ -n "$current_state" && -n "$gpu_slots_json" && "$gpu_slots_json" != "{}" ]]; then
+        echo "$current_state" | while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            IFS='|' read -r mid rented gpus cost <<< "$line"
+            local slot_event
+            slot_event=$(python3 -c "
+import json, sys
+slots = json.loads(sys.argv[1]).get(sys.argv[2], {})
+total = int(sys.argv[3])
+gpu_name = sys.argv[4]
+rows = []
+for i in range(total):
+    s = slots.get(str(i))
+    rows.append({'gpu_idx': i, 'rented': bool(s),
+                 'instance_id': s['instance_id'] if s else None,
+                 'rate': s['rate'] if s else 0})
+print(json.dumps({'machine_id': sys.argv[2], 'gpu_name': gpu_name,
+                  'total_gpus': total, 'slots': rows}))
+" "$gpu_slots_json" "$mid" "${gpus%%x*}" "${gpus##*x }" 2>/dev/null || true)
+            [[ -n "$slot_event" ]] && write_event "gpu_rental_status" "$slot_event"
+        done
     fi
 }
 
