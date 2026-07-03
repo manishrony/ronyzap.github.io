@@ -207,7 +207,7 @@
   <div id="rtab-content-overview" class="p-6 space-y-6">
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
       <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Revenue Today</p><p class="text-2xl font-bold text-emerald-400" id="r-revenue">—</p></div>
-      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Rental Status</p><p class="text-lg font-bold" id="r-rental">—</p><p class="text-xs text-slate-500" id="r-rental-sub"></p></div>
+      <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Rental Status</p><p class="text-lg font-bold" id="r-rental">—</p><p class="text-sm font-mono font-semibold text-emerald-400" id="r-rental-rate"></p><p class="text-xs text-slate-500" id="r-rental-sub"></p><p class="text-xs text-slate-400" id="r-rental-end"></p></div>
       <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Avg GPU Temp</p><p class="text-2xl font-bold" id="r-temp">—</p><p class="text-xs text-slate-500" id="r-temp-sub"></p></div>
       <div class="card p-4"><p class="text-xs text-slate-500 mb-1">Price Changes</p><p class="text-2xl font-bold text-violet-400" id="r-prices">—</p></div>
     </div>
@@ -739,7 +739,16 @@ function renderRig(idx) {
     const lastEnd  = [...events].filter(e=>e.type==="rental_end").pop();
     const isRented = lastRent && (!lastEnd||lastEnd.ts<lastRent.ts);
     document.getElementById("r-rental").innerHTML = isRented ? '<span class="text-emerald-400">● Active</span>' : '<span class="text-slate-500">○ Available</span>';
-    document.getElementById("r-rental-sub").textContent = isRented ? (lastRent.gpus||"")+" @ "+(lastRent.rate||"") : "";
+    document.getElementById("r-rental-sub").textContent = isRented ? (lastRent.gpus||"") : "";
+    const lastPriceEv = [...events].filter(e=>e.type==="price_change").pop();
+    if (isRented) {
+      document.getElementById("r-rental-rate").textContent = lastRent.rate || "";
+      const expDate = lastPriceEv?.expire_date;
+      document.getElementById("r-rental-end").textContent = expDate ? "Contract ends: "+expDate : "";
+    } else {
+      document.getElementById("r-rental-rate").textContent = "";
+      document.getElementById("r-rental-end").textContent = "";
+    }
 
     const last = lastGPUStatus(events);
     if (last?.gpus?.length) {
