@@ -126,10 +126,14 @@
           </div>
           <span id="rc0-status" class="text-xs px-2 py-1 rounded-full badge-blue">—</span>
         </div>
-        <div class="grid grid-cols-3 gap-3 mb-4" id="rc0-stats">
+        <div class="grid grid-cols-3 gap-3 mb-3" id="rc0-stats">
           <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Avg Temp</p><p class="text-lg font-bold" id="rc0-temp">—</p></div>
           <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Power</p><p class="text-lg font-bold text-blue-400" id="rc0-power">—</p></div>
           <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Revenue</p><p class="text-lg font-bold text-emerald-400" id="rc0-rev">—</p></div>
+        </div>
+        <div id="rc0-rental-bar" class="hidden mb-3 px-3 py-2 rounded-lg bg-emerald-950/40 border border-emerald-800/40 flex items-center justify-between">
+          <span class="text-xs text-emerald-400 font-semibold" id="rc0-rental-rate"></span>
+          <span class="text-xs text-slate-400" id="rc0-rental-end"></span>
         </div>
         <div id="rc0-gpus" class="space-y-1.5"></div>
         <p class="text-xs text-blue-400 mt-3 text-right">View full details →</p>
@@ -142,10 +146,14 @@
           </div>
           <span id="rc1-status" class="text-xs px-2 py-1 rounded-full badge-blue">—</span>
         </div>
-        <div class="grid grid-cols-3 gap-3 mb-4">
+        <div class="grid grid-cols-3 gap-3 mb-3">
           <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Avg Temp</p><p class="text-lg font-bold" id="rc1-temp">—</p></div>
           <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Power</p><p class="text-lg font-bold text-blue-400" id="rc1-power">—</p></div>
           <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Revenue</p><p class="text-lg font-bold text-emerald-400" id="rc1-rev">—</p></div>
+        </div>
+        <div id="rc1-rental-bar" class="hidden mb-3 px-3 py-2 rounded-lg bg-emerald-950/40 border border-emerald-800/40 flex items-center justify-between">
+          <span class="text-xs text-emerald-400 font-semibold" id="rc1-rental-rate"></span>
+          <span class="text-xs text-slate-400" id="rc1-rental-end"></span>
         </div>
         <div id="rc1-gpus" class="space-y-1.5"></div>
         <p class="text-xs text-blue-400 mt-3 text-right">View full details →</p>
@@ -718,6 +726,22 @@ function renderRigCard(idx, d) {
   }
 
   document.getElementById("rc"+idx+"-rev").textContent = fmtUSD(computeRevenue(d.events, today(), new Date()));
+
+  // Rental rate + contract end date bar
+  const lastRent = [...(d.events||[])].filter(e=>e.type==="rental_start").pop();
+  const lastRentEnd = [...(d.events||[])].filter(e=>e.type==="rental_end").pop();
+  const isRented = lastRent && (!lastRentEnd || lastRentEnd.ts < lastRent.ts);
+  const rentalBar = document.getElementById("rc"+idx+"-rental-bar");
+  if (rentalBar) {
+    if (isRented) {
+      rentalBar.classList.remove("hidden");
+      document.getElementById("rc"+idx+"-rental-rate").textContent = "● Rented @ " + (lastRent.rate || "—");
+      const lastPc = [...(d.events||[])].filter(e=>e.type==="price_change").pop();
+      document.getElementById("rc"+idx+"-rental-end").textContent = lastPc?.expire_date ? "ends " + lastPc.expire_date : "";
+    } else {
+      rentalBar.classList.add("hidden");
+    }
+  }
 }
 
 // ── Render single rig drilldown ───────────────────────────────────────
