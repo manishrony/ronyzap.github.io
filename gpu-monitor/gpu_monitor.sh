@@ -40,6 +40,10 @@ PRICE_ADJUST_MIN=1   # minimum cents to move per cycle
 PRICE_ADJUST_MAX=5   # maximum cents to move per cycle
 MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 
+# --- GPU count watchdog ---
+# 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
+EXPECTED_GPU_COUNT=0
+
 # --- Listing ancillary prices (applied on every price update) ---
 PRICE_INET_UP=0.002    # $/GB upload   (~$2/TB)
 PRICE_INET_DOWN=0.002  # $/GB download (~$2/TB)
@@ -123,6 +127,7 @@ check_gpus() {
 
     log "--- GPU Status ---"
     local overtemp=0
+    local gpu_count_actual=0
     local gpu_json_arr="["
     local first=1
     while IFS=',' read -r idx name temp power_draw power_limit fan; do
@@ -131,6 +136,7 @@ check_gpus() {
         power_limit=$(echo "$power_limit" | xargs); fan=$(echo "$fan" | xargs)
 
         log "  GPU $idx | $name | Temp: ${temp}°C | Power: ${power_draw}W/${power_limit}W | Fan: ${fan}%"
+        gpu_count_actual=$(( gpu_count_actual + 1 ))
 
         [[ $first -eq 0 ]] && gpu_json_arr+=","
         gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan}"
@@ -148,6 +154,9 @@ check_gpus() {
 
     (( overtemp == 0 )) && log "  All GPUs within thermal limits." \
         || log "  WARNING: $overtemp GPU(s) over temp threshold."
+
+    check_gpu_count "$gpu_count_actual"
+
     log "--- End GPU Status ---"
 }
 
@@ -157,6 +166,53 @@ check_gpus() {
 
 # Tracks the dmesg sequence number seen last cycle to avoid re-alerting.
 GPU_FAULT_LAST_SEQ_FILE="/var/tmp/gpu_monitor_fault_seq"
+GPU_COUNT_STATE_FILE="/var/tmp/gpu_monitor_gpu_count"
+
+# Alert when GPUs silently vanish from PCIe (nvidia-smi reports fewer than expected).
+# Called from check_gpus() with the actual detected count.
+check_gpu_count() {
+    local actual="$1"
+
+    local expected=0
+    if [[ "$EXPECTED_GPU_COUNT" -gt 0 ]]; then
+        expected="$EXPECTED_GPU_COUNT"
+    elif [[ -f "$GPU_COUNT_STATE_FILE" ]]; then
+        expected=$(cat "$GPU_COUNT_STATE_FILE" 2>/dev/null || echo 0)
+    fi
+
+    if [[ "$expected" -eq 0 ]]; then
+        echo "$actual" > "$GPU_COUNT_STATE_FILE"
+        log "  GPU count baseline set: $actual GPU(s)"
+        return
+    fi
+
+    if [[ "$actual" -lt "$expected" ]]; then
+        local missing=$(( expected - actual ))
+        log "  ⚠️ GPU COUNT MISMATCH: expected $expected, found $actual ($missing missing)"
+
+        # Throttle to once per 4 hours so we don't spam every hourly cycle
+        local alert_file="/var/tmp/gpu_count_alert"
+        local now_ts last_ts=0
+        now_ts=$(date +%s)
+        [[ -f "$alert_file" ]] && last_ts=$(cat "$alert_file" 2>/dev/null || echo 0)
+        if (( now_ts - last_ts > 14400 )); then
+            local msg
+            msg="GPU count dropped: expected ${expected}, found only ${actual} (${missing} GPU(s) missing from PCIe)"
+            local escaped
+            escaped=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$msg" 2>/dev/null || echo "\"$msg\"")
+            write_event "gpu_fault" "{\"message\":${escaped},\"gpu_hint\":\"GPU_MISSING\"}"
+            tg_send "🚨 <b>GPU(s) Missing — $(hostname)</b>
+Expected: <b>${expected} GPUs</b>  |  Detected: <b>${actual} GPUs</b>
+<b>${missing} GPU(s) disappeared from PCIe!</b>
+Check dmesg for Xid/badf errors. Physical reboot may be required."
+            echo "$now_ts" > "$alert_file"
+        fi
+    elif [[ "$actual" -gt "$expected" ]]; then
+        log "  GPU count increased: $expected → $actual (updating baseline)"
+        echo "$actual" > "$GPU_COUNT_STATE_FILE"
+        rm -f "/var/tmp/gpu_count_alert" 2>/dev/null || true
+    fi
+}
 
 check_gpu_faults() {
     # Read last seen dmesg sequence number (or 0 on first run)
