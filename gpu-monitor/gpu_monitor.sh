@@ -30,7 +30,7 @@ VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
 PRICE_FLOORS=(
-    "5090:30"
+    "5090:25"
     "4090:20"
     "4080:15"
     "3090:10"
@@ -39,6 +39,10 @@ PRICE_FLOORS=(
 PRICE_ADJUST_MIN=1   # minimum cents to move per cycle
 PRICE_ADJUST_MAX=5   # maximum cents to move per cycle
 MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
+
+# Vast.ai adds ~15% platform fee before listing; reduce their market prices by this
+# factor so we target the real competitive price, not the inflated displayed price.
+MARKET_PRICE_DISCOUNT=0.85
 
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
@@ -815,6 +819,14 @@ PYEOF
             market_median=$(printf '%s\n' "$mraw" | sed -n '2p')
             [[ -z "$market_price"  ]] && market_price="0"
             [[ -z "$market_median" ]] && market_median="0"
+
+            # Vast.ai displays prices with ~15% platform markup already baked in.
+            # Discount our target so we compete at the real post-fee price.
+            if [[ "${MARKET_PRICE_DISCOUNT:-1}" != "1" && "$market_price" != "0" ]]; then
+                market_price=$(printf "%.4f" "$(echo "scale=4; $market_price * $MARKET_PRICE_DISCOUNT" | bc)")
+                market_median=$(printf "%.4f" "$(echo "scale=4; $market_median * $MARKET_PRICE_DISCOUNT" | bc)")
+                log "  Machine $mid: market prices after ${MARKET_PRICE_DISCOUNT} discount → p25=\$$market_price median=\$$market_median"
+            fi
 
             # Write market_snapshot event — pass JSON via argv to avoid shell quoting issues
             local snap_json
