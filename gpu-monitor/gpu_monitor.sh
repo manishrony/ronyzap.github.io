@@ -902,11 +902,6 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
             new_price="$floor"
             direction="↑ (below floor \$$floor)"
-        elif (( $(echo "$cur_bid > $market_price * 5" | bc -l) )); then
-            # Severely mispriced (>5x market): jump directly to just above market instead of trickling down
-            new_price=$(printf "%.4f" "$(echo "scale=4; $market_price + 0.05" | bc)")
-            (( $(echo "$new_price < $floor" | bc -l) )) && new_price="$floor"
-            direction="↓↓ (severely above market — resetting)"
         elif (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust" | bc)")
             direction="↓ (above market)"
