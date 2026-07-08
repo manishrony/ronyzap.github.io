@@ -622,8 +622,10 @@ function renderCombined() {
   ].sort((a,b)=>a.ts<b.ts?-1:1);
 
   const todayEvs = eventsToday(allEvs);
-  const rev    = DATA.reduce((s,d)=>s+computeRevenue(d.events, today(), new Date()),0);
-  const rev30d = DATA.reduce((s,d)=>s+computeRevenue(d.events, daysAgo(30), new Date()),0);
+  // Use merged allEvs for combined totals so daily_earnings from either rig
+  // block rental-based estimation for those days across both rigs (prevents double counting).
+  const rev    = computeRevenue(allEvs, today(), new Date());
+  const rev30d = computeRevenue(allEvs, daysAgo(30), new Date());
   document.getElementById("c-revenue").textContent    = fmtUSD(rev);
   document.getElementById("c-revenue-30d").textContent = fmtUSD(rev30d);
   document.getElementById("c-revenue-sub").textContent = DATA.map((_,i)=>rigName(i)+": "+fmtUSD(computeRevenue(DATA[i].events, today(), new Date()))).join(" · ");
