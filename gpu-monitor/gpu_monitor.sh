@@ -52,7 +52,8 @@ EXPECTED_GPU_COUNT=0
 KAALIA_LOG="/var/lib/vastai_kaalia/kaalia.log"
 KAALIA_POS_FILE="/var/tmp/gpu_monitor_kaalia_pos"
 # GPU-hardware fault keywords (triggers Telegram alert)
-KAALIA_FAULT_PAT='Xid|xid|ECC|ecc|[Tt]hermal|[Tt]hrottl|NVML|nvml|[Ff]ault'
+# Use \b word boundaries so "default" does not match "fault"
+KAALIA_FAULT_PAT='Xid|xid|\bECC\b|\becc\b|[Tt]hermal|[Tt]hrottl|\bNVML\b|\bnvml\b|\b[Ff]ault\b'
 # Broader watch patterns (pre-filter before fault check)
 KAALIA_WATCH_PAT='[Ee]rror|[Ee]xception|[Tt]raceback|[Xx]id|[Ff]ault|ECC|ecc|[Tt]hrottl|[Tt]hermal|[Dd]egrad|[Oo]ffline|[Dd]enied|[Rr]efused|[Ff]ail|[Cc]rash|[Tt]imeout|[Uu]nreachable|NVML|nvml'
 # Known-benign noise to suppress
@@ -294,8 +295,15 @@ check_kaalia_faults() {
     local cur_size
     cur_size=$(wc -c < "$KAALIA_LOG" 2>/dev/null || echo 0)
 
-    local last_pos=0
-    [[ -f "$KAALIA_POS_FILE" ]] && last_pos=$(cat "$KAALIA_POS_FILE" 2>/dev/null || echo 0)
+    # First run: set watermark to current end of file, skip historical content
+    if [[ ! -f "$KAALIA_POS_FILE" ]]; then
+        echo "$cur_size" > "$KAALIA_POS_FILE"
+        log "  Kaalia fault monitor: watermark set to byte $cur_size (skipping history)"
+        return
+    fi
+
+    local last_pos
+    last_pos=$(cat "$KAALIA_POS_FILE" 2>/dev/null || echo 0)
 
     # Handle log rotation — file shrank
     [[ "$cur_size" -lt "$last_pos" ]] && last_pos=0
