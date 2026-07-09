@@ -55,9 +55,10 @@ KAALIA_POS_FILE="/var/tmp/gpu_monitor_kaalia_pos"
 # Use \b word boundaries so "default" does not match "fault"
 KAALIA_FAULT_PAT='Xid|xid|\bECC\b|\becc\b|[Tt]hermal|[Tt]hrottl|\bNVML\b|\bnvml\b|\b[Ff]ault\b'
 # Verification success keywords (triggers ✅ Telegram alert)
-KAALIA_VERIFY_PAT='[Vv]erif(ied|ication)|[Pp]ass(ed)?|[Ss]uccess(ful)?|machine.*ok|test.*pass|self.test.*pass|benchmark.*pass'
+# Require unambiguous past-tense or explicit result words — NOT function names like VerifySendMachInfo
+KAALIA_VERIFY_PAT='\bverified\b|\bVerified\b|[Vv]erification.*(pass|success|succeed)|[Pp]assed.*verif|machine.*\bverified\b|\b[Ss]ucceeded\b|self.test.*pass|benchmark.*pass|test.*(pass|succeed)'
 # Broader watch patterns (pre-filter before fault/verify check)
-KAALIA_WATCH_PAT='[Ee]rror|[Ee]xception|[Tt]raceback|[Xx]id|[Ff]ault|ECC|ecc|[Tt]hrottl|[Tt]hermal|[Dd]egrad|[Oo]ffline|[Dd]enied|[Rr]efused|[Ff]ail|[Cc]rash|[Tt]imeout|[Uu]nreachable|NVML|nvml|[Vv]erif|[Pp]ass(ed)?|[Ss]uccess'
+KAALIA_WATCH_PAT='[Ee]rror|[Ee]xception|[Tt]raceback|[Xx]id|[Ff]ault|ECC|ecc|[Tt]hrottl|[Tt]hermal|[Dd]egrad|[Oo]ffline|[Dd]enied|[Rr]efused|[Ff]ail|[Cc]rash|[Tt]imeout|[Uu]nreachable|NVML|nvml|\bverified\b|[Vv]erification.*(pass|success)|[Ss]ucceeded|self.test.*pass|benchmark.*pass'
 # Known-benign noise to suppress
 KAALIA_SUPPRESS_PAT='pci_and_minor_no_info|protected_instances|already Enabled for GPU|assign_conts|assign_and_update_used_gpus|diff_conts|ContainerStats2|nvidia_smi_f|nvidia_smi_nvlink_f|send_nvidia_smi_f|streaming output|apt-select-out|_template_id|SubprocessUnsafe cexec_|docker cp |chmod u=rwX|push_ssh_forwarder|read_state:.*unknown|cexec_: docker |status: created|returned exit code 1'
 
@@ -351,7 +352,7 @@ check_kaalia_faults() {
 
     # --- Verification success → ✅ alert ---
     local verified
-    verified=$(echo "$filtered" | grep -E "$KAALIA_VERIFY_PAT" | grep -Ev "[Ff]ail|[Ee]rror" || true)
+    verified=$(echo "$filtered" | grep -E "$KAALIA_VERIFY_PAT" | grep -Ev "[Ff]ail|[Ee]rror|null|skip|receiv" || true)
     if [[ -n "$verified" ]]; then
         local first_ver
         first_ver=$(echo "$verified" | head -1)
