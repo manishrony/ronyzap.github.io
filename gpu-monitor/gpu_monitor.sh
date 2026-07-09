@@ -51,11 +51,13 @@ EXPECTED_GPU_COUNT=0
 # --- Kaalia log fault monitor ---
 KAALIA_LOG="/var/lib/vastai_kaalia/kaalia.log"
 KAALIA_POS_FILE="/var/tmp/gpu_monitor_kaalia_pos"
-# GPU-hardware fault keywords (triggers Telegram alert)
+# GPU-hardware fault keywords (triggers 🚨 Telegram alert)
 # Use \b word boundaries so "default" does not match "fault"
 KAALIA_FAULT_PAT='Xid|xid|\bECC\b|\becc\b|[Tt]hermal|[Tt]hrottl|\bNVML\b|\bnvml\b|\b[Ff]ault\b'
-# Broader watch patterns (pre-filter before fault check)
-KAALIA_WATCH_PAT='[Ee]rror|[Ee]xception|[Tt]raceback|[Xx]id|[Ff]ault|ECC|ecc|[Tt]hrottl|[Tt]hermal|[Dd]egrad|[Oo]ffline|[Dd]enied|[Rr]efused|[Ff]ail|[Cc]rash|[Tt]imeout|[Uu]nreachable|NVML|nvml'
+# Verification success keywords (triggers ✅ Telegram alert)
+KAALIA_VERIFY_PAT='[Vv]erif(ied|ication)|[Pp]ass(ed)?|[Ss]uccess(ful)?|machine.*ok|test.*pass|self.test.*pass|benchmark.*pass'
+# Broader watch patterns (pre-filter before fault/verify check)
+KAALIA_WATCH_PAT='[Ee]rror|[Ee]xception|[Tt]raceback|[Xx]id|[Ff]ault|ECC|ecc|[Tt]hrottl|[Tt]hermal|[Dd]egrad|[Oo]ffline|[Dd]enied|[Rr]efused|[Ff]ail|[Cc]rash|[Tt]imeout|[Uu]nreachable|NVML|nvml|[Vv]erif|[Pp]ass(ed)?|[Ss]uccess'
 # Known-benign noise to suppress
 KAALIA_SUPPRESS_PAT='pci_and_minor_no_info|protected_instances|already Enabled for GPU|assign_conts|assign_and_update_used_gpus|diff_conts|ContainerStats2|nvidia_smi_f|nvidia_smi_nvlink_f|send_nvidia_smi_f|streaming output|apt-select-out|_template_id|SubprocessUnsafe cexec_|docker cp |chmod u=rwX|push_ssh_forwarder|read_state:.*unknown|cexec_: docker |status: created|returned exit code 1'
 
@@ -321,30 +323,43 @@ check_kaalia_faults() {
 
     [[ -z "$new_content" ]] && return
 
-    # Filter: must match WATCH, must not match SUPPRESS, must match FAULT
-    local faults
-    faults=$(echo "$new_content" \
+    # Pre-filter: lines that match WATCH and are not suppressed
+    local filtered
+    filtered=$(echo "$new_content" \
         | grep -E "$KAALIA_WATCH_PAT" \
         | grep -Ev "$KAALIA_SUPPRESS_PAT" \
-        | grep -E "$KAALIA_FAULT_PAT" \
         || true)
 
-    [[ -z "$faults" ]] && return
+    [[ -z "$filtered" ]] && return
 
-    local fault_count first_fault
-    fault_count=$(echo "$faults" | wc -l)
-    first_fault=$(echo "$faults" | head -1)
-
-    log "  ⚠️ Kaalia GPU fault(s): $fault_count new line(s)"
-    log "    $first_fault"
-
-    local escaped
-    escaped=$(echo "$first_fault" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null || echo "\"$first_fault\"")
-    write_event "gpu_fault" "{\"message\":${escaped},\"gpu_hint\":\"KAALIA_FAULT\"}"
-
-    tg_send "🚨 <b>Kaalia GPU Fault — $(hostname)</b>
+    # --- GPU-HW faults → 🚨 alert ---
+    local faults
+    faults=$(echo "$filtered" | grep -E "$KAALIA_FAULT_PAT" || true)
+    if [[ -n "$faults" ]]; then
+        local fault_count first_fault
+        fault_count=$(echo "$faults" | wc -l)
+        first_fault=$(echo "$faults" | head -1)
+        log "  ⚠️ Kaalia GPU fault(s): $fault_count new line(s)"
+        log "    $first_fault"
+        local escaped
+        escaped=$(echo "$first_fault" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null || echo "\"$first_fault\"")
+        write_event "gpu_fault" "{\"message\":${escaped},\"gpu_hint\":\"KAALIA_FAULT\"}"
+        tg_send "🚨 <b>Kaalia GPU Fault — $(hostname)</b>
 <b>${fault_count} fault line(s)</b> in kaalia.log
 <code>$(echo "$first_fault" | head -c 350)</code>"
+    fi
+
+    # --- Verification success → ✅ alert ---
+    local verified
+    verified=$(echo "$filtered" | grep -E "$KAALIA_VERIFY_PAT" | grep -Ev "[Ff]ail|[Ee]rror" || true)
+    if [[ -n "$verified" ]]; then
+        local first_ver
+        first_ver=$(echo "$verified" | head -1)
+        log "  ✅ Kaalia verification success detected"
+        log "    $first_ver"
+        tg_send "✅ <b>Vast.ai Verification — $(hostname)</b>
+<code>$(echo "$first_ver" | head -c 350)</code>"
+    fi
 }
 
 # ─────────────────────────────────────────────
