@@ -48,6 +48,16 @@ MARKET_PRICE_DISCOUNT=0.85
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
 EXPECTED_GPU_COUNT=0
 
+# --- Kaalia log fault monitor ---
+KAALIA_LOG="/var/lib/vastai_kaalia/kaalia.log"
+KAALIA_POS_FILE="/var/tmp/gpu_monitor_kaalia_pos"
+# GPU-hardware fault keywords (triggers Telegram alert)
+KAALIA_FAULT_PAT='Xid|xid|ECC|ecc|[Tt]hermal|[Tt]hrottl|NVML|nvml|[Ff]ault'
+# Broader watch patterns (pre-filter before fault check)
+KAALIA_WATCH_PAT='[Ee]rror|[Ee]xception|[Tt]raceback|[Xx]id|[Ff]ault|ECC|ecc|[Tt]hrottl|[Tt]hermal|[Dd]egrad|[Oo]ffline|[Dd]enied|[Rr]efused|[Ff]ail|[Cc]rash|[Tt]imeout|[Uu]nreachable|NVML|nvml'
+# Known-benign noise to suppress
+KAALIA_SUPPRESS_PAT='pci_and_minor_no_info|protected_instances|already Enabled for GPU|assign_conts|assign_and_update_used_gpus|diff_conts|ContainerStats2|nvidia_smi_f|nvidia_smi_nvlink_f|send_nvidia_smi_f|streaming output|apt-select-out|_template_id|SubprocessUnsafe cexec_|docker cp |chmod u=rwX|push_ssh_forwarder|read_state:.*unknown|cexec_: docker |status: created|returned exit code 1'
+
 # --- Listing ancillary prices (applied on every price update) ---
 PRICE_INET_UP=0.002    # $/GB upload   (~$2/TB)
 PRICE_INET_DOWN=0.002  # $/GB download (~$2/TB)
@@ -276,6 +286,57 @@ check_gpu_faults() {
 ${gpu_hint:+GPU: <b>$gpu_hint</b>
 }$(echo "$fault_line" | head -c 300)"
     done <<< "$new_lines"
+}
+
+check_kaalia_faults() {
+    [[ ! -f "$KAALIA_LOG" ]] && return
+
+    local cur_size
+    cur_size=$(wc -c < "$KAALIA_LOG" 2>/dev/null || echo 0)
+
+    local last_pos=0
+    [[ -f "$KAALIA_POS_FILE" ]] && last_pos=$(cat "$KAALIA_POS_FILE" 2>/dev/null || echo 0)
+
+    # Handle log rotation — file shrank
+    [[ "$cur_size" -lt "$last_pos" ]] && last_pos=0
+
+    # Nothing new
+    if [[ "$cur_size" -le "$last_pos" ]]; then
+        echo "$cur_size" > "$KAALIA_POS_FILE"
+        return
+    fi
+
+    # Read only new bytes since last check
+    local new_content
+    new_content=$(tail -c +"$((last_pos + 1))" "$KAALIA_LOG" 2>/dev/null || true)
+    echo "$cur_size" > "$KAALIA_POS_FILE"
+
+    [[ -z "$new_content" ]] && return
+
+    # Filter: must match WATCH, must not match SUPPRESS, must match FAULT
+    local faults
+    faults=$(echo "$new_content" \
+        | grep -E "$KAALIA_WATCH_PAT" \
+        | grep -Ev "$KAALIA_SUPPRESS_PAT" \
+        | grep -E "$KAALIA_FAULT_PAT" \
+        || true)
+
+    [[ -z "$faults" ]] && return
+
+    local fault_count first_fault
+    fault_count=$(echo "$faults" | wc -l)
+    first_fault=$(echo "$faults" | head -1)
+
+    log "  ⚠️ Kaalia GPU fault(s): $fault_count new line(s)"
+    log "    $first_fault"
+
+    local escaped
+    escaped=$(echo "$first_fault" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null || echo "\"$first_fault\"")
+    write_event "gpu_fault" "{\"message\":${escaped},\"gpu_hint\":\"KAALIA_FAULT\"}"
+
+    tg_send "🚨 <b>Kaalia GPU Fault — $(hostname)</b>
+<b>${fault_count} fault line(s)</b> in kaalia.log
+<code>$(echo "$first_fault" | head -c 350)</code>"
 }
 
 # ─────────────────────────────────────────────
@@ -987,6 +1048,7 @@ main() {
         set_power_limits
         check_gpus
         check_gpu_faults
+        check_kaalia_faults
 
         if (( now - last_price_check >= PRICE_INTERVAL )); then
             vastai_pricing
