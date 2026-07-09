@@ -467,15 +467,23 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
   let total = 0;
 
-  const covered = new Set();
+  // Deduplicate daily_earnings by date — guards against the same combined earnings
+  // being stored in multiple rig JSONL files (first-seen per date wins)
+  const deMap = new Map();
   allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
+    const date = e.date || e.ts.slice(0, 10);
+    if (!deMap.has(date)) deMap.set(date, e);
+  });
+
+  const covered = new Set();
+  for (const e of deMap.values()) {
     const dayS = new Date(e.ts).getTime();
     const dayE = dayS + 86400000;
     if (dayE > pS && dayS < pE) {
       total += (e.total || 0);
       if ((e.total || 0) > 0) covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
     }
-  });
+  }
 
   // Build per-machine non-overlapping sessions to handle duplicate rental_start events
   const sessions = {};
@@ -765,9 +773,29 @@ function renderRigCard(idx, d) {
 }
 
 // ── Render single rig drilldown ───────────────────────────────────────
+// Returns deduplicated daily_earnings from all rigs (first-seen per date wins).
+// Used so per-rig drilldowns show real Vast.ai daily amounts even when earnings
+// are only stored in one rig's JSONL.
+function crossRigDailyEarnings() {
+  const seen = new Set(), result = [];
+  DATA.forEach(d => {
+    (d.events || []).filter(e => e.type === "daily_earnings").forEach(e => {
+      const date = e.date || e.ts.slice(0, 10);
+      if (!seen.has(date)) { seen.add(date); result.push(e); }
+    });
+  });
+  return result;
+}
+
 function renderRig(idx) {
   const d = DATA[idx];
   const events = d.events || [];
+  // Revenue calculations use cross-rig daily_earnings so per-rig drilldowns reflect
+  // real Vast.ai amounts even when earnings are stored in only one rig's log.
+  const revEvents = [
+    ...events.filter(e => e.type !== "daily_earnings"),
+    ...crossRigDailyEarnings()
+  ];
   const todayEvs = eventsToday(events);
   const weekEvs  = eventsIn(events, 7);
 
@@ -778,7 +806,7 @@ function renderRig(idx) {
   const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399","#818cf8","#fb923c"];
 
   if (activeRigTab === "overview") {
-    document.getElementById("r-revenue").textContent = fmtUSD(computeRevenue(events, today(), new Date()));
+    document.getElementById("r-revenue").textContent = fmtUSD(computeRevenue(revEvents, today(), new Date()));
     const lastRent = [...events].filter(e=>e.type==="rental_start").pop();
     const lastEnd  = [...events].filter(e=>e.type==="rental_end").pop();
     const isRented = lastRent && (!lastEnd||lastEnd.ts<lastRent.ts);
@@ -843,7 +871,7 @@ function renderRig(idx) {
   }
 
   if (activeRigTab === "daily") {
-    document.getElementById("rd-revenue").textContent = fmtUSD(computeRevenue(events, today(), new Date()));
+    document.getElementById("rd-revenue").textContent = fmtUSD(computeRevenue(revEvents, today(), new Date()));
     document.getElementById("rd-rentals").textContent = todayEvs.filter(e=>e.type==="rental_start").length;
     document.getElementById("rd-warns").textContent   = todayEvs.filter(e=>e.type==="temp_warning").length;
     document.getElementById("rd-prices").textContent  = todayEvs.filter(e=>e.type==="price_change").length;
@@ -854,7 +882,7 @@ function renderRig(idx) {
       data: hours.map(h=>{
         const hStart=new Date(today()); hStart.setHours(h,0,0,0);
         const hEnd=new Date(today()); hEnd.setHours(h+1,0,0,0);
-        return parseFloat(computeRevenue(events, hStart, hEnd).toFixed(4));
+        return parseFloat(computeRevenue(revEvents, hStart, hEnd).toFixed(4));
       }),
     }]);
 
@@ -880,7 +908,7 @@ function renderRig(idx) {
   }
 
   if (activeRigTab === "weekly") {
-    const rev7 = computeRevenue(events, daysAgo(7), new Date());
+    const rev7 = computeRevenue(revEvents, daysAgo(7), new Date());
     document.getElementById("rw-revenue").textContent = fmtUSD(rev7);
     document.getElementById("rw-rentals").textContent = weekEvs.filter(e=>e.type==="rental_start").length;
     document.getElementById("rw-avg").textContent     = fmtUSD(rev7/7)+"/d";
@@ -892,7 +920,7 @@ function renderRig(idx) {
       label:"Revenue ($)", backgroundColor:"#22c55e99", borderColor:"#22c55e", borderWidth:1, borderRadius:4,
       data: days.map(day=>{
         const next=new Date(day); next.setDate(next.getDate()+1);
-        return parseFloat(computeRevenue(events, day, next).toFixed(4));
+        return parseFloat(computeRevenue(revEvents, day, next).toFixed(4));
       }),
     }]);
 
@@ -907,7 +935,7 @@ function renderRig(idx) {
       const next=new Date(d); next.setDate(next.getDate()+1);
       const de=events.filter(e=>e.ts>=d.toISOString()&&e.ts<next.toISOString());
       return {label:d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}),
-        rev:computeRevenue(events, d, next),rents:de.filter(e=>e.type==="rental_start").length,
+        rev:computeRevenue(revEvents, d, next),rents:de.filter(e=>e.type==="rental_start").length,
         warns:de.filter(e=>e.type==="temp_warning").length,prices:de.filter(e=>e.type==="price_change").length};
     });
     document.getElementById("rw-summary").innerHTML = `<table class="w-full text-sm">
@@ -931,8 +959,8 @@ function renderRig(idx) {
       </tbody></table>`;
   }
 
-  if (activeRigTab === "monthly") renderRigMonthly(events);
-  if (activeRigTab === "yearly")  renderRigYearly(events);
+  if (activeRigTab === "monthly") renderRigMonthly(revEvents);
+  if (activeRigTab === "yearly")  renderRigYearly(revEvents);
 }
 
 // ── Rig Monthly ───────────────────────────────────────────────────────
