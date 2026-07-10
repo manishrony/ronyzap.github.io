@@ -62,6 +62,14 @@ KAALIA_WATCH_PAT='[Ee]rror|[Ee]xception|[Tt]raceback|[Xx]id|[Ff]ault|ECC|ecc|[Tt
 # Known-benign noise to suppress
 KAALIA_SUPPRESS_PAT='pci_and_minor_no_info|protected_instances|already Enabled for GPU|assign_conts|assign_and_update_used_gpus|diff_conts|ContainerStats2|nvidia_smi_f|nvidia_smi_nvlink_f|send_nvidia_smi_f|streaming output|apt-select-out|_template_id|SubprocessUnsafe cexec_|docker cp |chmod u=rwX|push_ssh_forwarder|read_state:.*unknown|cexec_: docker |status: created|returned exit code 1'
 
+# Vast.ai self-test / verification activity monitoring.
+# Self-test verdicts (PASSED/FAILED) are written to self_test.log, NOT kaalia.log;
+# kaalia.log only shows the test container being created (cmd::Create ... self-test).
+SELFTEST_LOG="/var/lib/vastai_kaalia/self_test.log"
+SELFTEST_POS_FILE="/var/tmp/gpu_monitor_selftest_pos"
+# Last self-test instance ID we alerted on (Create lines repeat dozens of times per instance)
+SELFTEST_LAST_INSTANCE_FILE="/var/tmp/gpu_monitor_selftest_last_instance"
+
 # --- Listing ancillary prices (applied on every price update) ---
 PRICE_INET_UP=0.002    # $/GB upload   (~$2/TB)
 PRICE_INET_DOWN=0.002  # $/GB download (~$2/TB)
@@ -360,6 +368,70 @@ check_kaalia_faults() {
         log "    $first_ver"
         tg_send "✅ <b>Vast.ai Verification — $(hostname)</b>
 <code>$(echo "$first_ver" | head -c 350)</code>"
+    fi
+
+    # --- Self-test instance created → 🧪 alert (once per instance) ---
+    # kaalia.log shows dozens of repeated "cmd::Create( name: C.xxx ... self-test" lines
+    # per test; dedupe on the instance ID so we alert exactly once.
+    local st_instance
+    st_instance=$(echo "$new_content" \
+        | grep -oE 'cmd::Create\( name: (C\.[0-9]+)[^)]*self-test' \
+        | grep -oE 'C\.[0-9]+' | head -1 || true)
+    if [[ -n "$st_instance" ]]; then
+        local last_instance=""
+        [[ -f "$SELFTEST_LAST_INSTANCE_FILE" ]] && last_instance=$(cat "$SELFTEST_LAST_INSTANCE_FILE" 2>/dev/null || true)
+        if [[ "$st_instance" != "$last_instance" ]]; then
+            echo "$st_instance" > "$SELFTEST_LAST_INSTANCE_FILE"
+            log "  🧪 Vast.ai self-test instance created: $st_instance"
+            write_event "selftest_start" "{\"instance\":\"$st_instance\"}"
+            tg_send "🧪 <b>Vast.ai Self-Test Started — $(hostname)</b>
+Instance <code>$st_instance</code> launched by Vast. Result alert follows when it finishes."
+        fi
+    fi
+}
+
+# Watch self_test.log for verdicts (PASSED/FAILED). Results are written here,
+# not to kaalia.log, so the kaalia watcher alone never sees them.
+check_selftest_log() {
+    [[ ! -f "$SELFTEST_LOG" ]] && return
+
+    local cur_size
+    cur_size=$(wc -c < "$SELFTEST_LOG" 2>/dev/null || echo 0)
+
+    # First run: skip history
+    if [[ ! -f "$SELFTEST_POS_FILE" ]]; then
+        echo "$cur_size" > "$SELFTEST_POS_FILE"
+        log "  Self-test monitor: watermark set to byte $cur_size (skipping history)"
+        return
+    fi
+
+    local last_pos
+    last_pos=$(cat "$SELFTEST_POS_FILE" 2>/dev/null || echo 0)
+    [[ "$cur_size" -lt "$last_pos" ]] && last_pos=0
+    if [[ "$cur_size" -le "$last_pos" ]]; then
+        echo "$cur_size" > "$SELFTEST_POS_FILE"
+        return
+    fi
+
+    local new_content
+    new_content=$(tail -c +"$((last_pos + 1))" "$SELFTEST_LOG" 2>/dev/null || true)
+    echo "$cur_size" > "$SELFTEST_POS_FILE"
+    [[ -z "$new_content" ]] && return
+
+    if echo "$new_content" | grep -q "Self-test PASSED"; then
+        log "  🧪✅ Self-test PASSED"
+        write_event "selftest_result" "{\"result\":\"passed\"}"
+        tg_send "🧪✅ <b>Vast.ai Self-Test PASSED — $(hostname)</b>
+All tests completed successfully. Verification should progress."
+    elif echo "$new_content" | grep -qE "Self-test FAILED|Self-test exit code: [^0]"; then
+        local detail
+        detail=$(echo "$new_content" | grep -E "Self-test FAILED|Self-test exit code:|ERROR|error" | head -2 || true)
+        log "  🧪❌ Self-test FAILED"
+        write_event "selftest_result" "{\"result\":\"failed\"}"
+        tg_send "🧪❌ <b>Vast.ai Self-Test FAILED — $(hostname)</b>
+<code>$(echo "$detail" | head -c 350)</code>"
+    elif echo "$new_content" | grep -q "Starting self-test"; then
+        log "  🧪 Self-test starting (self_test.log)"
     fi
 }
 
@@ -1073,6 +1145,7 @@ main() {
         check_gpus
         check_gpu_faults
         check_kaalia_faults
+        check_selftest_log
 
         if (( now - last_price_check >= PRICE_INTERVAL )); then
             vastai_pricing
