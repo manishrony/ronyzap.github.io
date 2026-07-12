@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GPU Rig Dashboard — Both Rigs</title>
+<title>GPU Rig Dashboard</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
@@ -38,27 +38,13 @@
 
 <!-- ── Settings modal ─────────────────────────────────────────── -->
 <div id="settings-modal" class="fixed inset-0 bg-black/70 z-50 items-center justify-center">
-  <div class="card p-6 w-full max-w-md mx-4 space-y-4">
+  <div class="card p-6 w-full max-w-md mx-4 space-y-4 max-h-[85vh] overflow-y-auto">
     <h2 class="text-lg font-bold text-white">⚙ Rig Settings</h2>
-    <div>
-      <label class="text-xs text-slate-400">Rig 1 Name</label>
-      <input id="cfg-name1" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white" value="Zappa1">
-    </div>
-    <div>
-      <label class="text-xs text-slate-400">Rig 1 API URL — leave blank to use same server as this page</label>
-      <input id="cfg-url1" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="(blank = same server)">
-    </div>
-    <div>
-      <label class="text-xs text-slate-400">Rig 2 Name</label>
-      <input id="cfg-name2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white" value="Zappa2">
-    </div>
-    <div>
-      <label class="text-xs text-slate-400">Rig 2 API URL — use "peer" to proxy through this server (works from internet)</label>
-      <input id="cfg-url2" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" placeholder="peer">
-    </div>
+    <p class="text-xs text-slate-500">Rigs are auto-discovered from the server on each page load. Adding a new rig? Reinstall the dashboard on this host with its peer URL added — no manual edits needed here. Use this panel only for temporary overrides.</p>
+    <div id="settings-rows" class="space-y-4"></div>
     <div class="flex gap-3 pt-2">
       <button onclick="saveSettings()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 rounded">Save & Refresh</button>
-      <button onclick="resetSettings()" class="px-4 bg-slate-600 hover:bg-slate-500 text-sm rounded">Use Defaults</button>
+      <button onclick="resetSettings()" class="px-4 bg-slate-600 hover:bg-slate-500 text-sm rounded">Reload From Server</button>
       <button onclick="closeSettings()" class="px-4 bg-slate-700 hover:bg-slate-600 text-sm rounded">Cancel</button>
     </div>
   </div>
@@ -75,12 +61,7 @@
   </div>
   <div class="flex items-center gap-3">
     <!-- Rig status pills -->
-    <span id="pill-rig1" class="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full badge-blue cursor-pointer" onclick="drilldown(0)">
-      <span class="w-2 h-2 rounded-full bg-slate-500"></span> <span id="pill-name1">Zappa1</span>
-    </span>
-    <span id="pill-rig2" class="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full badge-blue cursor-pointer" onclick="drilldown(1)">
-      <span class="w-2 h-2 rounded-full bg-slate-500"></span> <span id="pill-name2">Zappa2</span>
-    </span>
+    <div id="pills-container" class="flex items-center gap-3"></div>
     <span class="text-xs text-slate-500 font-mono"><span id="countdown">60</span>s</span>
     <button onclick="openSettings()" class="text-slate-400 hover:text-white text-lg">⚙</button>
   </div>
@@ -117,58 +98,17 @@
   <!-- Rig cards (clickable) -->
   <div class="px-6 pb-4">
     <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rigs — click to drill down</p>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div class="card rig-card p-5" id="rig-card-0" onclick="drilldown(0)">
-        <div class="flex items-start justify-between mb-4">
-          <div>
-            <p class="text-xs text-slate-500" id="rc0-sub">—</p>
-            <h2 class="text-xl font-bold text-white" id="rc0-name">Zappa1</h2>
-          </div>
-          <span id="rc0-status" class="text-xs px-2 py-1 rounded-full badge-blue">—</span>
-        </div>
-        <div class="grid grid-cols-3 gap-3 mb-3" id="rc0-stats">
-          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Avg Temp</p><p class="text-lg font-bold" id="rc0-temp">—</p></div>
-          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Power</p><p class="text-lg font-bold text-blue-400" id="rc0-power">—</p></div>
-          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Revenue</p><p class="text-lg font-bold text-emerald-400" id="rc0-rev">—</p></div>
-        </div>
-        <div id="rc0-rental-bar" class="hidden mb-3 px-3 py-2 rounded-lg bg-emerald-950/40 border border-emerald-800/40 flex items-center justify-between">
-          <span class="text-xs text-emerald-400 font-semibold" id="rc0-rental-rate"></span>
-          <span class="text-xs text-slate-400" id="rc0-rental-end"></span>
-        </div>
-        <div id="rc0-gpus" class="space-y-1.5"></div>
-        <p class="text-xs text-blue-400 mt-3 text-right">View full details →</p>
-      </div>
-      <div class="card rig-card p-5" id="rig-card-1" onclick="drilldown(1)">
-        <div class="flex items-start justify-between mb-4">
-          <div>
-            <p class="text-xs text-slate-500" id="rc1-sub">—</p>
-            <h2 class="text-xl font-bold text-white" id="rc1-name">Zappa2</h2>
-          </div>
-          <span id="rc1-status" class="text-xs px-2 py-1 rounded-full badge-blue">—</span>
-        </div>
-        <div class="grid grid-cols-3 gap-3 mb-3">
-          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Avg Temp</p><p class="text-lg font-bold" id="rc1-temp">—</p></div>
-          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Power</p><p class="text-lg font-bold text-blue-400" id="rc1-power">—</p></div>
-          <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Revenue</p><p class="text-lg font-bold text-emerald-400" id="rc1-rev">—</p></div>
-        </div>
-        <div id="rc1-rental-bar" class="hidden mb-3 px-3 py-2 rounded-lg bg-emerald-950/40 border border-emerald-800/40 flex items-center justify-between">
-          <span class="text-xs text-emerald-400 font-semibold" id="rc1-rental-rate"></span>
-          <span class="text-xs text-slate-400" id="rc1-rental-end"></span>
-        </div>
-        <div id="rc1-gpus" class="space-y-1.5"></div>
-        <p class="text-xs text-blue-400 mt-3 text-right">View full details →</p>
-      </div>
-    </div>
+    <div id="rig-cards-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
   </div>
 
   <!-- Combined charts -->
   <div class="px-6 pb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
     <div class="card p-4">
-      <h2 class="text-sm font-semibold text-slate-400 mb-3">Temperature — Both Rigs (24h)</h2>
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Temperature — All Rigs (24h)</h2>
       <canvas id="chart-c-temp"></canvas>
     </div>
     <div class="card p-4">
-      <h2 class="text-sm font-semibold text-slate-400 mb-3">Daily Revenue — Both Rigs (7d)</h2>
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Daily Revenue — All Rigs (7d)</h2>
       <canvas id="chart-c-rev"></canvas>
     </div>
   </div>
@@ -176,7 +116,7 @@
   <!-- Combined event feed -->
   <div class="px-6 pb-6">
     <div class="card p-4">
-      <h2 class="text-sm font-semibold text-slate-400 mb-3">Live Event Feed — Both Rigs</h2>
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Live Event Feed — All Rigs</h2>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead><tr class="text-slate-500 text-xs border-b border-slate-800">
@@ -318,6 +258,7 @@
 
 <script>
 // ── Config ──────────────────────────────────────────────────────────
+// Fallback only — used if the server's /api/config can't be reached (e.g. dev/offline).
 const DEFAULT_RIGS = [
   { name:"Zappa1", url:"" },
   { name:"Zappa2", url:"peer" },
@@ -329,36 +270,103 @@ function loadConfig() {
 }
 function saveConfig(cfg) { localStorage.setItem("rig_config", JSON.stringify(cfg)); }
 
+// Ask this server how many rigs it knows about (self + configured peers).
+// This is what makes new rigs show up automatically: add PEER_URLS on the
+// host and restart the dashboard service — no HTML/JS edits needed here.
+async function loadRigsFromServer() {
+  try {
+    const r = await fetch("/api/config?" + Date.now(), { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return null;
+    const cfg = await r.json();
+    if (!Array.isArray(cfg.rigs) || !cfg.rigs.length) return null;
+    return cfg.rigs;
+  } catch { return null; }
+}
+
 // ── State ────────────────────────────────────────────────────────────
 let RIGS = loadConfig();
-let DATA = [{events:[]}, {events:[]}];
-let activeRig = -1;  // -1 = combined, 0 = zappa1, 1 = zappa2
+let DATA = RIGS.map(() => ({events:[]}));
+let activeRig = -1;  // -1 = combined, N = rig index
 let activeRigTab = "overview";
 let RIG_MONTHLY_DRILL = null;  // null = all months; {year, month} = drilled
 let RIG_YEARLY_DRILL  = null;  // null = all years;  {year} = drilled
 let CHARTS = {};
 let countdown = 60;
+const RIG_COLORS = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399","#818cf8","#fb923c"];
+function rigColor(idx) { return RIG_COLORS[idx % RIG_COLORS.length]; }
+
+// ── Dynamic DOM (rebuilt whenever RIGS changes length) ────────────────
+function buildPillsDOM() {
+  document.getElementById("pills-container").innerHTML = RIGS.map((r,i) => `
+    <span id="pill-rig-${i}" class="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full badge-blue cursor-pointer" onclick="drilldown(${i})">
+      <span class="w-2 h-2 rounded-full bg-slate-500"></span> <span id="pill-name-${i}">${r.name}</span>
+    </span>`).join("");
+}
+
+function buildRigCardsDOM() {
+  document.getElementById("rig-cards-container").innerHTML = RIGS.map((r,i) => `
+    <div class="card rig-card p-5" id="rig-card-${i}" onclick="drilldown(${i})">
+      <div class="flex items-start justify-between mb-4">
+        <div>
+          <p class="text-xs text-slate-500" id="rc${i}-sub">—</p>
+          <h2 class="text-xl font-bold text-white" id="rc${i}-name">${r.name}</h2>
+        </div>
+        <span id="rc${i}-status" class="text-xs px-2 py-1 rounded-full badge-blue">—</span>
+      </div>
+      <div class="grid grid-cols-3 gap-3 mb-3" id="rc${i}-stats">
+        <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Avg Temp</p><p class="text-lg font-bold" id="rc${i}-temp">—</p></div>
+        <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Power</p><p class="text-lg font-bold text-blue-400" id="rc${i}-power">—</p></div>
+        <div class="card2 p-3 text-center"><p class="text-xs text-slate-500">Revenue</p><p class="text-lg font-bold text-emerald-400" id="rc${i}-rev">—</p></div>
+      </div>
+      <div id="rc${i}-rental-bar" class="hidden mb-3 px-3 py-2 rounded-lg bg-emerald-950/40 border border-emerald-800/40 flex items-center justify-between">
+        <span class="text-xs text-emerald-400 font-semibold" id="rc${i}-rental-rate"></span>
+        <span class="text-xs text-slate-400" id="rc${i}-rental-end"></span>
+      </div>
+      <div id="rc${i}-gpus" class="space-y-1.5"></div>
+      <p class="text-xs text-blue-400 mt-3 text-right">View full details →</p>
+    </div>`).join("");
+}
+
+function buildSettingsDOM() {
+  document.getElementById("settings-rows").innerHTML = RIGS.map((r,i) => `
+    <div class="space-y-2 pb-3 border-b border-slate-800 last:border-0">
+      <div>
+        <label class="text-xs text-slate-400">Rig ${i+1} Name</label>
+        <input id="cfg-name${i}" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white" value="${r.name}">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400">Rig ${i+1} API URL — blank = this server, "peer"/"peer/N" = proxy through this server</label>
+        <input id="cfg-url${i}" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono" value="${r.url||''}">
+      </div>
+    </div>`).join("");
+}
+
+function rebuildRigDOM() {
+  buildPillsDOM();
+  buildRigCardsDOM();
+  buildSettingsDOM();
+}
 
 // ── Settings modal ───────────────────────────────────────────────────
 function openSettings() {
-  document.getElementById("cfg-name1").value = RIGS[0]?.name || "";
-  document.getElementById("cfg-url1").value  = RIGS[0]?.url  || "";
-  document.getElementById("cfg-name2").value = RIGS[1]?.name || "";
-  document.getElementById("cfg-url2").value  = RIGS[1]?.url  || "";
+  buildSettingsDOM();
   document.getElementById("settings-modal").classList.add("open");
 }
 function closeSettings() { document.getElementById("settings-modal").classList.remove("open"); }
-function resetSettings() {
-  document.getElementById("cfg-name1").value = DEFAULT_RIGS[0].name;
-  document.getElementById("cfg-url1").value  = DEFAULT_RIGS[0].url;
-  document.getElementById("cfg-name2").value = DEFAULT_RIGS[1].name;
-  document.getElementById("cfg-url2").value  = DEFAULT_RIGS[1].url;
+async function resetSettings() {
+  localStorage.removeItem("rig_config");
+  const serverRigs = await loadRigsFromServer();
+  RIGS = serverRigs || DEFAULT_RIGS;
+  DATA = RIGS.map(() => ({events:[]}));
+  rebuildRigDOM();
+  closeSettings();
+  fetchAll();
 }
 function saveSettings() {
-  RIGS = [
-    { name: document.getElementById("cfg-name1").value, url: document.getElementById("cfg-url1").value },
-    { name: document.getElementById("cfg-name2").value, url: document.getElementById("cfg-url2").value },
-  ];
+  RIGS = RIGS.map((_,i) => ({
+    name: document.getElementById("cfg-name"+i).value,
+    url:  document.getElementById("cfg-url"+i).value,
+  }));
   saveConfig(RIGS);
   closeSettings();
   fetchAll();
@@ -367,8 +375,9 @@ function saveSettings() {
 // ── Fetch ────────────────────────────────────────────────────────────
 async function fetchRig(idx) {
   const rig = RIGS[idx];
-  const base = (!rig.url || rig.url === "peer") ? window.location.origin : rig.url;
-  const path = (rig.url === "peer") ? "/api/peer" : "/api/data";
+  const isPeer = rig.url === "peer" || (rig.url||"").startsWith("peer/");
+  const base = (!rig.url || isPeer) ? window.location.origin : rig.url;
+  const path = isPeer ? "/api/" + rig.url : "/api/data";
   try {
     const r = await fetch(base + path + "?" + Date.now(), { signal: AbortSignal.timeout(8000) });
     if (!r.ok) throw new Error(r.status);
@@ -390,18 +399,18 @@ function rigName(idx) {
 }
 
 async function fetchAll() {
-  await Promise.all([fetchRig(0), fetchRig(1)]);
+  await Promise.all(RIGS.map((_,i) => fetchRig(i)));
   document.getElementById("last-updated").textContent = "Last updated: " + new Date().toLocaleTimeString();
   render();
 }
 
 function updatePill(idx) {
-  const rig = RIGS[idx];
   const online = DATA[idx]?.online;
-  const el = document.getElementById("pill-rig" + (idx+1));
+  const el = document.getElementById("pill-rig-" + idx);
+  if (!el) return;
   el.className = "inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full cursor-pointer " + (online ? "badge-green" : "badge-red");
   el.querySelector("span").className = "w-2 h-2 rounded-full " + (online ? "bg-green-400 animate-pulse" : "bg-red-400");
-  document.getElementById("pill-name" + (idx+1)).textContent = rigName(idx);
+  document.getElementById("pill-name-" + idx).textContent = rigName(idx);
 }
 
 // ── Navigation ───────────────────────────────────────────────────────
@@ -624,10 +633,8 @@ function barChart(id, labels, datasets, color) {
 
 // ── Render combined ───────────────────────────────────────────────────
 function renderCombined() {
-  const allEvs = [
-    ...DATA[0].events.map(e=>({...e,_rig:0})),
-    ...DATA[1].events.map(e=>({...e,_rig:1})),
-  ].sort((a,b)=>a.ts<b.ts?-1:1);
+  const allEvs = DATA.flatMap((d,i)=>(d.events||[]).map(e=>({...e,_rig:i})))
+    .sort((a,b)=>a.ts<b.ts?-1:1);
 
   const todayEvs = eventsToday(allEvs);
   // Use merged allEvs for combined totals so daily_earnings from either rig
@@ -670,9 +677,9 @@ function renderCombined() {
   DATA.forEach((d,i) => renderRigCard(i, d));
 
   // Combined temp chart (24h)
-  const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399","#818cf8","#fb923c"];
   const tempEvs24 = DATA.map(d=>eventsIn(d.events,1).filter(e=>e.type==="gpu_status"));
-  const allTempEvs = [...tempEvs24[0].map(e=>({...e,_rig:0})),...tempEvs24[1].map(e=>({...e,_rig:1}))].sort((a,b)=>a.ts<b.ts?-1:1);
+  const allTempEvs = DATA.flatMap((_,ri)=>tempEvs24[ri].map(e=>({...e,_rig:ri})))
+    .sort((a,b)=>a.ts<b.ts?-1:1);
   if (allTempEvs.length) {
     const labels = allTempEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts));
     const datasets = DATA.flatMap((d,ri)=>{
@@ -681,7 +688,7 @@ function renderCombined() {
       return Array.from({length:gpuCount},(_,gi)=>({
         label: rigName(ri)+" GPU"+gi,
         data: allTempEvs.map(e=>e._rig===ri?ev.find(x=>x.ts===e.ts)?.gpus?.[gi]?.temp??null:null),
-        borderColor: colors[(ri*4+gi)%colors.length],
+        borderColor: RIG_COLORS[(ri*4+gi)%RIG_COLORS.length],
         backgroundColor:"transparent", fill:false,
       }));
     });
@@ -697,8 +704,8 @@ function renderCombined() {
       const next=new Date(day); next.setDate(next.getDate()+1);
       return parseFloat(computeRevenue(d.events, day, next).toFixed(4));
     }),
-    backgroundColor: ri===0?"#22c55e99":"#3b82f699",
-    borderColor: ri===0?"#22c55e":"#3b82f6",
+    backgroundColor: rigColor(ri)+"99",
+    borderColor: rigColor(ri),
     borderWidth:1, borderRadius:4,
   })));
 
@@ -707,7 +714,7 @@ function renderCombined() {
   const recent = [...allEvs].reverse().slice(0,60);
   tbody.innerHTML = recent.map(e=>`<tr class="hover:bg-slate-800/30">
     <td class="py-1.5 pr-3 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
-    <td class="py-1.5 pr-3"><span class="text-xs px-2 py-0.5 rounded ${e._rig===0?'bg-emerald-900/50 text-emerald-400 border border-emerald-800':'bg-blue-900/50 text-blue-400 border border-blue-800'}">${rigName(e._rig)}</span></td>
+    <td class="py-1.5 pr-3"><span class="text-xs px-2 py-0.5 rounded border" style="color:${rigColor(e._rig)};border-color:${rigColor(e._rig)}66;background:${rigColor(e._rig)}1a;">${rigName(e._rig)}</span></td>
     <td class="py-1.5 pr-3">${eventBadge(e.type)}</td>
     <td class="py-1.5 text-xs text-slate-400">${eventDetail(e)}</td>
   </tr>`).join("");
@@ -1238,9 +1245,20 @@ setInterval(()=>{
 },1000);
 
 // ── Boot ──────────────────────────────────────────────────────────────
-// Show settings if no config set yet
-if (!localStorage.getItem("rig_config")) openSettings();
-else fetchAll();
+// Server config wins on every load — this is what makes newly added rigs
+// show up automatically (just reinstall the dashboard on the host with the
+// new peer URL and restart; no changes needed on this page).
+(async function boot() {
+  const serverRigs = await loadRigsFromServer();
+  if (serverRigs) {
+    RIGS = serverRigs;
+  } else if (!localStorage.getItem("rig_config")) {
+    RIGS = DEFAULT_RIGS;
+  } // else RIGS already holds the localStorage-loaded config from initial state
+  DATA = RIGS.map(() => ({events:[]}));
+  rebuildRigDOM();
+  fetchAll();
+})();
 </script>
 </body>
 </html>
