@@ -14,12 +14,23 @@
 LOG_FILE="/var/log/gpu_monitor.log"
 JSONL_FILE="/var/log/gpu_monitor_data.jsonl"
 TEMP_THRESHOLD=75        # °C — Telegram alert if exceeded
-# Watts — applied to all GPUs on this host, every cycle. Override per-rig via
-# the GPU_POWER_LIMIT env var (set by install.sh) — e.g. lower-TDP cards like
-# RTX 5080 (360W max) may need a cap below the RTX 5090 default to manage
-# chassis heat. Falls back to 500 (existing behavior) if unset.
-POWER_LIMIT_DEFAULT="${GPU_POWER_LIMIT:-500}"
 CHECK_INTERVAL=3600      # 1 hour in seconds (GPU + rental check)
+
+# Per-GPU-model power caps (Watts). Matched by substring against the GPU name
+# reported by nvidia-smi (case-insensitive), first match wins. Add a line here
+# when a new GPU model joins the fleet — applies automatically host-wide and
+# per-GPU on mixed rigs, no per-rig install.sh config needed.
+POWER_LIMITS=(
+    "5090:500"
+    "5080:300"
+)
+POWER_LIMIT_FALLBACK=500  # used if a GPU's name matches no rule above
+
+# GPU_POWER_LIMIT (optional, via install.sh's power_limit arg) forces every
+# GPU on this host to one value, bypassing model detection — manual escape
+# hatch for one-off overrides. Leave unset for the dynamic per-model behavior.
+# POWER_LIMIT_DEFAULT is only used for the human-readable startup log line.
+POWER_LIMIT_DEFAULT="${GPU_POWER_LIMIT:-$POWER_LIMIT_FALLBACK}"
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
 
 # --- Telegram config ---
@@ -133,17 +144,47 @@ enable_persistence_mode() {
         log "WARNING: Could not enable persistence mode"
 }
 
-set_power_limits() {
-    log "Setting all GPUs to ${POWER_LIMIT_DEFAULT}W..."
-    local gpu_count
-    gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader,nounits | wc -l)
-    for (( i=0; i<gpu_count; i++ )); do
-        if nvidia-smi -i "$i" --power-limit="$POWER_LIMIT_DEFAULT" >> "$LOG_FILE" 2>&1; then
-            log "  GPU $i → ${POWER_LIMIT_DEFAULT}W OK"
-        else
-            log "  GPU $i power limit ERROR"
+
+# Returns the power cap in watts for a given GPU name, per POWER_LIMITS above.
+get_power_limit_for_gpu() {
+    local gpu_name="${1^^}"
+    local rule pattern watts
+    for rule in "${POWER_LIMITS[@]}"; do
+        pattern="${rule%%:*}"
+        watts="${rule##*:}"
+        if [[ "$gpu_name" == *"${pattern^^}"* ]]; then
+            echo "$watts"
+            return
         fi
     done
+    echo "$POWER_LIMIT_FALLBACK"
+}
+
+set_power_limits() {
+    if [[ -n "$GPU_POWER_LIMIT" ]]; then
+        log "Setting all GPUs to ${GPU_POWER_LIMIT}W (manual override via GPU_POWER_LIMIT)..."
+        local gpu_count
+        gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader,nounits | wc -l)
+        for (( i=0; i<gpu_count; i++ )); do
+            if nvidia-smi -i "$i" --power-limit="$GPU_POWER_LIMIT" >> "$LOG_FILE" 2>&1; then
+                log "  GPU $i → ${GPU_POWER_LIMIT}W OK (override)"
+            else
+                log "  GPU $i power limit ERROR"
+            fi
+        done
+        return
+    fi
+
+    log "Setting power limits per GPU model..."
+    while IFS=',' read -r idx name; do
+        idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
+        local watts; watts=$(get_power_limit_for_gpu "$name")
+        if nvidia-smi -i "$idx" --power-limit="$watts" >> "$LOG_FILE" 2>&1; then
+            log "  GPU $idx ($name) → ${watts}W OK"
+        else
+            log "  GPU $idx power limit ERROR"
+        fi
+    done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
 }
 
 check_gpus() {
@@ -1119,7 +1160,11 @@ main() {
 
     log "======================================"
     log "GPU Monitor started (PID $$) on $host"
-    log "Default power limit : ${POWER_LIMIT_DEFAULT}W per GPU"
+    if [[ -n "$GPU_POWER_LIMIT" ]]; then
+        log "Power limit         : ${GPU_POWER_LIMIT}W per GPU (manual override)"
+    else
+        log "Power limit         : per-model (5090=500W, 5080=300W, fallback=${POWER_LIMIT_FALLBACK}W)"
+    fi
     log "Temp threshold      : ${TEMP_THRESHOLD}°C"
     log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour)"
     log "Pricing interval    : ${PRICE_INTERVAL}s (30 min)"
