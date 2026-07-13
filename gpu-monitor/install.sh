@@ -103,5 +103,9 @@ echo "     Dashboard: http://localhost:$DASHBOARD_PORT"
 echo "     Combined:  http://localhost:$DASHBOARD_PORT/combined"
 echo "     Market:    http://localhost:$DASHBOARD_PORT/market"
 [[ -n "$PEER_URLS" ]] && echo "     Peers:     $PEER_URLS (proxied via /api/peer, /api/peer/1, ...)"
-echo "     Power cap: ${GPU_POWER_LIMIT:-500}W per GPU (re-applied hourly)"
+if [[ -n "$GPU_POWER_LIMIT" ]]; then
+    echo "     Power cap: ${GPU_POWER_LIMIT}W per GPU (manual override, re-applied hourly)"
+else
+    echo "     Power cap: auto-detected per GPU model (5090=500W, 5080=300W, re-applied hourly)"
+fi
 echo "     Status:    systemctl status gpu-monitor gpu-dashboard"
