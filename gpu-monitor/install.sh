@@ -24,6 +24,8 @@ set -euo pipefail
 
 SCRIPT_SRC="$(dirname "$0")/gpu_monitor.sh"
 SCRIPT_DEST="/usr/local/bin/gpu_monitor.sh"
+ACTIVITY_SRC="$(dirname "$0")/vast-activity.sh"
+ACTIVITY_DEST="/usr/local/bin/vast-activity"
 DASH_SRC="$(dirname "$0")/dashboard"
 DASH_DEST="/opt/gpu-monitor/dashboard"
 MONITOR_SVC="/etc/systemd/system/gpu-monitor.service"
@@ -40,6 +42,10 @@ cp "$SCRIPT_SRC" "$SCRIPT_DEST"
 chmod +x "$SCRIPT_DEST"
 touch "$LOG_FILE"
 chmod 644 "$LOG_FILE"
+
+echo "[*] Installing vast-activity helper..."
+cp "$ACTIVITY_SRC" "$ACTIVITY_DEST"
+chmod +x "$ACTIVITY_DEST"
 
 echo "[*] Installing dashboard to $DASH_DEST ..."
 mkdir -p "$DASH_DEST"
@@ -109,3 +115,4 @@ else
     echo "     Power cap: auto-detected per GPU model (5090=500W, 5080=300W, re-applied hourly)"
 fi
 echo "     Status:    systemctl status gpu-monitor gpu-dashboard"
+echo "     Activity:  vast-activity (self-test verdicts, launched instances, results)"
