@@ -1083,8 +1083,13 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
             log "  Machine $mid: not listed — skipping price adjustment"
             continue
         fi
-        # Partially rented (Min-GPU:1) still has free slots — adjust pricing for them
-        [[ "$rented" == "True" ]] && log "  Machine $mid: partially rented, adjusting price for free slot(s)"
+        # Active rental (full or partial) — don't touch price. Renters lock in
+        # the rate they started at; changing it mid-rental is surprising and,
+        # for on-demand listings, can look like a bait-and-switch.
+        if [[ "$rented" == "True" ]]; then
+            log "  Machine $mid: active rental — skipping price adjustment"
+            continue
+        fi
 
         if [[ -z "$market_price" || "$market_price" == "0" ]]; then
             market_price="$floor"
