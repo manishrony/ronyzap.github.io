@@ -492,7 +492,7 @@ vastai_init_state() {
 
     log "VAST.AI INIT: checking machines for active rentals..."
 
-    local response tmpfile
+    local response tmpfile slots_tmpfile
     response=$(vastai_get "$VASTAI_API/machines/") || {
         log "VAST.AI INIT: API call failed — skipping startup scan"
         return
@@ -501,10 +501,13 @@ vastai_init_state() {
     tmpfile=$(mktemp)
     echo "$response" > "$tmpfile"
 
-    python3 - "$tmpfile" "$JSONL_FILE" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
+    slots_tmpfile=$(mktemp)
+    vastai_fetch_gpu_slots > "$slots_tmpfile"
+
+    python3 - "$tmpfile" "$JSONL_FILE" "$slots_tmpfile" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
 import sys, json, datetime, socket
 
-tmpf, jsonl = sys.argv[1], sys.argv[2]
+tmpf, jsonl, slots_f = sys.argv[1], sys.argv[2], sys.argv[3]
 
 try:
     with open(tmpf) as f:
@@ -512,6 +515,12 @@ try:
 except Exception as e:
     print(f"[INIT] JSON parse error: {e}")
     sys.exit(0)
+
+try:
+    with open(slots_f) as f:
+        slots_by_machine = json.load(f)
+except Exception:
+    slots_by_machine = {}
 
 machines = data.get('machines', [])
 
@@ -552,6 +561,14 @@ for m in machines:
     gpu_name = m.get('gpu_name', 'unknown')
     num_gpus = m.get('num_gpus', 0)
     cur_bid  = float(m.get('listed_gpu_cost') or m.get('min_bid_price', m.get('min_bid', 0)) or 0)
+
+    # Prefer the actual total $/hr being earned (sum of rented instances' real
+    # dph_total) over the per-GPU listed price — otherwise a partial rental
+    # (e.g. 4 of 8 GPUs) gets backfilled at the single-GPU rate and the
+    # dashboard's revenue math undercounts by the number of GPUs rented.
+    rented_slots = [s for s in slots_by_machine.get(mid, {}).values() if s.get('instance_id')]
+    if rented_slots:
+        cur_bid = sum(float(s.get('rate', 0) or 0) for s in rented_slots)
 
     if not mid or not rented:
         continue
@@ -600,7 +617,7 @@ if not count:
     print("[INIT] No backfill needed — no newly rented machines")
 PYEOF
 
-    rm -f "$tmpfile"
+    rm -f "$tmpfile" "$slots_tmpfile"
 }
 
 # Summarise tracked revenue from JSONL log (no API call needed — Vast.ai
@@ -697,10 +714,15 @@ vastai_check() {
     gpu_slots_json=$(vastai_fetch_gpu_slots)
 
     # State: one line per machine: {mid}|{rented}|{num_gpus}x{gpu_name}|{bid}/hr
+    # {bid} is the ACTUAL total $/hr being earned (sum of rented instances' real
+    # dph_total from gpu_slots_json), not the per-GPU listed price — otherwise a
+    # partial rental (e.g. 4 of 8 GPUs) would record only the single-GPU rate and
+    # the dashboard's revenue math would undercount by the number of GPUs rented.
     local current_state
-    current_state=$(echo "$response" | python3 -c "
+    current_state=$(python3 -c "
 import sys, json, socket
-data = json.load(sys.stdin)
+slots_by_machine = json.loads(sys.argv[1])
+data = json.loads(sys.argv[2])
 hn = socket.gethostname()
 lines = []
 for m in data.get('machines', []):
@@ -714,10 +736,15 @@ for m in data.get('machines', []):
         rented = True
     gpu_name = m.get('gpu_name', '?')
     num_gpus = m.get('num_gpus', 0)
-    cur_bid  = float(m.get('listed_gpu_cost') or m.get('min_bid_price', m.get('min_bid', 0)) or 0)
-    lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cur_bid:.3f}/hr')
+    per_gpu_price = float(m.get('listed_gpu_cost') or m.get('min_bid_price', m.get('min_bid', 0)) or 0)
+
+    rented_slots = [s for s in slots_by_machine.get(str(mid), {}).values() if s.get('instance_id')]
+    actual_rate = sum(float(s.get('rate', 0) or 0) for s in rented_slots)
+
+    cost_val = actual_rate if (rented and rented_slots) else per_gpu_price
+    lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cost_val:.3f}/hr')
 print('\n'.join(lines))
-" 2>/dev/null) || { log "VAST.AI: Parse error"; return; }
+" "$gpu_slots_json" "$response" 2>/dev/null) || { log "VAST.AI: Parse error"; return; }
 
     local last_state=""
     [[ -f "$VASTAI_LAST_STATE_FILE" ]] && last_state=$(cat "$VASTAI_LAST_STATE_FILE")
