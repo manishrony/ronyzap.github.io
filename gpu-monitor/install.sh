@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Deploy gpu_monitor.sh + dashboard as systemd services on this rig
-# Usage: sudo bash install.sh [port] [peer_urls] [peer_names] [self_name]
-#   port       : dashboard port (default 8080; zappa1=8080, zappa2=8081, zappa3=8082, ...)
-#   peer_urls  : comma-separated base URLs of OTHER rigs' dashboards, for server-side
-#                proxy (works over LAN and from the internet). Only set this on the
-#                ONE rig that serves the combined view (typically zappa1).
-#                e.g. sudo bash install.sh 8080 "http://192.168.1.196:8081,http://192.168.1.150:8082"
-#   peer_names : optional comma-separated display names matching peer_urls order
-#                e.g. "Zappa2,Zappa3" — defaults to "Rig 2","Rig 3",... if omitted
-#   self_name  : optional display name for THIS rig (defaults to hostname)
+# Usage: sudo bash install.sh [port] [peer_urls] [peer_names] [self_name] [power_limit]
+#   port        : dashboard port (default 8080; zappa1=8080, zappa2=8081, zappa3=8082, ...)
+#   peer_urls   : comma-separated base URLs of OTHER rigs' dashboards, for server-side
+#                 proxy (works over LAN and from the internet). Only set this on the
+#                 ONE rig that serves the combined view (typically zappa1).
+#                 e.g. sudo bash install.sh 8080 "http://192.168.1.196:8081,http://192.168.1.150:8082"
+#   peer_names  : optional comma-separated display names matching peer_urls order
+#                 e.g. "Zappa2,Zappa3" — defaults to "Rig 2","Rig 3",... if omitted
+#   self_name   : optional display name for THIS rig (defaults to hostname)
+#   power_limit : per-GPU power cap in watts for THIS rig (default 500 if omitted —
+#                 matches existing RTX 5090 rigs). Lower-TDP cards (e.g. RTX 5080,
+#                 360W max) may need a lower cap to manage chassis heat, e.g. 300.
+#                 Re-applied every hour by gpu_monitor.sh, so it persists across
+#                 reboots and won't drift back to the default.
 #
 # To add a new rig later: install it standalone (no peer_urls needed on the new
 # box itself), then re-run this script on the hub rig (zappa1) with the new
@@ -28,6 +33,7 @@ DASHBOARD_PORT="${1:-8080}"
 PEER_URLS="${2:-}"
 PEER_NAMES="${3:-}"
 SELF_NAME="${4:-}"
+GPU_POWER_LIMIT="${5:-}"
 
 echo "[*] Copying monitor script..."
 cp "$SCRIPT_SRC" "$SCRIPT_DEST"
@@ -52,6 +58,7 @@ Wants=nvidia-persistenced.service
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/gpu_monitor.sh
+Environment=GPU_POWER_LIMIT=$GPU_POWER_LIMIT
 Restart=always
 RestartSec=30
 StandardOutput=append:$LOG_FILE
@@ -96,4 +103,5 @@ echo "     Dashboard: http://localhost:$DASHBOARD_PORT"
 echo "     Combined:  http://localhost:$DASHBOARD_PORT/combined"
 echo "     Market:    http://localhost:$DASHBOARD_PORT/market"
 [[ -n "$PEER_URLS" ]] && echo "     Peers:     $PEER_URLS (proxied via /api/peer, /api/peer/1, ...)"
+echo "     Power cap: ${GPU_POWER_LIMIT:-500}W per GPU (re-applied hourly)"
 echo "     Status:    systemctl status gpu-monitor gpu-dashboard"

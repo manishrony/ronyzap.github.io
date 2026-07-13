@@ -14,7 +14,11 @@
 LOG_FILE="/var/log/gpu_monitor.log"
 JSONL_FILE="/var/log/gpu_monitor_data.jsonl"
 TEMP_THRESHOLD=75        # °C — Telegram alert if exceeded
-POWER_LIMIT_DEFAULT=500  # Watts — applied to all GPUs always
+# Watts — applied to all GPUs on this host, every cycle. Override per-rig via
+# the GPU_POWER_LIMIT env var (set by install.sh) — e.g. lower-TDP cards like
+# RTX 5080 (360W max) may need a cap below the RTX 5090 default to manage
+# chassis heat. Falls back to 500 (existing behavior) if unset.
+POWER_LIMIT_DEFAULT="${GPU_POWER_LIMIT:-500}"
 CHECK_INTERVAL=3600      # 1 hour in seconds (GPU + rental check)
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
 
