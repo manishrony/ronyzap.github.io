@@ -13,8 +13,19 @@
 
 LOG_FILE="/var/log/gpu_monitor.log"
 JSONL_FILE="/var/log/gpu_monitor_data.jsonl"
-TEMP_THRESHOLD=75        # °C — Telegram alert if exceeded
+TEMP_THRESHOLD=75        # °C — GPU Telegram alert if exceeded
 CHECK_INTERVAL=3600      # 1 hour in seconds (GPU + rental check)
+
+# --- CPU thermal monitoring ---
+CPU_TEMP_THRESHOLD=90    # °C — CPU Telegram alert if exceeded (Ryzen/EPYC Tjmax ~95°C)
+# Opt-in protection: when CPU temp exceeds CPU_TEMP_CRITICAL, temporarily lower
+# every GPU's power limit by CPU_PROTECT_DROP watts to cut chassis heat. OFF by
+# default (0) because it reduces a paying renter's GPU performance. Set to 1 in
+# /etc/gpu_monitor.conf (CPU_THERMAL_PROTECT=1) to enable.
+CPU_THERMAL_PROTECT="${CPU_THERMAL_PROTECT:-0}"
+CPU_TEMP_CRITICAL=94     # °C — trigger point for the opt-in protective throttle
+CPU_PROTECT_DROP=100     # W — how much to drop each GPU's cap while protecting
+CPU_ALERT_FILE="/var/tmp/gpu_monitor_cpu_alert"  # throttles the CPU alert to 1/30min
 
 # Per-GPU-model power caps (Watts). Matched by substring against the GPU name
 # reported by nvidia-smi (case-insensitive), first match wins. Add a line here
@@ -200,6 +211,67 @@ get_effective_power_limit() {
     echo "$limits"
 }
 
+# Read the CPU package temperature (°C) from hwmon. AMD reports it via k10temp
+# (Tctl) or zenpower; Intel via coretemp. Takes the hottest sensor exposed by
+# that chip. Echoes an integer, or nothing if unreadable.
+get_cpu_temp() {
+    local hw name t
+    for hw in /sys/class/hwmon/hwmon*; do
+        name=$(cat "$hw/name" 2>/dev/null) || continue
+        case "$name" in
+            k10temp|zenpower|coretemp)
+                t=$(cat "$hw"/temp*_input 2>/dev/null | sort -rn | head -1)
+                if [[ -n "$t" ]]; then echo $(( t / 1000 )); return; fi
+                ;;
+        esac
+    done
+    # Fallback: parse `sensors` for Tctl/Package
+    sensors 2>/dev/null | awk '/Tctl|Package id 0/ { for(i=1;i<=NF;i++) if($i ~ /^\+?[0-9]+\.[0-9]+.C/) { gsub(/[+°C]/,"",$i); print int($i); exit } }'
+}
+
+# Read + log CPU temp, alert on threshold, and (opt-in) protectively drop GPU
+# power when critically hot. Returns the temp via the CPU_TEMP_LAST global so
+# check_gpus can fold it into the gpu_status event.
+CPU_TEMP_LAST=""
+check_cpu() {
+    local ct; ct=$(get_cpu_temp)
+    CPU_TEMP_LAST="$ct"
+    [[ -z "$ct" || ! "$ct" =~ ^[0-9]+$ ]] && { log "  CPU temp: unavailable"; return; }
+
+    log "  CPU temp: ${ct}°C (threshold ${CPU_TEMP_THRESHOLD}°C)"
+
+    if (( ct > CPU_TEMP_THRESHOLD )); then
+        write_event "cpu_temp_warning" "{\"cpu_temp\":$ct,\"threshold\":$CPU_TEMP_THRESHOLD}"
+        # Throttle the Telegram alert to at most once per 30 min
+        local now_ts last_ts=0
+        now_ts=$(date +%s)
+        [[ -f "$CPU_ALERT_FILE" ]] && last_ts=$(cat "$CPU_ALERT_FILE" 2>/dev/null || echo 0)
+        if (( now_ts - last_ts > 1800 )); then
+            tg_send "🔥 <b>High CPU temp</b> — $(hostname)
+CPU: <b>${ct}°C</b> (alert >${CPU_TEMP_THRESHOLD}°C)
+Check chassis airflow / CPU cooler under the current workload."
+            echo "$now_ts" > "$CPU_ALERT_FILE"
+        fi
+
+        # Opt-in protective throttle (off unless CPU_THERMAL_PROTECT=1)
+        if [[ "$CPU_THERMAL_PROTECT" == "1" ]] && (( ct >= CPU_TEMP_CRITICAL )); then
+            log "  CPU ${ct}°C ≥ critical ${CPU_TEMP_CRITICAL}°C — protectively lowering GPU power by ${CPU_PROTECT_DROP}W"
+            local idx0 name0 watts0 target
+            while IFS=',' read -r idx0 name0; do
+                idx0=$(echo "$idx0" | xargs); name0=$(echo "$name0" | xargs)
+                watts0=$(get_power_limit_for_gpu "$name0")
+                target=$(( watts0 - CPU_PROTECT_DROP ))
+                (( target < 100 )) && target=100
+                nvidia-smi -i "$idx0" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
+                    && log "    GPU $idx0 → ${target}W (protective)"
+            done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
+            write_event "cpu_thermal_protect" "{\"cpu_temp\":$ct,\"dropped_w\":$CPU_PROTECT_DROP}"
+        fi
+    else
+        rm -f "$CPU_ALERT_FILE" 2>/dev/null || true
+    fi
+}
+
 # Map each GPU index to the compute process using the most memory on it, via
 # nvidia-smi. This reveals what's ACTUALLY running (e.g. FahCore_27 =
 # Folding@home, SRBMiner = mining, python3 = ML) even when the rental's base
@@ -289,7 +361,11 @@ check_gpus() {
     done <<< "$gpu_data"
     gpu_json_arr+="]"
 
-    write_event "gpu_status" "{\"gpus\":$gpu_json_arr}"
+    # CPU temp (also alerts / opt-in protects); fold it into the gpu_status event.
+    check_cpu
+    local cpu_field=""
+    [[ "$CPU_TEMP_LAST" =~ ^[0-9]+$ ]] && cpu_field=",\"cpu_temp\":$CPU_TEMP_LAST"
+    write_event "gpu_status" "{\"gpus\":$gpu_json_arr$cpu_field}"
 
     (( overtemp == 0 )) && log "  All GPUs within thermal limits." \
         || log "  WARNING: $overtemp GPU(s) over temp threshold."

@@ -883,7 +883,8 @@ function computeAnalysisScore(events, periodStart, periodEnd) {
 
 function eventBadge(type) {
   const m = {gpu_status:["badge-blue","GPU"],temp_warning:["badge-red","🌡️ TEMP"],
-    gpu_fault:["badge-red","⚡ FAULT"],
+    gpu_fault:["badge-red","⚡ FAULT"],cpu_temp_warning:["badge-red","🔥 CPU"],
+    cpu_thermal_protect:["badge-yellow","🛡️ CPU PROTECT"],
     rental_start:["badge-green","▶ RENTED"],rental_end:["badge-yellow","■ ENDED"],
     price_change:["badge-purple","💰 PRICE"],startup:["badge-blue","🚀 START"]};
   const [cls,lbl] = m[type]||["badge-blue",type];
@@ -891,15 +892,24 @@ function eventBadge(type) {
 }
 
 function eventDetail(e) {
-  if (e.type==="gpu_status" && e.gpus) return e.gpus.map(g=>`GPU${g.idx} ${g.temp}°C ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ");
+  if (e.type==="gpu_status" && e.gpus) return e.gpus.map(g=>`GPU${g.idx} ${g.temp}°C ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ") + (typeof e.cpu_temp==="number"?` | CPU ${e.cpu_temp}°C`:"");
   if (e.type==="gpu_fault") return (e.gpu_hint ? e.gpu_hint+": " : "") + (e.message||"").slice(0,120);
   if (e.type==="price_change") return `${e.gpu_name} x${e.num_gpus} $${Number(e.old_price).toFixed(2)}→$${Number(e.new_price).toFixed(2)}/hr`;
   if (e.type==="rental_start") return `${e.gpus} @ ${e.rate}`;
   if (e.type==="rental_end")   return `${e.gpus} ended`;
   if (e.type==="temp_warning") return `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
+  if (e.type==="cpu_temp_warning") return `CPU at ${e.cpu_temp}°C (>${e.threshold}°C)`;
+  if (e.type==="cpu_thermal_protect") return `CPU ${e.cpu_temp}°C — dropped GPU power ${e.dropped_w}W`;
   if (e.type==="startup") return `Power ${e.power_limit}W threshold ${e.temp_threshold}°C`;
   return "";
 }
+// Latest CPU temp (°C) from the most recent gpu_status event carrying one.
+function lastCpuTemp(events) {
+  for (let i = events.length - 1; i >= 0; i--)
+    if (events[i].type === "gpu_status" && typeof events[i].cpu_temp === "number") return events[i].cpu_temp;
+  return null;
+}
+function cpuTempClass(t) { return t>=90?"temp-hot":t>=80?"temp-warn":"temp-ok"; }
 
 // ── Chart helpers ─────────────────────────────────────────────────────
 function dc(id) { if(CHARTS[id]){CHARTS[id].destroy();delete CHARTS[id];} }
@@ -1043,7 +1053,9 @@ function renderRigCard(idx, d) {
     const avg = Math.round(temps.reduce((a,b)=>a+b,0)/temps.length);
     const totalPow = powers.reduce((a,b)=>a+b,0);
     const tEl = document.getElementById("rc"+idx+"-temp");
-    tEl.textContent = avg+"°C"; tEl.className = "text-lg font-bold "+tempClass(avg);
+    const cpuT = lastCpuTemp(d.events||[]);
+    tEl.innerHTML = avg+"°C" + (cpuT!==null ? ` <span class="text-xs font-normal ${cpuTempClass(cpuT)}">· CPU ${cpuT}°</span>` : "");
+    tEl.className = "text-lg font-bold "+tempClass(avg);
     document.getElementById("rc"+idx+"-power").textContent = totalPow.toFixed(1)+"W";
 
     // Mini GPU rows with per-GPU rental status
@@ -1123,10 +1135,14 @@ function renderRig(idx) {
     if (last?.gpus?.length) {
       const avg = Math.round(last.gpus.reduce((a,g)=>a+g.temp,0)/last.gpus.length);
       const tEl = document.getElementById("r-temp");
-      tEl.textContent = avg+"°C"; tEl.className = "text-2xl font-bold "+tempClass(avg);
+      const cpuT = lastCpuTemp(events);
+      tEl.innerHTML = avg+"°C <span class=\"text-slate-500 text-sm font-normal\">GPU</span>"
+        + (cpuT!==null ? ` <span class="text-lg font-bold ${cpuTempClass(cpuT)}">${cpuT}°C</span> <span class="text-slate-500 text-sm font-normal">CPU</span>` : "");
+      tEl.className = "text-2xl font-bold "+tempClass(avg);
       const tempWarns = todayEvs.filter(e=>e.type==="temp_warning").length;
+      const cpuWarns = todayEvs.filter(e=>e.type==="cpu_temp_warning").length;
       const faults = events.filter(e=>e.type==="gpu_fault").length;
-      document.getElementById("r-temp-sub").textContent = tempWarns+" warning(s) today"+(faults?" · "+faults+" fault(s)":"");
+      document.getElementById("r-temp-sub").textContent = tempWarns+" GPU warning(s)"+(cpuWarns?" · "+cpuWarns+" CPU warning(s)":"")+(faults?" · "+faults+" fault(s)":"")+" today";
 
       const rigSlots = lastRentalSlots(events);
       document.getElementById("r-gpu-cards").innerHTML = last.gpus.map(g=>{
