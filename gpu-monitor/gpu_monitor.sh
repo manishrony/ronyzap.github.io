@@ -190,7 +190,7 @@ set_power_limits() {
 check_gpus() {
     local gpu_data
     gpu_data=$(nvidia-smi \
-        --query-gpu=index,name,temperature.gpu,power.draw,power.limit,fan.speed \
+        --query-gpu=index,name,temperature.gpu,power.draw,power.limit,fan.speed,utilization.gpu \
         --format=csv,noheader,nounits 2>&1) || {
         log "ERROR: nvidia-smi failed: $gpu_data"
         return 1
@@ -201,16 +201,17 @@ check_gpus() {
     local gpu_count_actual=0
     local gpu_json_arr="["
     local first=1
-    while IFS=',' read -r idx name temp power_draw power_limit fan; do
+    while IFS=',' read -r idx name temp power_draw power_limit fan util; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
         temp=$(echo "$temp" | xargs); power_draw=$(echo "$power_draw" | xargs)
         power_limit=$(echo "$power_limit" | xargs); fan=$(echo "$fan" | xargs)
+        util=$(echo "$util" | xargs)
 
-        log "  GPU $idx | $name | Temp: ${temp}°C | Power: ${power_draw}W/${power_limit}W | Fan: ${fan}%"
+        log "  GPU $idx | $name | Temp: ${temp}°C | Power: ${power_draw}W/${power_limit}W | Fan: ${fan}% | Util: ${util}%"
         gpu_count_actual=$(( gpu_count_actual + 1 ))
 
         [[ $first -eq 0 ]] && gpu_json_arr+=","
-        gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan}"
+        gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan,\"util\":$util}"
         first=0
 
         if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > TEMP_THRESHOLD )); then
@@ -505,9 +506,41 @@ vastai_init_state() {
     vastai_fetch_gpu_slots > "$slots_tmpfile"
 
     python3 - "$tmpfile" "$JSONL_FILE" "$slots_tmpfile" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
-import sys, json, datetime, socket
+import sys, json, datetime, socket, glob, re
 
 tmpf, jsonl, slots_f = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def get_instance_image(instance_id):
+    if not instance_id:
+        return ''
+    pattern = re.compile(r'name: C\.' + re.escape(str(instance_id)) + r'  base_image_: (\S+)')
+    last = ''
+    for path in glob.glob('/var/lib/vastai_kaalia/kaalia.log*'):
+        try:
+            with open(path, errors='ignore') as f:
+                for line in f:
+                    m = pattern.search(line)
+                    if m:
+                        last = m.group(1)
+        except Exception:
+            pass
+    return last
+
+def classify_workload(image):
+    img = (image or '').lower()
+    if not img:
+        return 'unknown'
+    if 'self-test' in img:
+        return 'selftest'
+    if any(k in img for k in ('srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer')):
+        return 'mining'
+    if any(k in img for k in ('jupyter', 'linux-desktop', 'vscode', 'desktop', 'vnc')):
+        return 'desktop'
+    if any(k in img for k in ('llama', 'vllm', 'ollama', 'text-generation', 'tgi', 'triton', 'comfyui', 'stable-diffusion', 'automatic1111')):
+        return 'inference'
+    if any(k in img for k in ('pytorch', 'tensorflow', 'axolotl', 'unsloth', 'deepspeed', 'train')):
+        return 'training'
+    return 'unknown'
 
 try:
     with open(tmpf) as f:
@@ -597,20 +630,27 @@ for m in machines:
         print(f"[INIT] Machine {mid}: rate unknown, skipping backfill (will retry next cycle)")
         continue
 
+    real_iid = rented_slots[0]['instance_id'] if rented_slots else ''
+    image = get_instance_image(real_iid)
+    workload_type = classify_workload(image)
+
     event = {
-        'ts':          now_str,
-        'type':        'rental_start',
-        'host':        socket.gethostname(),
-        'machine_id':  mid,
-        'instance_id': mid,
-        'gpus':        f'{num_gpus}x {gpu_name}',
-        'rate':        f'${cur_bid:.3f}/hr',
-        'status':      'running',
-        'backfilled':  True,
+        'ts':              now_str,
+        'type':            'rental_start',
+        'host':            socket.gethostname(),
+        'machine_id':      mid,
+        'instance_id':     mid,
+        'real_instance_id': real_iid,
+        'gpus':            f'{num_gpus}x {gpu_name}',
+        'rate':            f'${cur_bid:.3f}/hr',
+        'status':          'running',
+        'backfilled':      True,
+        'image':           image,
+        'workload_type':   workload_type,
     }
     with open(jsonl, 'a') as f:
         f.write(json.dumps(event) + '\n')
-    print(f"[INIT] Backfilled rental_start: machine {mid} ({num_gpus}x {gpu_name} @ ${cur_bid:.3f}/hr)")
+    print(f"[INIT] Backfilled rental_start: machine {mid} ({num_gpus}x {gpu_name} @ ${cur_bid:.3f}/hr, {workload_type}: {image or 'unknown'})")
     count += 1
 
 if not count:
@@ -698,6 +738,34 @@ except Exception as e:
 " <<< "$raw" 2>/dev/null || echo "{}"
 }
 
+# Look up the Docker image an instance is running, from vastai_kaalia's own
+# create-container log lines (same source vast-activity uses). Best-effort —
+# kaalia.log rotates, so older instances may not be found.
+get_instance_image() {
+    local instance_id="$1"
+    [[ -z "$instance_id" ]] && return
+    grep -ahoE "name: C\.${instance_id}  base_image_: [^ ]+" \
+        /var/lib/vastai_kaalia/kaalia.log* 2>/dev/null \
+        | tail -1 \
+        | sed -E 's/.*base_image_: //'
+}
+
+# Classify a Docker image string into a coarse workload bucket for the
+# rental-analysis dashboard. Vast.ai does not expose renter identity, so
+# image name is the only signal available for "what's this rental doing".
+classify_workload() {
+    local image="${1,,}"
+    [[ -z "$image" ]] && { echo "unknown"; return; }
+    case "$image" in
+        *self-test*)                                                  echo "selftest" ;;
+        *srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*) echo "mining" ;;
+        *jupyter*|*linux-desktop*|*vscode*|*desktop*|*vnc*)            echo "desktop" ;;
+        *llama*|*vllm*|*ollama*|*text-generation*|*tgi*|*triton*|*comfyui*|*stable-diffusion*|*automatic1111*) echo "inference" ;;
+        *pytorch*|*tensorflow*|*axolotl*|*unsloth*|*deepspeed*|*train*) echo "training" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
 # Check machine rental status from HOST perspective.
 # Uses /machines/?owner=me — 'rented' field = someone is renting your GPU.
 # Fires rental_start/end Telegram alerts only when rented status changes.
@@ -713,11 +781,13 @@ vastai_check() {
     local gpu_slots_json
     gpu_slots_json=$(vastai_fetch_gpu_slots)
 
-    # State: one line per machine: {mid}|{rented}|{num_gpus}x{gpu_name}|{bid}/hr
+    # State: one line per machine: {mid}|{rented}|{num_gpus}x{gpu_name}|{bid}/hr|{real_instance_id}
     # {bid} is the ACTUAL total $/hr being earned (sum of rented instances' real
     # dph_total from gpu_slots_json), not the per-GPU listed price — otherwise a
     # partial rental (e.g. 4 of 8 GPUs) would record only the single-GPU rate and
     # the dashboard's revenue math would undercount by the number of GPUs rented.
+    # {real_instance_id} is Vast's actual numeric instance id (not the machine id)
+    # — used to look up the rental's Docker image for workload classification.
     local current_state
     current_state=$(python3 -c "
 import sys, json, socket
@@ -740,9 +810,10 @@ for m in data.get('machines', []):
 
     rented_slots = [s for s in slots_by_machine.get(str(mid), {}).values() if s.get('instance_id')]
     actual_rate = sum(float(s.get('rate', 0) or 0) for s in rented_slots)
+    real_iid = rented_slots[0]['instance_id'] if rented_slots else ''
 
     cost_val = actual_rate if (rented and rented_slots) else per_gpu_price
-    lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cost_val:.3f}/hr')
+    lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cost_val:.3f}/hr|{real_iid}')
 print('\n'.join(lines))
 " "$gpu_slots_json" "$response" 2>/dev/null) || { log "VAST.AI: Parse error"; return; }
 
@@ -755,7 +826,7 @@ print('\n'.join(lines))
         # Check each current machine for rental status changes
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid rented gpus cost <<< "$line"
+            IFS='|' read -r mid rented gpus cost real_iid <<< "$line"
 
             local old_line
             old_line=$(grep "^${mid}|" "$VASTAI_LAST_STATE_FILE" 2>/dev/null || true)
@@ -766,14 +837,17 @@ print('\n'.join(lines))
                 log "VAST.AI: Machine $mid | $gpus | $cost | Rented: $rented (first seen)"
             else
                 local old_rented
-                IFS='|' read -r _ old_rented _ _ <<< "$old_line"
+                IFS='|' read -r _ old_rented _ _ _ <<< "$old_line"
                 if [[ "$old_rented" != "$rented" ]]; then
                     if [[ "$rented" == "True" ]]; then
-                        log "VAST.AI: Machine $mid — rental STARTED"
+                        local image workload_type
+                        image=$(get_instance_image "$real_iid")
+                        workload_type=$(classify_workload "$image")
+                        log "VAST.AI: Machine $mid — rental STARTED ($workload_type: ${image:-unknown})"
                         tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
 Machine: <b>$mid</b> | GPUs: $gpus
 Rate: <b>$cost</b>"
-                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"running\"}"
+                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\"}"
                     else
                         log "VAST.AI: Machine $mid — rental ENDED"
                         tg_send "🔴 <b>Vast.ai Rental ENDED</b> — $(hostname)
@@ -788,7 +862,7 @@ Last rate: $cost"
         # Check for machines that disappeared while rented
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid old_rented gpus cost <<< "$line"
+            IFS='|' read -r mid old_rented gpus cost _ <<< "$line"
             if ! echo "$current_state" | grep -q "^${mid}|"; then
                 if [[ "$old_rented" == "True" ]]; then
                     log "VAST.AI: Machine $mid disappeared while rented"
@@ -804,7 +878,7 @@ Last rate: $cost"
             log "VAST.AI: Machine status (unchanged):"
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
-                IFS='|' read -r mid rented gpus cost <<< "$line"
+                IFS='|' read -r mid rented gpus cost _ <<< "$line"
                 log "  Machine $mid | $gpus | $cost | Rented: $rented"
             done <<< "$current_state"
         else
@@ -816,7 +890,7 @@ Last rate: $cost"
     if [[ -n "$current_state" && -n "$gpu_slots_json" && "$gpu_slots_json" != "{}" ]]; then
         echo "$current_state" | while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid rented gpus cost <<< "$line"
+            IFS='|' read -r mid rented gpus cost _ <<< "$line"
             local slot_event
             slot_event=$(python3 -c "
 import json, sys

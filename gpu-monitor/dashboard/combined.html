@@ -149,6 +149,7 @@
     <button onclick="showRigTab('weekly')"   id="rtab-weekly"   class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Weekly</button>
     <button onclick="showRigTab('monthly')"  id="rtab-monthly"  class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Monthly</button>
     <button onclick="showRigTab('yearly')"   id="rtab-yearly"   class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Yearly</button>
+    <button onclick="showRigTab('analysis')" id="rtab-analysis" class="tab-idle   px-4 py-2 text-sm font-medium rounded-t-lg">Analysis</button>
   </div>
 
   <!-- Rig Overview -->
@@ -252,6 +253,63 @@
     <div class="card p-4">
       <h3 class="text-sm font-semibold text-slate-400 mb-3" id="ry-table-label">Year-by-Year Summary</h3>
       <div id="ry-table" class="overflow-x-auto"></div>
+    </div>
+  </div>
+
+  <!-- Rig Analysis -->
+  <div id="rtab-content-analysis" class="p-6 space-y-6 hidden">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="card p-5 md:col-span-1 flex flex-col items-center justify-center text-center">
+        <p class="text-xs text-slate-500 mb-1">Load & Pricing Score</p>
+        <p class="text-4xl font-bold" id="ra-score">—</p>
+        <p class="text-xs text-slate-500 mt-2">out of 100</p>
+      </div>
+      <div class="card p-4 md:col-span-2 flex flex-col justify-center gap-3">
+        <div>
+          <div class="flex justify-between text-xs text-slate-500 mb-1"><span>Utilization efficiency (rented periods)</span><span id="ra-util-score">—</span></div>
+          <div class="w-full bg-slate-800 rounded-full h-2"><div class="h-2 rounded-full bg-blue-500" id="ra-util-bar" style="width:0%"></div></div>
+        </div>
+        <div>
+          <div class="flex justify-between text-xs text-slate-500 mb-1"><span>Price competitiveness vs market</span><span id="ra-price-score">—</span></div>
+          <div class="w-full bg-slate-800 rounded-full h-2"><div class="h-2 rounded-full bg-emerald-500" id="ra-price-bar" style="width:0%"></div></div>
+        </div>
+        <p class="text-xs text-slate-600 mt-1">Utilization = avg GPU load while rented (idle-while-rented drags this down). Price = how close your ask sits to the market median (below median lowers the score, at/above scores full).</p>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card p-4">
+        <h3 class="text-sm font-semibold text-slate-400 mb-3">Workload Type Distribution <span class="text-xs text-slate-600">(hours rented)</span></h3>
+        <canvas id="chart-ra-workload"></canvas>
+        <p class="text-xs text-slate-600 mt-2">Classified from each rental's Docker image — Vast.ai does not expose renter identity, only what container they ran.</p>
+      </div>
+      <div class="card p-4">
+        <h3 class="text-sm font-semibold text-slate-400 mb-3">GPU Load Distribution <span class="text-xs text-slate-600">(hourly samples)</span></h3>
+        <canvas id="chart-ra-load"></canvas>
+      </div>
+    </div>
+
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3">Rental Price Distribution <span class="text-xs text-slate-600">($/hr, all sessions)</span></h3>
+      <canvas id="chart-ra-price"></canvas>
+    </div>
+
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-slate-400">Rental History</h3>
+        <span class="text-xs text-slate-600" id="ra-history-sub"></span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+            <th class="text-left py-2 pr-4">Start</th><th class="text-left py-2 pr-4">End</th>
+            <th class="text-left py-2 pr-4">Duration</th><th class="text-left py-2 pr-4">GPUs</th>
+            <th class="text-left py-2 pr-4">Rate</th><th class="text-left py-2 pr-4">Revenue</th>
+            <th class="text-left py-2 pr-4">Workload</th><th class="text-left py-2">Image</th>
+          </tr></thead>
+          <tbody id="ra-history" class="divide-y divide-slate-800/50"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
@@ -432,7 +490,7 @@ function showRigTab(name) {
   // Reset drill state when switching tabs
   if (name !== "monthly") RIG_MONTHLY_DRILL = null;
   if (name !== "yearly")  RIG_YEARLY_DRILL  = null;
-  ["overview","daily","weekly","monthly","yearly"].forEach(t => {
+  ["overview","daily","weekly","monthly","yearly","analysis"].forEach(t => {
     document.getElementById("rtab-content-" + t).classList.toggle("hidden", t !== name);
     const el = document.getElementById("rtab-" + t);
     el.className = t === name ? "tab-active px-4 py-2 text-sm font-medium rounded-t-lg"
@@ -466,11 +524,58 @@ function getUniqueYears(events) {
 
 function tempClass(t) { return t>75?"temp-hot":t>65?"temp-warn":"temp-ok"; }
 
+// buildRentalSessions(allEvents) — per-machine, non-overlapping rental sessions.
+// Duplicate rental_start events (from service restarts) are collapsed to one
+// open session per machine. Carries workload_type/image/real_instance_id
+// through from the rental_start event when present (used by the Analysis tab).
+function buildRentalSessions(allEvents) {
+  const sessions = {};
+  const sorted = [...allEvents].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0);
+  for (const e of sorted) {
+    const mid = String(e.machine_id || e.instance_id || "");
+    if (!mid) continue;
+    if (e.type === "rental_start") {
+      if (!sessions[mid]) sessions[mid] = [];
+      const list = sessions[mid];
+      if (!list.length || list[list.length - 1].end !== null) {
+        let rate = parseFloat((e.rate || "0").replace(/[^0-9.]/g, "")) || 0;
+        if (!rate) {
+          const pc = allEvents.filter(x => x.type === "price_change" && String(x.machine_id || "") === mid);
+          if (pc.length) rate = parseFloat(pc[pc.length - 1].new_price) || 0;
+        }
+        list.push({
+          mid, start: new Date(e.ts).getTime(), end: null, rate,
+          startTs: e.ts, endTs: null, gpus: e.gpus || "",
+          workload_type: e.workload_type || null, image: e.image || null,
+          real_instance_id: e.real_instance_id || null,
+        });
+      }
+    } else if (e.type === "rental_end") {
+      const list = sessions[mid];
+      if (list && list.length && list[list.length - 1].end === null) {
+        list[list.length - 1].end = new Date(e.ts).getTime();
+        list[list.length - 1].endTs = e.ts;
+      }
+    }
+  }
+  // Fill in workload_type/image for sessions backfilled after the fact
+  // (backfill-workloads.sh writes a separate workload_backfill event keyed
+  // by machine_id + the original rental_start timestamp).
+  const backfills = allEvents.filter(e => e.type === "workload_backfill");
+  for (const list of Object.values(sessions)) {
+    for (const s of list) {
+      if (s.workload_type && s.workload_type !== "unknown") continue;
+      const bf = backfills.find(b => String(b.machine_id || "") === s.mid && b.rental_ts === s.startTs);
+      if (bf) { s.workload_type = bf.workload_type; s.image = bf.image; }
+    }
+  }
+  return sessions;
+}
+
 // computeRevenue(allEvents, periodStart, periodEnd)
 // daily_earnings (Vast.ai confirmed) take priority over rental_start/end.
 // For any UTC day covered by daily_earnings, use that amount as-is.
-// rental_start/end estimates on uncovered days. Duplicate rental_start events
-// (from service restarts) are collapsed — only one open session per machine.
+// rental_start/end estimates on uncovered days.
 function computeRevenue(allEvents, periodStart, periodEnd) {
   const pS = periodStart ? periodStart.getTime() : 0;
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
@@ -494,29 +599,7 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
     }
   }
 
-  // Build per-machine non-overlapping sessions to handle duplicate rental_start events
-  const sessions = {};
-  const sorted = [...allEvents].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0);
-  for (const e of sorted) {
-    const mid = String(e.machine_id || e.instance_id || "");
-    if (!mid) continue;
-    if (e.type === "rental_start") {
-      if (!sessions[mid]) sessions[mid] = [];
-      const list = sessions[mid];
-      if (!list.length || list[list.length - 1].end !== null) {
-        let rate = parseFloat((e.rate || "0").replace(/[^0-9.]/g, "")) || 0;
-        if (!rate) {
-          const pc = allEvents.filter(x => x.type === "price_change" && String(x.machine_id || "") === mid);
-          if (pc.length) rate = parseFloat(pc[pc.length - 1].new_price) || 0;
-        }
-        list.push({ start: new Date(e.ts).getTime(), end: null, rate });
-      }
-    } else if (e.type === "rental_end") {
-      const list = sessions[mid];
-      if (list && list.length && list[list.length - 1].end === null)
-        list[list.length - 1].end = new Date(e.ts).getTime();
-    }
-  }
+  const sessions = buildRentalSessions(allEvents);
   for (const list of Object.values(sessions)) {
     for (const { start: rS, end: rEraw, rate } of list) {
       if (!rate) continue;
@@ -575,6 +658,127 @@ function lastRentalSlots(events) {
   const map = {};
   ev.slots.forEach(s => { map[s.gpu_idx] = s; });
   return map;
+}
+
+// ── Rental analysis (Analysis tab) ─────────────────────────────────────
+const WORKLOAD_COLORS = { mining:"#f87171", desktop:"#60a5fa", inference:"#c084fc",
+  training:"#4ade80", selftest:"#64748b", unknown:"#94a3b8" };
+const WORKLOAD_LABELS = { mining:"Mining", desktop:"Desktop/Dev", inference:"Inference",
+  training:"Training", selftest:"Self-test", unknown:"Unknown" };
+
+// Hours-rented per workload type, within [periodStart, periodEnd].
+function workloadBreakdown(events, periodStart, periodEnd) {
+  const pS = periodStart ? periodStart.getTime() : 0;
+  const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
+  const sessions = buildRentalSessions(events);
+  const hours = {};
+  for (const list of Object.values(sessions)) {
+    for (const s of list) {
+      const oS = Math.max(s.start, pS), oE = Math.min(s.end ?? Date.now(), pE);
+      if (oE <= oS) continue;
+      const type = s.workload_type || "unknown";
+      hours[type] = (hours[type] || 0) + (oE - oS) / 3600000;
+    }
+  }
+  return hours;
+}
+
+// Rental price ($/hr) distribution across all sessions within a period —
+// one sample per session (the rate it rented at), bucketed into 8 bins.
+function priceDistribution(events, periodStart, periodEnd) {
+  const pS = periodStart ? periodStart.getTime() : 0;
+  const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
+  const sessions = buildRentalSessions(events);
+  const prices = [];
+  for (const list of Object.values(sessions)) {
+    for (const s of list) {
+      if (!s.rate) continue;
+      const oS = Math.max(s.start, pS), oE = Math.min(s.end ?? Date.now(), pE);
+      if (oE <= oS) continue;
+      prices.push(s.rate);
+    }
+  }
+  return histogram(prices, 8);
+}
+
+// GPU load (%) distribution from gpu_status samples within a period —
+// every per-GPU utilization reading counts as one sample, bucketed 0-100% in 5 bins.
+function loadDistribution(events, periodStart, periodEnd) {
+  const pS = periodStart ? periodStart.getTime() : 0;
+  const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
+  const samples = [];
+  for (const e of events) {
+    if (e.type !== "gpu_status") continue;
+    const t = new Date(e.ts).getTime();
+    if (t < pS || t > pE) continue;
+    for (const g of (e.gpus || [])) {
+      if (typeof g.util === "number") samples.push(g.util);
+    }
+  }
+  return histogram(samples, 5, 0, 100);
+}
+
+function histogram(values, binCount, forceMin, forceMax) {
+  if (!values.length) return { labels: [], counts: [] };
+  const min = forceMin ?? Math.min(...values);
+  const max = forceMax ?? Math.max(...values);
+  const span = (max - min) || 1;
+  const binSize = span / binCount;
+  const counts = new Array(binCount).fill(0);
+  for (const v of values) {
+    let idx = Math.floor((v - min) / binSize);
+    if (idx >= binCount) idx = binCount - 1;
+    if (idx < 0) idx = 0;
+    counts[idx]++;
+  }
+  const labels = Array.from({length: binCount}, (_, i) => {
+    const lo = min + i * binSize, hi = min + (i + 1) * binSize;
+    return forceMax !== undefined ? `${Math.round(lo)}-${Math.round(hi)}%` : `$${lo.toFixed(2)}-${hi.toFixed(2)}`;
+  });
+  return { labels, counts };
+}
+
+// Combined load & pricing score (0-100), averaging:
+//  - utilization efficiency: avg GPU load (%) during rented periods only
+//    (idle-while-rented pulls this down; idle-while-free is not counted)
+//  - price competitiveness: how close the ask price sits to market median
+//    from market_snapshot events (at/above median = full marks, below = docked)
+function computeAnalysisScore(events, periodStart, periodEnd) {
+  const pS = periodStart ? periodStart.getTime() : 0;
+  const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
+  const sessions = buildRentalSessions(events);
+
+  // Utilization: gpu_status samples whose timestamp falls inside any rental session
+  const rentedWindows = [];
+  for (const list of Object.values(sessions)) {
+    for (const s of list) rentedWindows.push([s.start, s.end ?? Date.now()]);
+  }
+  const utilSamples = [];
+  for (const e of events) {
+    if (e.type !== "gpu_status") continue;
+    const t = new Date(e.ts).getTime();
+    if (t < pS || t > pE) continue;
+    if (!rentedWindows.some(([a,b]) => t >= a && t <= b)) continue;
+    for (const g of (e.gpus || [])) if (typeof g.util === "number") utilSamples.push(g.util);
+  }
+  const utilScore = utilSamples.length
+    ? Math.round(utilSamples.reduce((a,b)=>a+b,0) / utilSamples.length)
+    : null;
+
+  // Price competitiveness: avg deviation from market median, from market_snapshot events
+  const snaps = events.filter(e => e.type === "market_snapshot" && e.median && (() => {
+    const t = new Date(e.ts).getTime(); return t >= pS && t <= pE;
+  })());
+  let priceScore = null;
+  if (snaps.length) {
+    const devPcts = snaps.map(e => ((e.my_price - e.median) / e.median) * 100);
+    const avgDev = devPcts.reduce((a,b)=>a+b,0) / devPcts.length;
+    priceScore = Math.max(0, Math.min(100, Math.round(100 + 2 * avgDev)));
+  }
+
+  const parts = [utilScore, priceScore].filter(v => v !== null);
+  const combined = parts.length ? Math.round(parts.reduce((a,b)=>a+b,0) / parts.length) : null;
+  return { combined, utilScore, priceScore };
 }
 
 function eventBadge(type) {
@@ -966,8 +1170,66 @@ function renderRig(idx) {
       </tbody></table>`;
   }
 
-  if (activeRigTab === "monthly") renderRigMonthly(revEvents);
-  if (activeRigTab === "yearly")  renderRigYearly(revEvents);
+  if (activeRigTab === "monthly")  renderRigMonthly(revEvents);
+  if (activeRigTab === "yearly")   renderRigYearly(revEvents);
+  if (activeRigTab === "analysis") renderRigAnalysis(events);
+}
+
+// ── Rig Analysis ─────────────────────────────────────────────────────
+function renderRigAnalysis(events) {
+  const periodStart = daysAgo(30), periodEnd = new Date();
+
+  const score = computeAnalysisScore(events, periodStart, periodEnd);
+  document.getElementById("ra-score").textContent = score.combined !== null ? score.combined : "—";
+  document.getElementById("ra-score").className = "text-4xl font-bold " +
+    (score.combined === null ? "text-slate-600" : score.combined >= 70 ? "text-emerald-400" : score.combined >= 40 ? "text-amber-400" : "text-red-400");
+  document.getElementById("ra-util-score").textContent = score.utilScore !== null ? score.utilScore + "%" : "no data yet";
+  document.getElementById("ra-util-bar").style.width = (score.utilScore || 0) + "%";
+  document.getElementById("ra-price-score").textContent = score.priceScore !== null ? score.priceScore + "%" : "no data yet";
+  document.getElementById("ra-price-bar").style.width = (score.priceScore || 0) + "%";
+
+  // Workload breakdown (bar chart, hours by type, last 30 days)
+  const hours = workloadBreakdown(events, periodStart, periodEnd);
+  const types = Object.keys(hours).sort((a,b) => hours[b]-hours[a]);
+  barChart("chart-ra-workload",
+    types.map(t => WORKLOAD_LABELS[t] || t),
+    [{ label: "Hours", data: types.map(t => parseFloat(hours[t].toFixed(1))),
+       backgroundColor: types.map(t => (WORKLOAD_COLORS[t]||"#94a3b8")+"99"),
+       borderColor: types.map(t => WORKLOAD_COLORS[t]||"#94a3b8"),
+       borderWidth: 1, borderRadius: 4 }]);
+
+  // GPU load distribution (last 30 days of gpu_status samples)
+  const loadHist = loadDistribution(events, periodStart, periodEnd);
+  barChart("chart-ra-load", loadHist.labels,
+    [{ label: "Samples", data: loadHist.counts, backgroundColor:"#60a5fa99", borderColor:"#60a5fa", borderWidth:1, borderRadius:4 }]);
+
+  // Rental price distribution (all sessions overlapping last 30 days)
+  const priceHist = priceDistribution(events, periodStart, periodEnd);
+  barChart("chart-ra-price", priceHist.labels,
+    [{ label: "Sessions", data: priceHist.counts, backgroundColor:"#c084fc99", borderColor:"#c084fc", borderWidth:1, borderRadius:4 }]);
+
+  // Rental history table (most recent first, last 30 days)
+  const sessions = buildRentalSessions(events);
+  const allSessions = Object.values(sessions).flat()
+    .filter(s => s.start >= periodStart.getTime())
+    .sort((a,b) => b.start - a.start);
+  document.getElementById("ra-history-sub").textContent = allSessions.length + " session(s) in last 30 days";
+  document.getElementById("ra-history").innerHTML = allSessions.map(s => {
+    const durMs = (s.end ?? Date.now()) - s.start;
+    const durHrs = (durMs / 3600000).toFixed(1);
+    const rev = s.rate * (durMs / 3600000);
+    const type = s.workload_type || "unknown";
+    return `<tr class="hover:bg-slate-800/30">
+      <td class="py-1.5 pr-4 text-xs text-slate-400 whitespace-nowrap">${fmtDate(s.startTs)} ${fmtTS(s.startTs)}</td>
+      <td class="py-1.5 pr-4 text-xs text-slate-400 whitespace-nowrap">${s.endTs ? fmtDate(s.endTs)+" "+fmtTS(s.endTs) : '<span class="text-emerald-400">active</span>'}</td>
+      <td class="py-1.5 pr-4 text-xs text-slate-400">${durHrs}h</td>
+      <td class="py-1.5 pr-4 text-xs text-slate-400">${s.gpus||""}</td>
+      <td class="py-1.5 pr-4 text-xs font-mono text-slate-300">$${s.rate.toFixed(3)}/hr</td>
+      <td class="py-1.5 pr-4 text-xs font-mono text-emerald-400">${fmtUSD(rev)}</td>
+      <td class="py-1.5 pr-4"><span class="text-xs px-2 py-0.5 rounded" style="color:${WORKLOAD_COLORS[type]};background:${WORKLOAD_COLORS[type]}22;">${WORKLOAD_LABELS[type]||type}</span></td>
+      <td class="py-1.5 text-xs text-slate-500 font-mono truncate max-w-[200px]">${s.image||""}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="8" class="py-4 text-center text-xs text-slate-600">No rental sessions in the last 30 days</td></tr>`;
 }
 
 // ── Rig Monthly ───────────────────────────────────────────────────────
