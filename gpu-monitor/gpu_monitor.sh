@@ -27,21 +27,22 @@ CPU_TEMP_CRITICAL=94     # °C — trigger point for the opt-in protective throt
 CPU_PROTECT_DROP=100     # W — how much to drop each GPU's cap while protecting
 CPU_ALERT_FILE="/var/tmp/gpu_monitor_cpu_alert"  # throttles the CPU alert to 1/30min
 
-# Per-GPU-model power caps (Watts) as "pattern:normal[:hot]". Matched by
-# substring against the GPU name from nvidia-smi (case-insensitive), first match
-# wins. 'normal' is the steady cap; 'hot' is the reduced cap applied when the
-# GPU exceeds THERMAL_HOT_TEMP (and is the hard floor — power never drops below
-# it). If 'hot' is omitted it equals 'normal' (no thermal throttling).
+# Per-GPU-model power curve (Watts) as "pattern:base[:TEMP@WATTS...]". Matched
+# by substring against the GPU name from nvidia-smi (case-insensitive), first
+# match wins. 'base' is the steady/normal cap. Each TEMP@WATTS step lowers the
+# cap once the GPU reaches TEMP°C (steps listed low→high temp). The lowest WATTS
+# in the curve is the hard floor — power never drops below it.
+#   "5090:500:78@475:80@450" → 500W normally, 475W at ≥78°C, 450W at ≥80°C
 POWER_LIMITS=(
-    "5090:475:450"
+    "5090:500:78@475:80@450"
     "5080:300"
 )
-POWER_LIMIT_FALLBACK=475      # normal cap if a GPU matches no rule above
-POWER_LIMIT_HOT_FALLBACK=450  # hot/min cap if a GPU matches no rule above
+POWER_LIMIT_FALLBACK=500      # base cap if a GPU matches no rule above
+POWER_LIMIT_HOT_FALLBACK=450  # floor cap if a GPU matches no rule above
 
 # --- Fast thermal-reactive throttle (runs every THERMAL_CHECK_INTERVAL) ---
-THERMAL_HOT_TEMP=80        # °C — drop a GPU to its 'hot' cap at/above this
-THERMAL_COOL_TEMP=75       # °C — restore to its 'normal' cap at/below this
+THERMAL_HYST=3             # °C hysteresis — restore a step up only once temp is
+                           # this far below the step's trigger (prevents flapping)
 THERMAL_CHECK_INTERVAL=60  # seconds between thermal checks within the main cycle
 
 # GPU_POWER_LIMIT (optional, via install.sh's power_limit arg) forces every
@@ -169,26 +170,53 @@ enable_persistence_mode() {
 }
 
 
-# Echoes "normal hot" watts for a GPU name, per POWER_LIMITS above.
+# Echoes the matching "base[:TEMP@WATTS...]" rule body for a GPU name (the part
+# after the pattern), or empty if none matched.
 _power_rule_for_gpu() {
-    local gpu_name="${1^^}"
-    local rule pattern rest normal hot
+    local gpu_name="${1^^}" rule pattern
     for rule in "${POWER_LIMITS[@]}"; do
         pattern="${rule%%:*}"
-        rest="${rule#*:}"        # "normal[:hot]"
-        normal="${rest%%:*}"     # first field
-        hot="${rest##*:}"        # last field (== normal if no hot given)
-        if [[ "$gpu_name" == *"${pattern^^}"* ]]; then
-            echo "$normal $hot"
-            return
-        fi
+        [[ "$gpu_name" == *"${pattern^^}"* ]] && { echo "${rule#*:}"; return; }
     done
-    echo "$POWER_LIMIT_FALLBACK $POWER_LIMIT_HOT_FALLBACK"
+    echo ""
 }
-# Steady cap (watts) for a GPU name.
-get_power_limit_for_gpu()     { local n h; read -r n h < <(_power_rule_for_gpu "$1"); echo "$n"; }
-# Hot / hard-minimum cap (watts) for a GPU name — power never drops below this.
-get_hot_power_limit_for_gpu() { local n h; read -r n h < <(_power_rule_for_gpu "$1"); echo "$h"; }
+# Steady/base cap (watts) for a GPU name.
+get_power_limit_for_gpu() {
+    local body; body=$(_power_rule_for_gpu "$1")
+    [[ -z "$body" ]] && { echo "$POWER_LIMIT_FALLBACK"; return; }
+    echo "${body%%:*}"
+}
+# Hard-minimum cap (watts) — the lowest WATTS in the curve; power never goes below.
+get_hot_power_limit_for_gpu() {
+    local body; body=$(_power_rule_for_gpu "$1")
+    [[ -z "$body" ]] && { echo "$POWER_LIMIT_HOT_FALLBACK"; return; }
+    local base="${body%%:*}" steps="${body#*:}" lowest step w
+    lowest="$base"
+    if [[ "$steps" != "$body" ]]; then
+        for step in ${steps//:/ }; do w="${step#*@}"; (( w < lowest )) && lowest="$w"; done
+    fi
+    echo "$lowest"
+}
+# Target cap (watts) for a GPU given its current temp + current limit, walking
+# the per-model curve with THERMAL_HYST hysteresis: drop a step immediately when
+# its trigger temp is reached; restore a step up only once temp is THERMAL_HYST
+# below that step's trigger.
+thermal_target_power() {
+    local gpu_name="$1" temp="$2" current="$3"
+    local body; body=$(_power_rule_for_gpu "$gpu_name")
+    [[ -z "$body" ]] && { echo "$POWER_LIMIT_FALLBACK"; return; }
+    local base="${body%%:*}" steps="${body#*:}" step t w
+    local natural="$base" natural_h="$base"   # natural = by temp; _h = temp+hyst
+    if [[ "$steps" != "$body" ]]; then
+        for step in ${steps//:/ }; do
+            t="${step%@*}"; w="${step#*@}"
+            (( temp >= t ))               && natural="$w"
+            (( temp + THERMAL_HYST >= t )) && natural_h="$w"
+        done
+    fi
+    # Drop (or hold) immediately; only raise when even temp+hyst clears the step.
+    if (( natural <= current )); then echo "$natural"; else echo "$natural_h"; fi
+}
 
 set_power_limits() {
     if [[ -n "$GPU_POWER_LIMIT" ]]; then
@@ -217,26 +245,22 @@ set_power_limits() {
     done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
 }
 
-# Fast thermal-reactive throttle: drop a GPU to its 'hot' cap above
-# THERMAL_HOT_TEMP, restore to 'normal' below THERMAL_COOL_TEMP. The hot cap is
-# the hard floor — power never goes below it. Runs every THERMAL_CHECK_INTERVAL.
-# Quiet on the common no-change path (only logs when it actually adjusts).
+# Fast thermal-reactive throttle: walk each GPU's per-model power curve
+# (e.g. 500→475@78°C→450@80°C) with hysteresis, adjusting the cap to match its
+# current temperature. Runs every THERMAL_CHECK_INTERVAL. Quiet on the common
+# no-change path (only logs when it actually moves a cap).
 thermal_adjust() {
     [[ -n "$GPU_POWER_LIMIT" ]] && return   # manual override owns power; don't fight it
-    local idx name temp curlimit normal hot
+    local idx name temp curlimit target
     while IFS=',' read -r idx name temp curlimit; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
         temp=$(echo "$temp" | xargs)
         curlimit=$(printf "%.0f" "$(echo "$curlimit" | xargs)" 2>/dev/null || echo 0)
         [[ "$temp" =~ ^[0-9]+$ ]] || continue
-        normal=$(get_power_limit_for_gpu "$name")
-        hot=$(get_hot_power_limit_for_gpu "$name")
-        if (( temp >= THERMAL_HOT_TEMP && curlimit > hot )); then
-            nvidia-smi -i "$idx" --power-limit="$hot" >> "$LOG_FILE" 2>&1 \
-                && log "  THERMAL: GPU $idx ${temp}°C ≥ ${THERMAL_HOT_TEMP}°C → ${hot}W (hot cap)"
-        elif (( temp <= THERMAL_COOL_TEMP && curlimit < normal )); then
-            nvidia-smi -i "$idx" --power-limit="$normal" >> "$LOG_FILE" 2>&1 \
-                && log "  THERMAL: GPU $idx cooled to ${temp}°C → ${normal}W (normal)"
+        target=$(thermal_target_power "$name" "$temp" "$curlimit")
+        if [[ "$target" =~ ^[0-9]+$ ]] && (( target != curlimit )); then
+            nvidia-smi -i "$idx" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
+                && log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"
         fi
     done < <(nvidia-smi --query-gpu=index,name,temperature.gpu,power.limit --format=csv,noheader,nounits 2>/dev/null)
 }
