@@ -46,7 +46,7 @@ VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
 PRICE_FLOORS=(
     "5090:25"
-    "5080:17"
+    "5080:18"
     "4090:20"
     "4080:15"
     "3090:10"
