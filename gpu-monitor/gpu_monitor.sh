@@ -199,6 +199,34 @@ get_effective_power_limit() {
     echo "$limits"
 }
 
+# Map each GPU index to the compute process using the most memory on it, via
+# nvidia-smi. This reveals what's ACTUALLY running (e.g. FahCore_27 =
+# Folding@home, SRBMiner = mining, python3 = ML) even when the rental's base
+# image (e.g. linux-desktop) doesn't. Populates the associative array named by
+# the first arg: <idx> -> <process name>.
+build_gpu_proc_map() {
+    local -n _map="$1"
+    local -A _uuid_idx _best_mem
+    local gi guuid pid pname pmem
+    # uuid -> index
+    while IFS=',' read -r gi guuid; do
+        gi="${gi// /}"; guuid="${guuid// /}"
+        [[ -n "$guuid" ]] && _uuid_idx["$guuid"]="$gi"
+    done < <(nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null)
+    # compute apps: keep the highest-memory process per GPU (the workload)
+    while IFS=',' read -r guuid pid pname pmem; do
+        guuid="$(echo "$guuid" | xargs)"; pname="$(echo "$pname" | xargs)"; pmem="$(echo "$pmem" | xargs)"
+        [[ -z "$guuid" ]] && continue
+        gi="${_uuid_idx[$guuid]:-}"
+        [[ -z "$gi" ]] && continue
+        pmem="${pmem//[^0-9]/}"; [[ -z "$pmem" ]] && pmem=0
+        pname="$(basename "$pname" 2>/dev/null || echo "$pname")"
+        if (( pmem >= ${_best_mem[$gi]:-0} )); then
+            _best_mem["$gi"]="$pmem"; _map["$gi"]="$pname"
+        fi
+    done < <(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null)
+}
+
 check_gpus() {
     local gpu_data
     gpu_data=$(nvidia-smi \
@@ -207,6 +235,9 @@ check_gpus() {
         log "ERROR: nvidia-smi failed: $gpu_data"
         return 1
     }
+
+    local -A gpu_proc
+    build_gpu_proc_map gpu_proc
 
     log "--- GPU Status ---"
     local overtemp=0
@@ -218,12 +249,13 @@ check_gpus() {
         temp=$(echo "$temp" | xargs); power_draw=$(echo "$power_draw" | xargs)
         power_limit=$(echo "$power_limit" | xargs); fan=$(echo "$fan" | xargs)
         util=$(echo "$util" | xargs)
+        local proc="${gpu_proc[$idx]:-}"
 
-        log "  GPU $idx | $name | Temp: ${temp}°C | Power: ${power_draw}W/${power_limit}W | Fan: ${fan}% | Util: ${util}%"
+        log "  GPU $idx | $name | Temp: ${temp}°C | Power: ${power_draw}W/${power_limit}W | Fan: ${fan}% | Util: ${util}%${proc:+ | Proc: $proc}"
         gpu_count_actual=$(( gpu_count_actual + 1 ))
 
         [[ $first -eq 0 ]] && gpu_json_arr+=","
-        gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan,\"util\":$util}"
+        gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan,\"util\":$util,\"proc\":\"$proc\"}"
         first=0
 
         if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp > TEMP_THRESHOLD )); then

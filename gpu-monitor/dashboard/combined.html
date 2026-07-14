@@ -277,6 +277,12 @@
       </div>
     </div>
 
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3">Live GPU Workload <span class="text-xs text-slate-600">(what's actually running now)</span></h3>
+      <div id="ra-live-procs" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3"></div>
+      <p class="text-xs text-slate-600 mt-3">The real compute process on each GPU, from nvidia-smi — reveals the true workload even when the rental's image is generic (e.g. a "linux-desktop" image running <b>FahCore_27</b> = Folding@home research).</p>
+    </div>
+
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div class="card p-4">
         <h3 class="text-sm font-semibold text-slate-400 mb-3">Workload Type Distribution <span class="text-xs text-slate-600">(hours rented)</span></h3>
@@ -284,9 +290,15 @@
         <p class="text-xs text-slate-600 mt-2">Classified from each rental's Docker image — Vast.ai does not expose renter identity, only what container they ran.</p>
       </div>
       <div class="card p-4">
-        <h3 class="text-sm font-semibold text-slate-400 mb-3">GPU Load Distribution <span class="text-xs text-slate-600">(hourly samples)</span></h3>
-        <canvas id="chart-ra-load"></canvas>
+        <h3 class="text-sm font-semibold text-slate-400 mb-3">Actual Process Distribution <span class="text-xs text-slate-600">(GPU-hours by process)</span></h3>
+        <canvas id="chart-ra-procdist"></canvas>
+        <p class="text-xs text-slate-600 mt-2">From per-GPU process samples — often more accurate than the image label above.</p>
       </div>
+    </div>
+
+    <div class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-400 mb-3">GPU Load Distribution <span class="text-xs text-slate-600">(hourly samples)</span></h3>
+      <canvas id="chart-ra-load"></canvas>
     </div>
 
     <div class="card p-4">
@@ -662,9 +674,27 @@ function lastRentalSlots(events) {
 
 // ── Rental analysis (Analysis tab) ─────────────────────────────────────
 const WORKLOAD_COLORS = { mining:"#f87171", desktop:"#60a5fa", inference:"#c084fc",
-  training:"#4ade80", selftest:"#64748b", unknown:"#94a3b8" };
+  training:"#4ade80", selftest:"#64748b", research:"#22d3ee", unknown:"#94a3b8" };
 const WORKLOAD_LABELS = { mining:"Mining", desktop:"Desktop/Dev", inference:"Inference",
-  training:"Training", selftest:"Self-test", unknown:"Unknown" };
+  training:"Training", selftest:"Self-test", research:"Research/Folding", unknown:"Unknown" };
+
+// Classify the actual GPU process (from gpu_status[].proc) into a workload
+// bucket. More accurate than the image label — e.g. FahCore_27 = Folding@home
+// research, SRBMiner = mining, python3 = ML compute.
+function classifyProcess(proc) {
+  const p = (proc || "").toLowerCase();
+  if (!p) return null;
+  if (/(fahcore|fah-client|boinc|rosetta|milkyway)/.test(p)) return "research";
+  if (/(srbminer|xmrig|nbminer|t-rex|trex|phoenixminer|lolminer|gminer|teamredminer|ethminer|ccminer)/.test(p)) return "mining";
+  if (/(ollama|vllm|llama|tgi|text-generation|sglang|triton|comfyui|sd-|stable|automatic1111|invokeai)/.test(p)) return "inference";
+  if (/(python|pt_main|train|deepspeed|accelerate|torchrun)/.test(p)) return "training";
+  if (/(glmark|gpu-burn|gpu_burn|selftest|self-test)/.test(p)) return "selftest";
+  return "unknown";
+}
+function prettyProcWorkload(proc) {
+  const t = classifyProcess(proc);
+  return t ? (WORKLOAD_LABELS[t] || t) : null;
+}
 
 // Hours-rented per workload type, within [periodStart, periodEnd].
 function workloadBreakdown(events, periodStart, periodEnd) {
@@ -699,6 +729,36 @@ function priceDistribution(events, periodStart, periodEnd) {
     }
   }
   return histogram(prices, 8);
+}
+
+// GPU-hours by actual process-classified workload, from gpu_status[].proc
+// samples. Each per-GPU sample is assumed to represent ~1 cycle of runtime;
+// we approximate cycle length from the median gap between gpu_status events.
+function procDistribution(events, periodStart, periodEnd) {
+  const pS = periodStart ? periodStart.getTime() : 0;
+  const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
+  const statusEvs = events.filter(e => e.type === "gpu_status")
+    .filter(e => { const t = new Date(e.ts).getTime(); return t >= pS && t <= pE; })
+    .sort((a,b) => a.ts < b.ts ? -1 : 1);
+  // estimate hours-per-sample from median inter-event gap (fallback 1h)
+  let cycleH = 1;
+  if (statusEvs.length > 2) {
+    const gaps = [];
+    for (let i = 1; i < statusEvs.length; i++)
+      gaps.push((new Date(statusEvs[i].ts) - new Date(statusEvs[i-1].ts)) / 3600000);
+    gaps.sort((a,b)=>a-b);
+    cycleH = gaps[Math.floor(gaps.length/2)] || 1;
+    if (cycleH <= 0 || cycleH > 3) cycleH = 1;
+  }
+  const hours = {};
+  for (const e of statusEvs) {
+    for (const g of (e.gpus || [])) {
+      if (!g.proc) continue;
+      const type = classifyProcess(g.proc) || "unknown";
+      hours[type] = (hours[type] || 0) + cycleH;
+    }
+  }
+  return hours;
 }
 
 // GPU load (%) distribution from gpu_status samples within a period —
@@ -1174,6 +1234,28 @@ function renderRigAnalysis(events) {
   document.getElementById("ra-price-score").textContent = score.priceScore !== null ? score.priceScore + "%" : "no data yet";
   document.getElementById("ra-price-bar").style.width = (score.priceScore || 0) + "%";
 
+  // Live GPU workload — the actual process on each GPU right now
+  const lastStatus = lastGPUStatus(events);
+  const liveEl = document.getElementById("ra-live-procs");
+  if (lastStatus && lastStatus.gpus && lastStatus.gpus.length) {
+    liveEl.innerHTML = lastStatus.gpus.map(g => {
+      const proc = g.proc || "";
+      const wl = proc ? classifyProcess(proc) : null;
+      const label = proc ? (prettyProcWorkload(proc) || "Other") : "Idle";
+      const color = wl ? (WORKLOAD_COLORS[wl] || "#94a3b8") : "#475569";
+      return `<div class="card2 p-3">
+        <div class="flex justify-between items-center mb-1">
+          <span class="text-xs text-slate-500">GPU ${g.idx}</span>
+          <span class="text-xs px-1.5 py-0.5 rounded" style="color:${color};background:${color}22;">${label}</span>
+        </div>
+        <p class="text-sm font-mono text-slate-200 truncate" title="${proc}">${proc || "—"}</p>
+        <p class="text-xs text-slate-500 mt-1">${typeof g.util==="number"?g.util+"% load":""}</p>
+      </div>`;
+    }).join("");
+  } else {
+    liveEl.innerHTML = `<p class="text-xs text-slate-600">No GPU status yet — this populates once the monitor logs a cycle with process data.</p>`;
+  }
+
   // Workload breakdown (bar chart, hours by type, last 30 days)
   const hours = workloadBreakdown(events, periodStart, periodEnd);
   const types = Object.keys(hours).sort((a,b) => hours[b]-hours[a]);
@@ -1183,6 +1265,20 @@ function renderRigAnalysis(events) {
        backgroundColor: types.map(t => (WORKLOAD_COLORS[t]||"#94a3b8")+"99"),
        borderColor: types.map(t => WORKLOAD_COLORS[t]||"#94a3b8"),
        borderWidth: 1, borderRadius: 4 }]);
+
+  // Actual process distribution (GPU-hours by process-classified workload)
+  const procHours = procDistribution(events, periodStart, periodEnd);
+  const procTypes = Object.keys(procHours).sort((a,b) => procHours[b]-procHours[a]);
+  if (procTypes.length) {
+    barChart("chart-ra-procdist",
+      procTypes.map(t => WORKLOAD_LABELS[t] || t),
+      [{ label: "GPU-hours", data: procTypes.map(t => parseFloat(procHours[t].toFixed(1))),
+         backgroundColor: procTypes.map(t => (WORKLOAD_COLORS[t]||"#94a3b8")+"99"),
+         borderColor: procTypes.map(t => WORKLOAD_COLORS[t]||"#94a3b8"),
+         borderWidth: 1, borderRadius: 4 }]);
+  } else {
+    barChart("chart-ra-procdist", ["No process data yet"], [{ label:"GPU-hours", data:[0], backgroundColor:"#33415599" }]);
+  }
 
   // GPU load distribution (last 30 days of gpu_status samples)
   const loadHist = loadDistribution(events, periodStart, periodEnd);
