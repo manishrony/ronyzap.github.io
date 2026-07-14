@@ -634,6 +634,11 @@ for m in machines:
     image = get_instance_image(real_iid)
     workload_type = classify_workload(image)
 
+    # Report GPUs actually rented, not the machine total — a partial rental
+    # (4 of 8) should read "4x RTX 5090", matching the live vastai_check() path.
+    rented_count = len(rented_slots) if rented_slots else num_gpus
+    gpus_str = f'{rented_count}x {gpu_name}'
+
     event = {
         'ts':              now_str,
         'type':            'rental_start',
@@ -641,7 +646,7 @@ for m in machines:
         'machine_id':      mid,
         'instance_id':     mid,
         'real_instance_id': real_iid,
-        'gpus':            f'{num_gpus}x {gpu_name}',
+        'gpus':            gpus_str,
         'rate':            f'${cur_bid:.3f}/hr',
         'status':          'running',
         'backfilled':      True,
@@ -650,7 +655,7 @@ for m in machines:
     }
     with open(jsonl, 'a') as f:
         f.write(json.dumps(event) + '\n')
-    print(f"[INIT] Backfilled rental_start: machine {mid} ({num_gpus}x {gpu_name} @ ${cur_bid:.3f}/hr, {workload_type}: {image or 'unknown'})")
+    print(f"[INIT] Backfilled rental_start: machine {mid} ({gpus_str} @ ${cur_bid:.3f}/hr, {workload_type}: {image or 'unknown'})")
     count += 1
 
 if not count:
@@ -811,9 +816,14 @@ for m in data.get('machines', []):
     rented_slots = [s for s in slots_by_machine.get(str(mid), {}).values() if s.get('instance_id')]
     actual_rate = sum(float(s.get('rate', 0) or 0) for s in rented_slots)
     real_iid = rented_slots[0]['instance_id'] if rented_slots else ''
+    rented_count = len(rented_slots)
 
     cost_val = actual_rate if (rented and rented_slots) else per_gpu_price
-    lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cost_val:.3f}/hr|{real_iid}')
+    # Field 3 keeps the TOTAL gpu count (num_gpus) — the per-GPU slot renderer
+    # needs it to draw every physical slot. Field 6 is how many are actually
+    # rented, used for the Telegram/dashboard 'GPUs rented' display so a partial
+    # rental (e.g. 4 of 8) doesn't misreport as the whole machine.
+    lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cost_val:.3f}/hr|{real_iid}|{rented_count}')
 print('\n'.join(lines))
 " "$gpu_slots_json" "$response" 2>/dev/null) || { log "VAST.AI: Parse error"; return; }
 
@@ -826,7 +836,17 @@ print('\n'.join(lines))
         # Check each current machine for rental status changes
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid rented gpus cost real_iid <<< "$line"
+            IFS='|' read -r mid rented gpus cost real_iid rented_count <<< "$line"
+
+            # GPUs actually rented (e.g. "4x RTX 5090"), not the whole machine.
+            # gpus is "8x RTX 5090"; strip the count and prepend the rented count.
+            local gpu_model rented_gpus
+            gpu_model="${gpus#*x }"
+            if [[ "$rented" == "True" && "${rented_count:-0}" -gt 0 ]]; then
+                rented_gpus="${rented_count}x ${gpu_model}"
+            else
+                rented_gpus="$gpus"
+            fi
 
             local old_line
             old_line=$(grep "^${mid}|" "$VASTAI_LAST_STATE_FILE" 2>/dev/null || true)
@@ -834,26 +854,31 @@ print('\n'.join(lines))
             if [[ -z "$old_line" ]]; then
                 # Machine not in state file yet — just log current status.
                 # vastai_init_state() already backfilled rental_start on startup.
-                log "VAST.AI: Machine $mid | $gpus | $cost | Rented: $rented (first seen)"
+                log "VAST.AI: Machine $mid | $rented_gpus | $cost | Rented: $rented (first seen)"
             else
-                local old_rented
-                IFS='|' read -r _ old_rented _ _ _ <<< "$old_line"
+                local old_rented old_cost old_rented_count
+                IFS='|' read -r _ old_rented _ old_cost _ old_rented_count <<< "$old_line"
                 if [[ "$old_rented" != "$rented" ]]; then
                     if [[ "$rented" == "True" ]]; then
                         local image workload_type
                         image=$(get_instance_image "$real_iid")
                         workload_type=$(classify_workload "$image")
-                        log "VAST.AI: Machine $mid — rental STARTED ($workload_type: ${image:-unknown})"
+                        log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown})"
                         tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
-Machine: <b>$mid</b> | GPUs: $gpus
+Machine: <b>$mid</b> | GPUs rented: $rented_gpus
 Rate: <b>$cost</b>"
-                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\"}"
+                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\"}"
                     else
-                        log "VAST.AI: Machine $mid — rental ENDED"
+                        # Rental just ended — current rented_count is 0, so report
+                        # what WAS rented (from the prior state) for a consistent
+                        # "4x RTX 5090 ended" instead of the machine total.
+                        local ended_gpus="$gpus"
+                        [[ "${old_rented_count:-0}" -gt 0 ]] && ended_gpus="${old_rented_count}x ${gpu_model}"
+                        log "VAST.AI: Machine $mid — rental ENDED ($ended_gpus)"
                         tg_send "🔴 <b>Vast.ai Rental ENDED</b> — $(hostname)
-Machine: <b>$mid</b> | GPUs: $gpus
-Last rate: $cost"
-                        write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"ended\"}"
+Machine: <b>$mid</b> | GPUs freed: $ended_gpus
+Last rate: ${old_cost:-$cost}"
+                        write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$ended_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\"}"
                     fi
                 fi
             fi
@@ -862,11 +887,13 @@ Last rate: $cost"
         # Check for machines that disappeared while rented
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid old_rented gpus cost _ <<< "$line"
+            IFS='|' read -r mid old_rented gpus cost _ old_rented_count <<< "$line"
             if ! echo "$current_state" | grep -q "^${mid}|"; then
                 if [[ "$old_rented" == "True" ]]; then
-                    log "VAST.AI: Machine $mid disappeared while rented"
-                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gpus\",\"rate\":\"$cost\",\"status\":\"gone\"}"
+                    local gone_gpus="$gpus"
+                    [[ "${old_rented_count:-0}" -gt 0 ]] && gone_gpus="${old_rented_count}x ${gpus#*x }"
+                    log "VAST.AI: Machine $mid disappeared while rented ($gone_gpus)"
+                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gone_gpus\",\"rate\":\"$cost\",\"status\":\"gone\"}"
                 fi
             fi
         done <<< "$last_state"
@@ -878,8 +905,10 @@ Last rate: $cost"
             log "VAST.AI: Machine status (unchanged):"
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
-                IFS='|' read -r mid rented gpus cost _ <<< "$line"
-                log "  Machine $mid | $gpus | $cost | Rented: $rented"
+                IFS='|' read -r mid rented gpus cost _ rented_count <<< "$line"
+                local disp="$gpus"
+                [[ "$rented" == "True" && "${rented_count:-0}" -gt 0 ]] && disp="${rented_count}x ${gpus#*x } (of ${gpus%%x*})"
+                log "  Machine $mid | $disp | $cost | Rented: $rented"
             done <<< "$current_state"
         else
             log "VAST.AI: No machines found."
@@ -890,7 +919,7 @@ Last rate: $cost"
     if [[ -n "$current_state" && -n "$gpu_slots_json" && "$gpu_slots_json" != "{}" ]]; then
         echo "$current_state" | while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid rented gpus cost _ <<< "$line"
+            IFS='|' read -r mid rented gpus cost _ _ <<< "$line"
             local slot_event
             slot_event=$(python3 -c "
 import json, sys
