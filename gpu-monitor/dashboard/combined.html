@@ -1280,16 +1280,30 @@ function renderRigAnalysis(events) {
   if (lastStatus && lastStatus.gpus && lastStatus.gpus.length) {
     liveEl.innerHTML = lastStatus.gpus.map(g => {
       const proc = g.proc || "";
+      const util = typeof g.util === "number" ? g.util : null;
       const wl = proc ? classifyProcess(proc) : null;
-      const label = proc ? (prettyProcWorkload(proc) || "Other") : "Idle";
-      const color = wl ? (WORKLOAD_COLORS[wl] || "#94a3b8") : "#475569";
+      // A GPU at high load with no captured process name is BUSY, not idle —
+      // nvidia-smi sometimes can't resolve a container process's name even
+      // though it reports the load. Only call it idle when load is genuinely low.
+      let label, color, procText;
+      if (proc) {
+        label = prettyProcWorkload(proc) || "Other";
+        color = wl ? (WORKLOAD_COLORS[wl] || "#94a3b8") : "#94a3b8";
+        procText = proc;
+      } else if (util !== null && util > 5) {
+        label = "Busy"; color = "#fbbf24";
+        procText = "running (process name unavailable)";
+      } else {
+        label = "Idle"; color = "#475569";
+        procText = "—";
+      }
       return `<div class="card2 p-3">
         <div class="flex justify-between items-center mb-1">
           <span class="text-xs text-slate-500">GPU ${g.idx}</span>
           <span class="text-xs px-1.5 py-0.5 rounded" style="color:${color};background:${color}22;">${label}</span>
         </div>
-        <p class="text-sm font-mono text-slate-200 truncate" title="${proc}">${proc || "—"}</p>
-        <p class="text-xs text-slate-500 mt-1">${typeof g.util==="number"?g.util+"% load":""}</p>
+        <p class="text-sm font-mono text-slate-200 truncate" title="${escapeHtml(procText)}">${escapeHtml(procText)}</p>
+        <p class="text-xs text-slate-500 mt-1">${util!==null?util+"% load":""}</p>
       </div>`;
     }).join("");
   } else {

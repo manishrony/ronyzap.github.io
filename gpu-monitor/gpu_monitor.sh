@@ -225,6 +225,28 @@ build_gpu_proc_map() {
             _best_mem["$gi"]="$pmem"; _map["$gi"]="$pname"
         fi
     done < <(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null)
+
+    # Fallback: nvidia-smi --query-compute-apps often returns nothing for
+    # processes running inside a renter's container (PID-namespace isolation),
+    # even while the GPU is at high load. 'pmon' resolves those names via a
+    # different path, so fill any still-empty GPU from a one-shot pmon sample.
+    local need_fallback=0 idx0
+    while IFS=',' read -r idx0 _; do
+        idx0="${idx0// /}"; [[ -z "$idx0" ]] && continue
+        [[ -z "${_map[$idx0]:-}" ]] && need_fallback=1
+    done < <(nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null)
+    if (( need_fallback )); then
+        # pmon columns: gpu pid type sm mem enc dec [jpg ofa] command
+        # command is the last field; skip '#' header lines and '-' (idle) rows.
+        while read -r pgi ppid ptype _rest; do
+            [[ "$pgi" == "#" || -z "$pgi" ]] && continue
+            [[ "$ppid" == "-" ]] && continue
+            local pcmd; pcmd="$(awk '{print $NF}' <<< "$pgi $ppid $ptype $_rest")"
+            [[ -z "$pcmd" || "$pcmd" == "-" ]] && continue
+            # only fill if compute-apps didn't already name this GPU
+            [[ -z "${_map[$pgi]:-}" ]] && _map["$pgi"]="$pcmd"
+        done < <(timeout 15 nvidia-smi pmon -c 1 2>/dev/null)
+    fi
 }
 
 check_gpus() {
