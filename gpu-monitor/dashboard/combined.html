@@ -32,6 +32,30 @@
   #settings-modal.open { display:flex; }
   .drill-row { cursor:pointer; }
   .drill-row:hover td { background:rgba(30,58,92,0.35); }
+  /* Assistant */
+  #asst-fab { position:fixed; right:20px; bottom:20px; z-index:60; width:52px; height:52px;
+    border-radius:50%; background:#2563eb; color:#fff; font-size:22px; border:none; cursor:pointer;
+    box-shadow:0 6px 20px rgba(37,99,235,.5); }
+  #asst-fab:hover { background:#1d4ed8; }
+  #asst-panel { position:fixed; right:20px; bottom:84px; z-index:60; width:min(380px,calc(100vw - 40px));
+    height:min(520px,calc(100vh - 120px)); background:#0a1a2e; border:1px solid #1a3a5c; border-radius:14px;
+    display:flex; flex-direction:column; box-shadow:0 12px 40px rgba(0,0,0,.5); overflow:hidden; }
+  #asst-panel.hidden { display:none; }
+  .asst-head { padding:12px 14px; background:#0d1f35; border-bottom:1px solid #1a3a5c; display:flex;
+    align-items:center; justify-content:space-between; font-weight:600; font-size:14px; }
+  .asst-log { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+  .asst-bubble { max-width:85%; padding:8px 11px; border-radius:12px; font-size:13px; line-height:1.5; }
+  .asst-user { align-self:flex-end; background:#2563eb; color:#fff; border-bottom-right-radius:3px; }
+  .asst-bot  { align-self:flex-start; background:#0d1f35; border:1px solid #1a3a5c; color:#cbd5e1; border-bottom-left-radius:3px; }
+  .asst-chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 8px; }
+  .asst-chip { font-size:11px; padding:4px 9px; border-radius:999px; background:#0d1f35; border:1px solid #1e3a5f;
+    color:#60a5fa; cursor:pointer; }
+  .asst-chip:hover { background:#12294a; }
+  .asst-inrow { display:flex; gap:6px; padding:10px; border-top:1px solid #1a3a5c; }
+  #asst-input { flex:1; background:#060d1a; border:1px solid #1e3a5f; border-radius:9px; padding:8px 10px;
+    color:#e2e8f0; font-size:13px; outline:none; }
+  #asst-input:focus { border-color:#3b82f6; }
+  .asst-send { background:#2563eb; color:#fff; border:none; border-radius:9px; padding:0 14px; cursor:pointer; font-size:13px; }
 </style>
 </head>
 <body class="text-slate-200 min-h-screen">
@@ -323,6 +347,22 @@
         </table>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ════════════════════ ASSISTANT ════════════════════════════ -->
+<button id="asst-fab" onclick="toggleAssistant()" title="Ask the rig assistant">💬</button>
+<div id="asst-panel" class="hidden">
+  <div class="asst-head">
+    <span>🤖 Rig Assistant</span>
+    <button onclick="toggleAssistant()" class="text-slate-400 hover:text-white text-sm">✕</button>
+  </div>
+  <div id="asst-log" class="asst-log"></div>
+  <div class="asst-chips" id="asst-chips"></div>
+  <div class="asst-inrow">
+    <input id="asst-input" placeholder="Ask about revenue, rentals, temps…"
+           onkeydown="if(event.key==='Enter')asstSend()" autocomplete="off">
+    <button class="asst-send" onclick="asstSend()">Send</button>
   </div>
 </div>
 
@@ -1573,6 +1613,179 @@ function renderRigYearDetail(events, year) {
         <td></td>
       </tr>
     </tbody></table>`;
+}
+
+// ── Rig Assistant ─────────────────────────────────────────────────────
+// Answers questions from the loaded event data. No LLM/API key — fully local
+// and private. To add a Claude backend later: set window.ASSISTANT_BACKEND to
+// an async (question, context) => string; if present it's used instead of the
+// local answerer, and buildAssistantContext() gives it a compact stats digest.
+const ASST_CHIPS = ["summary","revenue this week","is anything rented","what's running","hottest gpu","current price","any faults"];
+
+function toggleAssistant() {
+  const p = document.getElementById("asst-panel");
+  p.classList.toggle("hidden");
+  if (!p.classList.contains("hidden")) {
+    if (!document.getElementById("asst-log").children.length) {
+      asstBot("Hi! I answer from your rig logs — revenue, rentals, what's running, temps, pricing, score, faults. Ask away, or tap a suggestion below.");
+      renderAsstChips();
+    }
+    document.getElementById("asst-input").focus();
+  }
+}
+function renderAsstChips() {
+  document.getElementById("asst-chips").innerHTML = ASST_CHIPS
+    .map(c => `<span class="asst-chip" onclick="asstAsk('${c.replace(/'/g,"\\'")}')">${c}</span>`).join("");
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m])); }
+function asstUser(t){ const l=document.getElementById("asst-log"); l.insertAdjacentHTML("beforeend",`<div class="asst-bubble asst-user">${escapeHtml(t)}</div>`); l.scrollTop=l.scrollHeight; }
+function asstBot(html){ const l=document.getElementById("asst-log"); l.insertAdjacentHTML("beforeend",`<div class="asst-bubble asst-bot">${html}</div>`); l.scrollTop=l.scrollHeight; }
+function asstAsk(t){ document.getElementById("asst-input").value=t; asstSend(); }
+async function asstSend() {
+  const inp = document.getElementById("asst-input");
+  const q = inp.value.trim(); if (!q) return;
+  asstUser(q); inp.value = "";
+  try {
+    const ans = (typeof window.ASSISTANT_BACKEND === "function")
+      ? await window.ASSISTANT_BACKEND(q, buildAssistantContext())
+      : localAnswer(q);
+    asstBot(ans);
+  } catch (e) { asstBot("Sorry — I hit an error: " + escapeHtml(e.message)); }
+}
+
+// Compact per-rig stats digest — the context a future Claude backend receives.
+function buildAssistantContext() {
+  return RIGS.map((r,i) => {
+    const evs = DATA[i].events || [];
+    const s = [...evs].filter(e=>e.type==="rental_start").pop();
+    const e = [...evs].filter(e=>e.type==="rental_end").pop();
+    const rented = !!(s && (!e || e.ts < s.ts));
+    const st = lastGPUStatus(evs);
+    const temps = (st?.gpus||[]).map(g=>g.temp);
+    const procs = (st?.gpus||[]).map(g=>g.proc).filter(Boolean);
+    const pc = [...evs].filter(e=>e.type==="price_change").pop();
+    const sc = computeAnalysisScore(evs, daysAgo(30), new Date());
+    return {
+      rig: rigName(i), online: DATA[i].online !== false, rented,
+      rental: rented ? { gpus:s.gpus, rate:s.rate, workload:s.workload_type } : null,
+      revenue: { today:+computeRevenue(evs,today(),new Date()).toFixed(2),
+                 week:+computeRevenue(evs,daysAgo(7),new Date()).toFixed(2),
+                 month:+computeRevenue(evs,daysAgo(30),new Date()).toFixed(2) },
+      avgTemp: temps.length?Math.round(temps.reduce((a,b)=>a+b,0)/temps.length):null,
+      maxTemp: temps.length?Math.max(...temps):null,
+      gpuProcesses: procs, askPrice: pc?+Number(pc.new_price).toFixed(3):null,
+      score: sc.combined,
+    };
+  });
+}
+
+// --- Local (no-LLM) answerer ---
+function resolveRigs(t) {
+  const idx = [];
+  RIGS.forEach((r,i) => {
+    const nm = rigName(i).toLowerCase();
+    if (t.includes(nm) || t.includes("rig "+(i+1)) || t.includes("rig"+(i+1))) idx.push(i);
+  });
+  return idx.length ? idx : RIGS.map((_,i)=>i);
+}
+function resolvePeriod(t) {
+  if (/\b(year|yearly|ytd|annual)\b/.test(t)) return { start:new Date(Date.UTC(new Date().getUTCFullYear(),0,1)), end:new Date(), label:"this year" };
+  if (/\b(month|monthly|30\s?d|30 days)\b/.test(t)) return { start:daysAgo(30), end:new Date(), label:"last 30 days" };
+  if (/\b(week|weekly|7\s?d|7 days)\b/.test(t)) return { start:daysAgo(7), end:new Date(), label:"last 7 days" };
+  return { start:today(), end:new Date(), label:"today" };
+}
+function allRigEvents(rigs){ return rigs.flatMap(i => DATA[i].events || []); }
+
+function localAnswer(q) {
+  const t = q.toLowerCase();
+  const rigs = resolveRigs(t);
+  if (/\b(help|what can you|commands|how do)\b/.test(t))
+    return "Ask me things like:<br>• <i>revenue this week</i> / <i>how much did zappa2 make today</i><br>• <i>is zappa3 rented</i> / <i>what's running</i><br>• <i>hottest gpu</i> / <i>power draw</i><br>• <i>current price</i> / <i>below market?</i><br>• <i>score</i> · <i>any faults</i> · <i>summary</i>";
+  if (/\b(summary|status|overview|how('?s| is| are)|report|doing)\b/.test(t)) return summaryAnswer(rigs);
+  if (/\b(revenue|earn(?:s|ed|ing|ings)?|made|make|money|income|profit|\$)\b/.test(t)) return revenueAnswer(rigs, resolvePeriod(t));
+  if (/\b(running|workload|process(?:es)?|mining|folding|render)\b/.test(t) || /what'?s on/.test(t)) return workloadAnswer(rigs);
+  if (/\b(rent(?:s|ed|al|als|ing)?|busy|free|available|occupied|customers?|idle)\b/.test(t)) return rentalAnswer(rigs);
+  if (/\b(temp(?:s|erature|eratures)?|hot|hottest|heat|cool|thermal|celsius)\b/.test(t)) return tempAnswer(rigs);
+  if (/\b(power|watts?|draw|consum\w*|pull)\b/.test(t)) return powerAnswer(rigs);
+  if (/\b(price|pricing|rate|market|\/hr|cost|cheap|expensive)\b/.test(t)) return priceAnswer(rigs);
+  if (/\b(score|util|utilization|utilisation|efficien\w*|performance)\b/.test(t)) return scoreAnswer(rigs);
+  if (/\b(faults?|errors?|warnings?|problems?|issues?|xid|ecc|crash(?:ed|es)?|health)\b/.test(t)) return faultAnswer(rigs);
+  return "I didn't catch that. Try <i>revenue today</i>, <i>what's running on zappa3</i>, <i>hottest gpu</i>, <i>current price</i>, <i>any faults</i>, or <b>help</b>.";
+}
+function isRented(i){ const evs=DATA[i].events||[]; const s=[...evs].filter(e=>e.type==="rental_start").pop(); const e=[...evs].filter(e=>e.type==="rental_end").pop(); return s && (!e||e.ts<s.ts) ? s : null; }
+function revenueAnswer(rigs, period) {
+  const per = rigs.map(i => ({ name:rigName(i), v:computeRevenue(DATA[i].events||[], period.start, period.end) }));
+  if (rigs.length === 1) return `${per[0].name} earned <b>${fmtUSD(per[0].v)}</b> ${period.label}.`;
+  const total = computeRevenue(allRigEvents(rigs), period.start, period.end);
+  return `Revenue ${period.label}: <b>${fmtUSD(total)}</b><br>` + per.map(p=>`&nbsp;• ${p.name}: ${fmtUSD(p.v)}`).join("<br>");
+}
+function rentalAnswer(rigs) {
+  return rigs.map(i => { const s=isRented(i); return s ? `${rigName(i)}: <b>● rented</b> — ${s.gpus||""} @ ${s.rate||"?"}` : `${rigName(i)}: ○ free`; }).join("<br>");
+}
+function workloadAnswer(rigs) {
+  return rigs.map(i => {
+    const st = lastGPUStatus(DATA[i].events||[]);
+    const procs = (st?.gpus||[]).map(g=>g.proc).filter(Boolean);
+    if (!procs.length) { const s=isRented(i); return `${rigName(i)}: ${s?"rented ("+(s.workload_type||"unknown image")+") but no active GPU process":"idle — nothing on the GPUs"}`; }
+    const tally = {}; procs.forEach(p=>tally[p]=(tally[p]||0)+1);
+    const parts = Object.entries(tally).map(([p,n])=>`${n}× <b>${escapeHtml(p)}</b> (${prettyProcWorkload(p)||"?"})`);
+    return `${rigName(i)}: ${parts.join(", ")}`;
+  }).join("<br>");
+}
+function tempAnswer(rigs) {
+  return rigs.map(i => {
+    const st = lastGPUStatus(DATA[i].events||[]); const g=(st?.gpus||[]);
+    if (!g.length) return `${rigName(i)}: no temp data yet`;
+    const temps=g.map(x=>x.temp); const avg=Math.round(temps.reduce((a,b)=>a+b,0)/temps.length); const max=Math.max(...temps);
+    const hot=g.filter(x=>x.temp>75).length;
+    return `${rigName(i)}: avg <b>${avg}°C</b>, hottest ${max}°C${hot?` — ⚠️ ${hot} GPU(s) over 75°C`:""}`;
+  }).join("<br>");
+}
+function powerAnswer(rigs) {
+  return rigs.map(i => {
+    const st = lastGPUStatus(DATA[i].events||[]); const g=(st?.gpus||[]);
+    if (!g.length) return `${rigName(i)}: no power data yet`;
+    const tot=g.reduce((a,x)=>a+Number(x.power_draw||0),0); const cap=g.reduce((a,x)=>a+Number(x.power_limit||0),0);
+    return `${rigName(i)}: drawing <b>${Math.round(tot)}W</b> of ${Math.round(cap)}W across ${g.length} GPU(s)`;
+  }).join("<br>");
+}
+function priceAnswer(rigs) {
+  return rigs.map(i => {
+    const evs=DATA[i].events||[];
+    const pc=[...evs].filter(e=>e.type==="price_change").pop();
+    const snap=[...evs].filter(e=>e.type==="market_snapshot").pop();
+    let s=`${rigName(i)}: `;
+    s += pc ? `ask <b>$${Number(pc.new_price).toFixed(3)}/hr</b>` : "no recent price change logged";
+    if (snap && snap.median) { const below=pc && Number(pc.new_price)<Number(snap.median); s += ` · market median $${Number(snap.median).toFixed(3)}${below?" (you're below market)":""}`; }
+    if (isRented(i)) s += " · <i>rented, pricing paused</i>";
+    return s;
+  }).join("<br>");
+}
+function scoreAnswer(rigs) {
+  return rigs.map(i => {
+    const sc=computeAnalysisScore(DATA[i].events||[], daysAgo(30), new Date());
+    if (sc.combined===null) return `${rigName(i)}: not enough data for a score yet`;
+    return `${rigName(i)}: <b>${sc.combined}/100</b> (utilization ${sc.utilScore??"–"}%, price ${sc.priceScore??"–"}%)`;
+  }).join("<br>");
+}
+function faultAnswer(rigs) {
+  const since=daysAgo(7).toISOString();
+  return rigs.map(i => {
+    const evs=DATA[i].events||[];
+    const f=evs.filter(e=>e.type==="gpu_fault"&&e.ts>=since).length;
+    const w=evs.filter(e=>e.type==="temp_warning"&&e.ts>=since).length;
+    return (!f&&!w) ? `${rigName(i)}: ✓ no faults or warnings in 7d` : `${rigName(i)}: ${f} fault(s), ${w} temp warning(s) in 7d`;
+  }).join("<br>");
+}
+function summaryAnswer(rigs) {
+  return rigs.map(i => {
+    const evs=DATA[i].events||[]; const s=isRented(i);
+    const rev=computeRevenue(evs, today(), new Date());
+    const st=lastGPUStatus(evs);
+    const temp=(st?.gpus?.length)?Math.round(st.gpus.reduce((a,g)=>a+g.temp,0)/st.gpus.length)+"°C":"–";
+    const online=DATA[i].online!==false;
+    return `<b>${rigName(i)}</b> ${online?"🟢":"🔴"} — ${s?"rented ("+(s.gpus||"")+" @ "+(s.rate||"?")+")":"free"} · ${fmtUSD(rev)} today · ${temp}`;
+  }).join("<br>");
 }
 
 // ── Master render ─────────────────────────────────────────────────────
