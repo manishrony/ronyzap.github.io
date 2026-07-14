@@ -56,7 +56,7 @@ VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
 PRICE_FLOORS=(
-    "5090:33"
+    "5090:31"
     "5080:18"
     "4090:20"
     "4080:15"
@@ -64,7 +64,7 @@ PRICE_FLOORS=(
     "3080:8"
 )
 PRICE_ADJUST_MIN=1   # minimum cents to move per cycle
-PRICE_ADJUST_MAX=5   # maximum cents to move per cycle
+PRICE_ADJUST_MAX=1   # maximum cents to move per cycle (=MIN → fixed 1¢ steps)
 MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 
 # Vast.ai adds ~15% platform fee before listing; reduce their market prices by this
@@ -1364,13 +1364,16 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
             continue
         fi
 
-        if [[ -z "$market_price" || "$market_price" == "0" ]]; then
-            market_price="$floor"
-            log "  Machine $mid: market price unavailable, targeting floor \$$floor"
+        # Target the market MEDIAN (fall back to floor if median is unavailable).
+        local target="$market_median"
+        if [[ -z "$target" || "$target" == "0" ]]; then
+            target="$floor"
+            log "  Machine $mid: market median unavailable, targeting floor \$$floor"
         fi
 
-        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | floor=\$$floor | current=\$$cur_bid"
+        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | target=\$$target | floor=\$$floor | current=\$$cur_bid"
 
+        # Fixed 1¢ step toward the median (PRICE_ADJUST_MIN==MAX==1).
         local adjust_cents=$(( RANDOM % (PRICE_ADJUST_MAX - PRICE_ADJUST_MIN + 1) + PRICE_ADJUST_MIN ))
         local adjust
         adjust=$(printf "%.4f" "$(echo "scale=4; $adjust_cents / 100" | bc)")
@@ -1382,14 +1385,14 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
             new_price="$floor"
             direction="↑ (below floor \$$floor)"
-        elif (( $(echo "$cur_bid > $market_price + 0.02" | bc -l) )); then
+        elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust" | bc)")
-            direction="↓ (above market)"
-        elif (( $(echo "$cur_bid < $market_price - 0.02" | bc -l) )); then
+            direction="↓ 1¢ (above median)"
+        elif (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust" | bc)")
-            direction="↑ (below market)"
+            direction="↑ 1¢ (below median)"
         else
-            log "  Machine $mid: within 2¢ of market — no change"
+            log "  Machine $mid: within 2¢ of median (\$$target) — no change"
             continue
         fi
 
