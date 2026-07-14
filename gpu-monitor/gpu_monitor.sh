@@ -35,7 +35,7 @@ CPU_ALERT_FILE="/var/tmp/gpu_monitor_cpu_alert"  # throttles the CPU alert to 1/
 #   "5090:500:78@475:80@450" → 500W normally, 475W at ≥78°C, 450W at ≥80°C
 POWER_LIMITS=(
     "5090:500:78@475:80@450"
-    "5080:300"
+    "5080:300:80@275"
 )
 POWER_LIMIT_FALLBACK=500      # base cap if a GPU matches no rule above
 POWER_LIMIT_HOT_FALLBACK=450  # floor cap if a GPU matches no rule above
