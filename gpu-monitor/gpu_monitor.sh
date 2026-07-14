@@ -71,10 +71,10 @@ PRICE_ADJUST_UP_MAX=3    # cents to RAISE per cycle when below median (max)
 PRICE_ADJUST_DOWN=1      # cents to LOWER per cycle when above median (fixed)
 MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 
-# Vast.ai takes a ~20% cut, so the median LISTING price (what renters see) is
-# above what a host nets. Multiply the market median by this factor to get the
-# real competitive target we price toward.
-MARKET_PRICE_DISCOUNT=0.80
+# Vast.ai's platform fee sits between the host's price and what renters see, so
+# the median LISTING price is above the real competitive target. Multiply the
+# market median by this factor (≈15% off) to get the price we aim for.
+MARKET_PRICE_DISCOUNT=0.85
 
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
@@ -737,6 +737,11 @@ for m in machines:
     # current_rentals_resident is the reliable field; rented field can be stale
     if int(m.get('current_rentals_resident', 0) or 0) > 0:
         rented = True
+    # current_rentals_running is the reliable "a contract is running" signal
+    # (num_running_instances isn't returned by the /machines/ API at all). This
+    # catches D-type background jobs that don't always register as resident.
+    if int(m.get('current_rentals_running', 0) or 0) > 0:
+        rented = True
     if int(m.get('num_running_instances', 0) or 0) > 0:
         rented = True
     gpu_name = m.get('gpu_name', 'unknown')
@@ -954,6 +959,11 @@ for m in data.get('machines', []):
     mid      = m.get('id', '?')
     rented   = m.get('rented', False)
     if int(m.get('current_rentals_resident', 0) or 0) > 0:
+        rented = True
+    # current_rentals_running is the reliable "a contract is running" signal
+    # (num_running_instances isn't returned by the /machines/ API at all). This
+    # catches D-type background jobs that don't always register as resident.
+    if int(m.get('current_rentals_running', 0) or 0) > 0:
         rented = True
     if int(m.get('num_running_instances', 0) or 0) > 0:
         rented = True
@@ -1255,6 +1265,11 @@ for m in data.get('machines', []):
     mid      = m.get('id', '')
     rented   = m.get('rented', False)
     if int(m.get('current_rentals_resident', 0) or 0) > 0:
+        rented = True
+    # current_rentals_running is the reliable "a contract is running" signal
+    # (num_running_instances isn't returned by the /machines/ API at all). This
+    # catches D-type background jobs that don't always register as resident.
+    if int(m.get('current_rentals_running', 0) or 0) > 0:
         rented = True
     if int(m.get('num_running_instances', 0) or 0) > 0:
         rented = True
