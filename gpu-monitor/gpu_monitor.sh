@@ -187,6 +187,18 @@ set_power_limits() {
     done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
 }
 
+# Effective per-GPU power cap actually in force, read back from nvidia-smi.
+# Returns a single integer when all GPUs share a cap (e.g. "300"), or a
+# "/"-joined list on mixed rigs (e.g. "300/500"). Used for the startup event
+# and log line so the dashboard shows the real cap, not the fallback default.
+get_effective_power_limit() {
+    local limits
+    limits=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null \
+        | awk '{printf "%d\n", $1}' | sort -un | paste -sd'/' -)
+    [[ -z "$limits" ]] && limits="$POWER_LIMIT_DEFAULT"
+    echo "$limits"
+}
+
 check_gpus() {
     local gpu_data
     gpu_data=$(nvidia-smi \
@@ -1310,7 +1322,12 @@ main() {
     touch "$JSONL_FILE" && chmod 644 "$JSONL_FILE"
     enable_persistence_mode
     set_power_limits
-    write_event "startup" "{\"power_limit\":$POWER_LIMIT_DEFAULT,\"temp_threshold\":$TEMP_THRESHOLD}"
+    # Report the power cap actually applied (read back from nvidia-smi), so the
+    # dashboard shows 300 on an RTX 5080 rig rather than the 500 fallback.
+    local effective_power_limit
+    effective_power_limit=$(get_effective_power_limit)
+    log "Effective power cap : ${effective_power_limit}W (read back from nvidia-smi)"
+    write_event "startup" "{\"power_limit\":\"$effective_power_limit\",\"temp_threshold\":$TEMP_THRESHOLD}"
 
     # Sync past rental events from Vast.ai API (backfills revenue history)
     vastai_init_state
