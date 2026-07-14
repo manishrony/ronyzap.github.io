@@ -130,3 +130,27 @@ echo "     Status:    systemctl status gpu-monitor gpu-dashboard"
 echo "     Activity:  vast-activity (self-test verdicts, launched instances, results)"
 echo "     Backfill:  backfill-workloads (one-off: classify past rentals' workload type from kaalia.log)"
 echo "     Fix rental:fix-active-rental (one-off: correct the active rental's GPU count + rate from live API)"
+
+# Without /etc/gpu_monitor.conf the VASTAI_API_KEY is empty and ALL Vast.ai
+# integration silently no-ops (no rental detection, no revenue, no pricing, no
+# Telegram) — the rig looks "Free" forever. Warn loudly if it's missing.
+if [[ ! -f /etc/gpu_monitor.conf ]]; then
+    echo ""
+    echo "  ⚠️  /etc/gpu_monitor.conf is MISSING on this rig."
+    echo "      Vast.ai rental detection, revenue, pricing and Telegram alerts are DISABLED"
+    echo "      until you create it. This rig will show as 'Free' with \$0 revenue regardless"
+    echo "      of actual rentals. Create it (root-only) with your account values:"
+    echo ""
+    echo "        sudo tee /etc/gpu_monitor.conf >/dev/null <<'CONF'"
+    echo "        VASTAI_API_KEY=\"<your Vast.ai API key>\""
+    echo "        TELEGRAM_CHAT_ID=\"<your Telegram chat id>\""
+    echo "        CONF"
+    echo "        sudo chmod 600 /etc/gpu_monitor.conf"
+    echo "        sudo systemctl restart gpu-monitor"
+    echo ""
+    echo "      Tip: it's the same VASTAI_API_KEY as your other rigs (account-level)."
+elif ! grep -q '^VASTAI_API_KEY=.\+' /etc/gpu_monitor.conf 2>/dev/null; then
+    echo ""
+    echo "  ⚠️  /etc/gpu_monitor.conf exists but VASTAI_API_KEY looks empty — Vast.ai"
+    echo "      integration will be disabled until it's set."
+fi
