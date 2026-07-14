@@ -984,29 +984,15 @@ function renderRigCard(idx, d) {
 }
 
 // ── Render single rig drilldown ───────────────────────────────────────
-// Returns deduplicated daily_earnings from all rigs (first-seen per date wins).
-// Used so per-rig drilldowns show real Vast.ai daily amounts even when earnings
-// are only stored in one rig's JSONL.
-function crossRigDailyEarnings() {
-  const seen = new Set(), result = [];
-  DATA.forEach(d => {
-    (d.events || []).filter(e => e.type === "daily_earnings").forEach(e => {
-      const date = e.date || e.ts.slice(0, 10);
-      if (!seen.has(date)) { seen.add(date); result.push(e); }
-    });
-  });
-  return result;
-}
-
 function renderRig(idx) {
   const d = DATA[idx];
   const events = d.events || [];
-  // Revenue calculations use cross-rig daily_earnings so per-rig drilldowns reflect
-  // real Vast.ai amounts even when earnings are stored in only one rig's log.
-  const revEvents = [
-    ...events.filter(e => e.type !== "daily_earnings"),
-    ...crossRigDailyEarnings()
-  ];
+  // Revenue uses THIS rig's own events only. Blending in other rigs'
+  // daily_earnings (as this used to via crossRigDailyEarnings) misattributes
+  // one rig's earnings to every rig — that inflated per-rig yearly/monthly
+  // totals (e.g. Zappa2 showing $326 when its own sessions were ~$65). The
+  // combined view aggregates across rigs separately and dedupes by date.
+  const revEvents = events;
   const todayEvs = eventsToday(events);
   const weekEvs  = eventsIn(events, 7);
 
