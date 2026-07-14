@@ -27,15 +27,22 @@ CPU_TEMP_CRITICAL=94     # °C — trigger point for the opt-in protective throt
 CPU_PROTECT_DROP=100     # W — how much to drop each GPU's cap while protecting
 CPU_ALERT_FILE="/var/tmp/gpu_monitor_cpu_alert"  # throttles the CPU alert to 1/30min
 
-# Per-GPU-model power caps (Watts). Matched by substring against the GPU name
-# reported by nvidia-smi (case-insensitive), first match wins. Add a line here
-# when a new GPU model joins the fleet — applies automatically host-wide and
-# per-GPU on mixed rigs, no per-rig install.sh config needed.
+# Per-GPU-model power caps (Watts) as "pattern:normal[:hot]". Matched by
+# substring against the GPU name from nvidia-smi (case-insensitive), first match
+# wins. 'normal' is the steady cap; 'hot' is the reduced cap applied when the
+# GPU exceeds THERMAL_HOT_TEMP (and is the hard floor — power never drops below
+# it). If 'hot' is omitted it equals 'normal' (no thermal throttling).
 POWER_LIMITS=(
-    "5090:500"
+    "5090:475:450"
     "5080:300"
 )
-POWER_LIMIT_FALLBACK=500  # used if a GPU's name matches no rule above
+POWER_LIMIT_FALLBACK=475      # normal cap if a GPU matches no rule above
+POWER_LIMIT_HOT_FALLBACK=450  # hot/min cap if a GPU matches no rule above
+
+# --- Fast thermal-reactive throttle (runs every THERMAL_CHECK_INTERVAL) ---
+THERMAL_HOT_TEMP=80        # °C — drop a GPU to its 'hot' cap at/above this
+THERMAL_COOL_TEMP=75       # °C — restore to its 'normal' cap at/below this
+THERMAL_CHECK_INTERVAL=60  # seconds between thermal checks within the main cycle
 
 # GPU_POWER_LIMIT (optional, via install.sh's power_limit arg) forces every
 # GPU on this host to one value, bypassing model detection — manual escape
@@ -162,20 +169,26 @@ enable_persistence_mode() {
 }
 
 
-# Returns the power cap in watts for a given GPU name, per POWER_LIMITS above.
-get_power_limit_for_gpu() {
+# Echoes "normal hot" watts for a GPU name, per POWER_LIMITS above.
+_power_rule_for_gpu() {
     local gpu_name="${1^^}"
-    local rule pattern watts
+    local rule pattern rest normal hot
     for rule in "${POWER_LIMITS[@]}"; do
         pattern="${rule%%:*}"
-        watts="${rule##*:}"
+        rest="${rule#*:}"        # "normal[:hot]"
+        normal="${rest%%:*}"     # first field
+        hot="${rest##*:}"        # last field (== normal if no hot given)
         if [[ "$gpu_name" == *"${pattern^^}"* ]]; then
-            echo "$watts"
+            echo "$normal $hot"
             return
         fi
     done
-    echo "$POWER_LIMIT_FALLBACK"
+    echo "$POWER_LIMIT_FALLBACK $POWER_LIMIT_HOT_FALLBACK"
 }
+# Steady cap (watts) for a GPU name.
+get_power_limit_for_gpu()     { local n h; read -r n h < <(_power_rule_for_gpu "$1"); echo "$n"; }
+# Hot / hard-minimum cap (watts) for a GPU name — power never drops below this.
+get_hot_power_limit_for_gpu() { local n h; read -r n h < <(_power_rule_for_gpu "$1"); echo "$h"; }
 
 set_power_limits() {
     if [[ -n "$GPU_POWER_LIMIT" ]]; then
@@ -202,6 +215,30 @@ set_power_limits() {
             log "  GPU $idx power limit ERROR"
         fi
     done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
+}
+
+# Fast thermal-reactive throttle: drop a GPU to its 'hot' cap above
+# THERMAL_HOT_TEMP, restore to 'normal' below THERMAL_COOL_TEMP. The hot cap is
+# the hard floor — power never goes below it. Runs every THERMAL_CHECK_INTERVAL.
+# Quiet on the common no-change path (only logs when it actually adjusts).
+thermal_adjust() {
+    [[ -n "$GPU_POWER_LIMIT" ]] && return   # manual override owns power; don't fight it
+    local idx name temp curlimit normal hot
+    while IFS=',' read -r idx name temp curlimit; do
+        idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
+        temp=$(echo "$temp" | xargs)
+        curlimit=$(printf "%.0f" "$(echo "$curlimit" | xargs)" 2>/dev/null || echo 0)
+        [[ "$temp" =~ ^[0-9]+$ ]] || continue
+        normal=$(get_power_limit_for_gpu "$name")
+        hot=$(get_hot_power_limit_for_gpu "$name")
+        if (( temp >= THERMAL_HOT_TEMP && curlimit > hot )); then
+            nvidia-smi -i "$idx" --power-limit="$hot" >> "$LOG_FILE" 2>&1 \
+                && log "  THERMAL: GPU $idx ${temp}°C ≥ ${THERMAL_HOT_TEMP}°C → ${hot}W (hot cap)"
+        elif (( temp <= THERMAL_COOL_TEMP && curlimit < normal )); then
+            nvidia-smi -i "$idx" --power-limit="$normal" >> "$LOG_FILE" 2>&1 \
+                && log "  THERMAL: GPU $idx cooled to ${temp}°C → ${normal}W (normal)"
+        fi
+    done < <(nvidia-smi --query-gpu=index,name,temperature.gpu,power.limit --format=csv,noheader,nounits 2>/dev/null)
 }
 
 # Effective per-GPU power cap actually in force, read back from nvidia-smi.
@@ -261,14 +298,16 @@ Check chassis airflow / CPU cooler under the current workload."
         # Opt-in protective throttle (off unless CPU_THERMAL_PROTECT=1)
         if [[ "$CPU_THERMAL_PROTECT" == "1" ]] && (( ct >= CPU_TEMP_CRITICAL )); then
             log "  CPU ${ct}°C ≥ critical ${CPU_TEMP_CRITICAL}°C — protectively lowering GPU power by ${CPU_PROTECT_DROP}W"
-            local idx0 name0 watts0 target
+            local idx0 name0 watts0 hotcap0 target
             while IFS=',' read -r idx0 name0; do
                 idx0=$(echo "$idx0" | xargs); name0=$(echo "$name0" | xargs)
                 watts0=$(get_power_limit_for_gpu "$name0")
+                hotcap0=$(get_hot_power_limit_for_gpu "$name0")
                 target=$(( watts0 - CPU_PROTECT_DROP ))
-                (( target < 100 )) && target=100
+                # Respect the per-model hot cap as the hard floor (never below it)
+                (( target < hotcap0 )) && target="$hotcap0"
                 nvidia-smi -i "$idx0" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
-                    && log "    GPU $idx0 → ${target}W (protective)"
+                    && log "    GPU $idx0 → ${target}W (protective, floor ${hotcap0}W)"
             done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
             write_event "cpu_thermal_protect" "{\"cpu_temp\":$ct,\"dropped_w\":$CPU_PROTECT_DROP}"
         fi
@@ -1515,8 +1554,16 @@ main() {
             log ">>> Next pricing check in ${next_price}s"
         fi
 
-        log ">>> Sleeping ${CHECK_INTERVAL}s"
-        sleep "$CHECK_INTERVAL"
+        # Sleep out the main interval in short slices, running the fast
+        # thermal-reactive power check between slices so it reacts within
+        # ~${THERMAL_CHECK_INTERVAL}s instead of waiting for the hourly cycle.
+        log ">>> Sleeping ${CHECK_INTERVAL}s (thermal check every ${THERMAL_CHECK_INTERVAL}s)"
+        local slept=0
+        while (( slept < CHECK_INTERVAL )); do
+            sleep "$THERMAL_CHECK_INTERVAL"
+            slept=$(( slept + THERMAL_CHECK_INTERVAL ))
+            thermal_adjust
+        done
     done
 }
 
