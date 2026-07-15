@@ -1067,7 +1067,7 @@ function renderRigCard(idx, d) {
     document.getElementById("rc"+idx+"-gpus").innerHTML = last.gpus.map(g=>{
       const slot = slots[g.idx];
       const rentedDot = slot?.rented
-        ? `<span class="text-emerald-400 font-bold" title="Rented @ $${slot.rate}/hr">●</span>`
+        ? `<span class="text-emerald-400 font-bold" title="${slot.rate>0?"Rented @ $"+slot.rate+"/hr":"Rented"}">●</span>`
         : `<span class="text-slate-700" title="Free">○</span>`;
       return `
       <div class="flex items-center gap-2 text-xs">
@@ -1152,7 +1152,7 @@ function renderRig(idx) {
       document.getElementById("r-gpu-cards").innerHTML = last.gpus.map(g=>{
         const slot = rigSlots[g.idx];
         const rentalBadge = slot?.rented
-          ? `<span class="text-xs px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-400 border border-emerald-700/50">● $${slot.rate}/hr</span>`
+          ? `<span class="text-xs px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-400 border border-emerald-700/50">● ${slot.rate>0?"$"+slot.rate+"/hr":"Rented"}</span>`
           : `<span class="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-500">○ Free</span>`;
         return `
         <div class="card p-4 space-y-3">

@@ -489,6 +489,32 @@ check_gpus() {
     log "--- End GPU Status ---"
 }
 
+# Lean gpu_status refresh — same event check_gpus writes (power/temp/util/fan/
+# proc + cpu_temp) but without the fault/count/alert work. Called every few
+# minutes from the fast loop so the dashboard's per-GPU power/temp stay current
+# instead of lagging the hourly cycle. Silent (no log spam).
+snapshot_gpu_status() {
+    local gpu_data
+    gpu_data=$(nvidia-smi --query-gpu=index,name,temperature.gpu,power.draw,power.limit,fan.speed,utilization.gpu \
+        --format=csv,noheader,nounits 2>/dev/null) || return
+    local -A gpu_proc
+    build_gpu_proc_map gpu_proc
+    local gpu_json_arr="[" first=1 idx name temp power_draw power_limit fan util proc
+    while IFS=',' read -r idx name temp power_draw power_limit fan util; do
+        idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
+        temp=$(echo "$temp" | xargs); power_draw=$(echo "$power_draw" | xargs)
+        power_limit=$(echo "$power_limit" | xargs); fan=$(echo "$fan" | xargs); util=$(echo "$util" | xargs)
+        proc="${gpu_proc[$idx]:-}"
+        [[ $first -eq 0 ]] && gpu_json_arr+=","
+        gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan,\"util\":$util,\"proc\":\"$proc\"}"
+        first=0
+    done <<< "$gpu_data"
+    gpu_json_arr+="]"
+    local cpu_field="" ct; ct=$(get_cpu_temp)
+    [[ "$ct" =~ ^[0-9]+$ ]] && cpu_field=",\"cpu_temp\":$ct"
+    write_event "gpu_status" "{\"gpus\":$gpu_json_arr$cpu_field}"
+}
+
 # ─────────────────────────────────────────────
 # GPU fault detection (Xid / NVRM PCIe errors)
 # ─────────────────────────────────────────────
@@ -1185,8 +1211,11 @@ Last rate: ${old_cost:-$cost}"
         fi
     fi
 
-    # Write per-GPU rental status event every cycle (for dashboard GPU cards)
-    if [[ -n "$current_state" && -n "$gpu_slots_json" && "$gpu_slots_json" != "{}" ]]; then
+    # Write per-GPU rental status event every cycle (for dashboard GPU cards).
+    # Per-GPU rented state comes from /instances/ slot data when available; for
+    # D-type background contracts (which /instances/ doesn't expose) it falls
+    # back to the machine's gpu_occupancy string ("D D D D…", one char per GPU).
+    if [[ -n "$current_state" ]]; then
         echo "$current_state" | while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             IFS='|' read -r mid rented gpus cost _ _ <<< "$line"
@@ -1196,15 +1225,28 @@ import json, sys
 slots = json.loads(sys.argv[1]).get(sys.argv[2], {})
 total = int(sys.argv[3])
 gpu_name = sys.argv[4]
+mid = sys.argv[2]
+data = json.loads(sys.argv[5])
+# Occupancy string as a per-GPU fallback: a slot is rented if its char marks a
+# running contract (D=on-demand/background, R=reserved). x/I/blank = free.
+occ_chars = []
+for m in data.get('machines', []):
+    if str(m.get('id','')) == mid:
+        occ_chars = (m.get('gpu_occupancy','') or '').split()
+        break
 rows = []
 for i in range(total):
     s = slots.get(str(i))
-    rows.append({'gpu_idx': i, 'rented': bool(s),
-                 'instance_id': s['instance_id'] if s else None,
-                 'rate': s['rate'] if s else 0})
-print(json.dumps({'machine_id': sys.argv[2], 'gpu_name': gpu_name,
+    if s:
+        rows.append({'gpu_idx': i, 'rented': True,
+                     'instance_id': s['instance_id'], 'rate': s['rate']})
+    else:
+        c = occ_chars[i] if i < len(occ_chars) else ''
+        rows.append({'gpu_idx': i, 'rented': c in ('D', 'R'),
+                     'instance_id': None, 'rate': 0})
+print(json.dumps({'machine_id': mid, 'gpu_name': gpu_name,
                   'total_gpus': total, 'slots': rows}))
-" "$gpu_slots_json" "$mid" "${gpus%%x*}" "${gpus##*x }" 2>/dev/null || true)
+" "$gpu_slots_json" "$mid" "${gpus%%x*}" "${gpus##*x }" "$response" 2>/dev/null || true)
             [[ -n "$slot_event" ]] && write_event "gpu_rental_status" "$slot_event"
         done
     fi
@@ -1634,6 +1676,9 @@ main() {
             slept=$(( slept + THERMAL_CHECK_INTERVAL ))
             thermal_adjust
             cpu_freq_adjust
+            # Refresh the dashboard's power/temp snapshot every ~5 min so it
+            # doesn't lag the hourly cycle.
+            (( slept % 300 == 0 )) && snapshot_gpu_status
         done
     done
 }
