@@ -53,6 +53,16 @@ POWER_LIMITS=(
 POWER_LIMIT_FALLBACK=500      # base cap if a GPU matches no rule above
 POWER_LIMIT_HOT_FALLBACK=450  # floor cap if a GPU matches no rule above
 
+# Per-GPU-INDEX power curve overrides — take precedence over the per-model
+# POWER_LIMITS above. Same "base[:TEMP@WATTS...]" encoding, but keyed by the
+# physical GPU index instead of model name. Use when ONE card runs hotter than
+# its siblings (e.g. a lazy-fan MSI board) and you want just that card to shed
+# more power when hot, without touching the others. Empty = none.
+#   "5:500:78@450:80@400" → GPU 5 only: 500W normally, 450W at ≥78°C, 400W at ≥80°C
+GPU_POWER_OVERRIDE=(
+    "5:500:78@450:80@400"   # GPU 5 (MSI, lazy VBIOS fan): allow down to 400W when hot
+)
+
 # --- Fast thermal-reactive throttle (runs every THERMAL_CHECK_INTERVAL) ---
 THERMAL_HYST=3             # °C hysteresis — restore a step up only once temp is
                            # this far below the step's trigger (prevents flapping)
@@ -63,6 +73,23 @@ THERMAL_CHECK_INTERVAL=60  # seconds between thermal checks within the main cycl
 # hatch for one-off overrides. Leave unset for the dynamic per-model behavior.
 # POWER_LIMIT_DEFAULT is only used for the human-readable startup log line.
 POWER_LIMIT_DEFAULT="${GPU_POWER_LIMIT:-$POWER_LIMIT_FALLBACK}"
+
+# --- Per-GPU fan floor (runs every THERMAL_CHECK_INTERVAL) ---------------------
+# Force a MINIMUM fan speed (%) on specific GPUs, overriding a lazy VBIOS fan
+# curve that lets a card sit hot while its fan loafs (classic on some MSI 5090
+# boards). Keyed by physical GPU index. Empty = disabled. This is the real fix
+# for a card that runs hot at full fan-headroom: power capping only trims heat
+# *generation*; the fan is what removes it.
+#   "5:80" → keep GPU 5's fan at >=80%
+# Needs an X server with Coolbits enabled (headless rigs usually don't have one);
+# if fan control isn't available the monitor logs one clear warning and falls
+# back to the power floor only — it never fails the cycle. On exit it restores
+# each controlled GPU to automatic (VBIOS) fan control.
+GPU_FAN_FLOOR=(
+    "5:80"   # GPU 5 (MSI, lazy VBIOS fan): hold fan at >=80% like its siblings
+)
+# DISPLAY candidates to try for nvidia-settings (first that answers wins; cached).
+GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
 
 # --- Telegram config ---
@@ -183,25 +210,33 @@ enable_persistence_mode() {
 }
 
 
-# Echoes the matching "base[:TEMP@WATTS...]" rule body for a GPU name (the part
-# after the pattern), or empty if none matched.
+# Echoes the matching "base[:TEMP@WATTS...]" rule body for a GPU (the part after
+# the pattern), or empty if none matched. A per-index override (GPU_POWER_OVERRIDE)
+# wins over the per-model POWER_LIMITS when the optional gpu index is supplied.
 _power_rule_for_gpu() {
-    local gpu_name="${1^^}" rule pattern
+    local gpu_name="${1^^}" gpu_idx="${2:-}" rule pattern
+    if [[ -n "$gpu_idx" ]]; then
+        for rule in "${GPU_POWER_OVERRIDE[@]}"; do
+            [[ -z "$rule" ]] && continue
+            pattern="${rule%%:*}"
+            [[ "$pattern" == "$gpu_idx" ]] && { echo "${rule#*:}"; return; }
+        done
+    fi
     for rule in "${POWER_LIMITS[@]}"; do
         pattern="${rule%%:*}"
         [[ "$gpu_name" == *"${pattern^^}"* ]] && { echo "${rule#*:}"; return; }
     done
     echo ""
 }
-# Steady/base cap (watts) for a GPU name.
+# Steady/base cap (watts) for a GPU name (optional index applies any override).
 get_power_limit_for_gpu() {
-    local body; body=$(_power_rule_for_gpu "$1")
+    local body; body=$(_power_rule_for_gpu "$1" "${2:-}")
     [[ -z "$body" ]] && { echo "$POWER_LIMIT_FALLBACK"; return; }
     echo "${body%%:*}"
 }
 # Hard-minimum cap (watts) — the lowest WATTS in the curve; power never goes below.
 get_hot_power_limit_for_gpu() {
-    local body; body=$(_power_rule_for_gpu "$1")
+    local body; body=$(_power_rule_for_gpu "$1" "${2:-}")
     [[ -z "$body" ]] && { echo "$POWER_LIMIT_HOT_FALLBACK"; return; }
     local base="${body%%:*}" steps="${body#*:}" lowest step w
     lowest="$base"
@@ -215,8 +250,8 @@ get_hot_power_limit_for_gpu() {
 # its trigger temp is reached; restore a step up only once temp is THERMAL_HYST
 # below that step's trigger.
 thermal_target_power() {
-    local gpu_name="$1" temp="$2" current="$3"
-    local body; body=$(_power_rule_for_gpu "$gpu_name")
+    local gpu_name="$1" temp="$2" current="$3" gpu_idx="${4:-}"
+    local body; body=$(_power_rule_for_gpu "$gpu_name" "$gpu_idx")
     [[ -z "$body" ]] && { echo "$POWER_LIMIT_FALLBACK"; return; }
     local base="${body%%:*}" steps="${body#*:}" step t w
     local natural="$base" natural_h="$base"   # natural = by temp; _h = temp+hyst
@@ -249,7 +284,7 @@ set_power_limits() {
     log "Setting power limits per GPU model..."
     while IFS=',' read -r idx name; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
-        local watts; watts=$(get_power_limit_for_gpu "$name")
+        local watts; watts=$(get_power_limit_for_gpu "$name" "$idx")
         if nvidia-smi -i "$idx" --power-limit="$watts" >> "$LOG_FILE" 2>&1; then
             log "  GPU $idx ($name) → ${watts}W OK"
         else
@@ -270,12 +305,95 @@ thermal_adjust() {
         temp=$(echo "$temp" | xargs)
         curlimit=$(printf "%.0f" "$(echo "$curlimit" | xargs)" 2>/dev/null || echo 0)
         [[ "$temp" =~ ^[0-9]+$ ]] || continue
-        target=$(thermal_target_power "$name" "$temp" "$curlimit")
+        target=$(thermal_target_power "$name" "$temp" "$curlimit" "$idx")
         if [[ "$target" =~ ^[0-9]+$ ]] && (( target != curlimit )); then
             nvidia-smi -i "$idx" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
                 && log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"
         fi
     done < <(nvidia-smi --query-gpu=index,name,temperature.gpu,power.limit --format=csv,noheader,nounits 2>/dev/null)
+}
+
+# ── Per-GPU fan floor ─────────────────────────────────────────────────────────
+# Fan control on Linux goes through nvidia-settings, which needs an X server with
+# Coolbits. Cache a working DISPLAY (or the fact that none works) so we probe once,
+# not every cycle. _GPU_FAN_STATE: "" = unprobed, "none" = unavailable, else the
+# DISPLAY string that answered.
+_GPU_FAN_STATE=""
+_GPU_FAN_WARNED=0
+_gpu_fan_display() {
+    [[ -n "$_GPU_FAN_STATE" ]] && { [[ "$_GPU_FAN_STATE" == "none" ]] && return 1; echo "$_GPU_FAN_STATE"; return 0; }
+    command -v nvidia-settings >/dev/null 2>&1 || { _GPU_FAN_STATE="none"; return 1; }
+    local d
+    for d in $GPU_FAN_DISPLAYS; do
+        # A working display answers a fan-control query without error.
+        if DISPLAY="$d" nvidia-settings -c "$d" -q "[gpu:0]/GPUFanControlState" >/dev/null 2>&1; then
+            _GPU_FAN_STATE="$d"; echo "$d"; return 0
+        fi
+    done
+    _GPU_FAN_STATE="none"; return 1
+}
+# Set GPU <idx>'s fans to <pct>%. Enables manual control on that GPU, then drives
+# every fan coupled to it. Returns non-zero if control isn't available.
+_set_gpu_fan() {
+    local idx="$1" pct="$2" disp fanlist f
+    disp=$(_gpu_fan_display) || return 1
+    DISPLAY="$disp" nvidia-settings -c "$disp" -a "[gpu:$idx]/GPUFanControlState=1" >/dev/null 2>&1 || return 1
+    # Fans coupled to this GPU (e.g. "0, 1" for a dual-fan board); fall back to
+    # a same-index single fan if the coupling attribute isn't exposed.
+    fanlist=$(DISPLAY="$disp" nvidia-settings -c "$disp" -q "[gpu:$idx]/Fans" 2>/dev/null \
+              | grep -oE 'fan:[0-9]+' | grep -oE '[0-9]+' | tr '\n' ' ')
+    [[ -z "$fanlist" ]] && fanlist="$idx"
+    local ok=1
+    for f in $fanlist; do
+        DISPLAY="$disp" nvidia-settings -c "$disp" -a "[fan:$f]/GPUTargetFanSpeed=$pct" >/dev/null 2>&1 && ok=0
+    done
+    return $ok
+}
+# Restore automatic (VBIOS) fan control on every GPU we hold a floor on. Called
+# on exit so a stopped monitor never leaves a card pinned to a fixed fan speed.
+_restore_gpu_fans() {
+    local disp rule idx
+    [[ ${#GPU_FAN_FLOOR[@]} -eq 0 ]] && return
+    disp=$(_gpu_fan_display) || return
+    for rule in "${GPU_FAN_FLOOR[@]}"; do
+        [[ -z "$rule" ]] && continue
+        idx="${rule%%:*}"
+        DISPLAY="$disp" nvidia-settings -c "$disp" -a "[gpu:$idx]/GPUFanControlState=0" >/dev/null 2>&1
+    done
+    log "  FAN: restored automatic fan control on floored GPU(s)"
+}
+# Enforce the configured minimum fan speed on each listed GPU. Runs every
+# THERMAL_CHECK_INTERVAL alongside thermal_adjust. Only nudges a fan up when it's
+# below floor; quiet otherwise. If fan control isn't available it warns ONCE and
+# then no-ops (the power floor still does its job).
+fan_floor_adjust() {
+    [[ ${#GPU_FAN_FLOOR[@]} -eq 0 ]] && return
+    if ! _gpu_fan_display >/dev/null; then
+        if (( _GPU_FAN_WARNED == 0 )); then
+            _GPU_FAN_WARNED=1
+            log "  FAN: control unavailable (nvidia-settings needs an X server with Coolbits) — "
+            log "       GPU fan floor disabled; hot cards rely on the power floor only. To enable,"
+            log "       run a headless X with Option \"Coolbits\" \"28\" and set GPU_FAN_DISPLAYS."
+        fi
+        return
+    fi
+    local rule idx floorpct cur
+    for rule in "${GPU_FAN_FLOOR[@]}"; do
+        [[ -z "$rule" ]] && continue
+        idx="${rule%%:*}"; floorpct="${rule#*:}"
+        [[ "$idx" =~ ^[0-9]+$ && "$floorpct" =~ ^[0-9]+$ ]] || continue
+        cur=$(nvidia-smi -i "$idx" --query-gpu=fan.speed --format=csv,noheader,nounits 2>/dev/null | tr -dc '0-9')
+        [[ "$cur" =~ ^[0-9]+$ ]] || continue
+        if (( cur < floorpct )); then
+            if _set_gpu_fan "$idx" "$floorpct"; then
+                log "  FAN: GPU $idx ${cur}% → ${floorpct}% (floor)"
+            elif (( _GPU_FAN_WARNED == 0 )); then
+                _GPU_FAN_WARNED=1
+                log "  FAN: could not set GPU $idx fan (nvidia-settings rejected the write) — "
+                log "       relying on power floor only."
+            fi
+        fi
+    done
 }
 
 # Write a max-frequency (kHz) cap to every CPU core via cpufreq sysfs.
@@ -1658,11 +1776,17 @@ main() {
         log "Power limit         : per-model (5090=500W, 5080=300W, fallback=${POWER_LIMIT_FALLBACK}W)"
     fi
     log "Temp threshold      : ${TEMP_THRESHOLD}°C"
+    (( ${#GPU_POWER_OVERRIDE[@]} )) && log "Per-GPU power ovr    : ${GPU_POWER_OVERRIDE[*]}"
+    (( ${#GPU_FAN_FLOOR[@]} ))      && log "Per-GPU fan floor    : ${GPU_FAN_FLOOR[*]} (needs X+Coolbits; power floor otherwise)"
     log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour)"
     log "Pricing interval    : ${PRICE_INTERVAL}s (30 min)"
     log "Telegram : $([ -n "$TELEGRAM_CHAT_ID" ] && echo 'configured' || echo 'NOT configured — run setup.sh')"
     log "Vast.ai  : $([ -n "$VASTAI_API_KEY"   ] && echo 'configured' || echo 'NOT configured')"
     log "======================================"
+
+    # Restore automatic fan control if we exit (stop/restart/crash) so a card is
+    # never left pinned to a fixed fan speed by a dead monitor.
+    trap _restore_gpu_fans EXIT INT TERM
 
     touch "$JSONL_FILE" && chmod 644 "$JSONL_FILE"
     enable_persistence_mode
@@ -1710,6 +1834,7 @@ main() {
             sleep "$THERMAL_CHECK_INTERVAL"
             slept=$(( slept + THERMAL_CHECK_INTERVAL ))
             thermal_adjust
+            fan_floor_adjust
             cpu_freq_adjust
             # Refresh the dashboard's power/temp snapshot every ~5 min so it
             # doesn't lag the hourly cycle.
