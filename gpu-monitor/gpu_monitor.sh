@@ -38,7 +38,7 @@ CPU_FREQ_HOT_TEMP=85     # °C — cap max CPU frequency at/above this
 # workload STAYS capped instead of flapping; the cap lifts only when the CPU is
 # genuinely idle-cool (workload lightened).
 CPU_FREQ_COOL_TEMP=60    # °C — restore full CPU frequency at/below this
-CPU_FREQ_CAP_MHZ=4000    # capped max CPU frequency (MHz) while hot
+CPU_FREQ_CAP_MHZ=4500    # capped max CPU frequency (MHz) while hot
 
 # Per-GPU-model power curve (Watts) as "pattern:base[:TEMP@WATTS...]". Matched
 # by substring against the GPU name from nvidia-smi (case-insensitive), first
