@@ -1211,45 +1211,51 @@ Last rate: ${old_cost:-$cost}"
         fi
     fi
 
-    # Write per-GPU rental status event every cycle (for dashboard GPU cards).
-    # Per-GPU rented state comes from /instances/ slot data when available; for
-    # D-type background contracts (which /instances/ doesn't expose) it falls
-    # back to the machine's gpu_occupancy string ("D D D D…", one char per GPU).
-    if [[ -n "$current_state" ]]; then
-        echo "$current_state" | while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            IFS='|' read -r mid rented gpus cost _ _ <<< "$line"
-            local slot_event
-            slot_event=$(python3 -c "
-import json, sys
-slots = json.loads(sys.argv[1]).get(sys.argv[2], {})
-total = int(sys.argv[3])
-gpu_name = sys.argv[4]
-mid = sys.argv[2]
-data = json.loads(sys.argv[5])
-# Occupancy string as a per-GPU fallback: a slot is rented if its char marks a
-# running contract (D=on-demand/background, R=reserved). x/I/blank = free.
-occ_chars = []
+    # Write per-GPU rental status events (for dashboard GPU cards). One Python
+    # pass over this host's machines emits one slot event per line; we consume it
+    # via process substitution (runs in THIS shell — no pipe-subshell surprises)
+    # and write each. Response goes through a temp file to avoid argv issues.
+    # Per-GPU rented comes from /instances/ slot data; for D-type background
+    # contracts (invisible to /instances/) it falls back to gpu_occupancy
+    # ("D D D D…", one char per GPU — D/R = rented, x/I/blank = free).
+    local rs_resp_tmp
+    rs_resp_tmp=$(mktemp)
+    printf '%s' "$response" > "$rs_resp_tmp"
+    local slot_event
+    while IFS= read -r slot_event; do
+        [[ -n "$slot_event" ]] && write_event "gpu_rental_status" "$slot_event"
+    done < <(python3 - "$gpu_slots_json" "$rs_resp_tmp" <<'PYEOF' 2>>"$LOG_FILE"
+import json, sys, socket
+try:
+    slots_by_machine = json.loads(sys.argv[1] or "{}")
+except Exception:
+    slots_by_machine = {}
+with open(sys.argv[2]) as f:
+    data = json.load(f)
+hn = socket.gethostname()
 for m in data.get('machines', []):
-    if str(m.get('id','')) == mid:
-        occ_chars = (m.get('gpu_occupancy','') or '').split()
-        break
-rows = []
-for i in range(total):
-    s = slots.get(str(i))
-    if s:
-        rows.append({'gpu_idx': i, 'rented': True,
-                     'instance_id': s['instance_id'], 'rate': s['rate']})
-    else:
-        c = occ_chars[i] if i < len(occ_chars) else ''
-        rows.append({'gpu_idx': i, 'rented': c in ('D', 'R'),
-                     'instance_id': None, 'rate': 0})
-print(json.dumps({'machine_id': mid, 'gpu_name': gpu_name,
-                  'total_gpus': total, 'slots': rows}))
-" "$gpu_slots_json" "$mid" "${gpus%%x*}" "${gpus##*x }" "$response" 2>/dev/null || true)
-            [[ -n "$slot_event" ]] && write_event "gpu_rental_status" "$slot_event"
-        done
-    fi
+    if m.get('hostname', '') != hn:
+        continue
+    mid = str(m.get('id', ''))
+    total = int(m.get('num_gpus', 0) or 0)
+    gpu_name = m.get('gpu_name', '?')
+    occ_chars = (m.get('gpu_occupancy', '') or '').split()
+    slots = slots_by_machine.get(mid, {})
+    rows = []
+    for i in range(total):
+        s = slots.get(str(i))
+        if s:
+            rows.append({'gpu_idx': i, 'rented': True,
+                         'instance_id': s['instance_id'], 'rate': s['rate']})
+        else:
+            c = occ_chars[i] if i < len(occ_chars) else ''
+            rows.append({'gpu_idx': i, 'rented': c in ('D', 'R'),
+                         'instance_id': None, 'rate': 0})
+    print(json.dumps({'machine_id': mid, 'gpu_name': gpu_name,
+                      'total_gpus': total, 'slots': rows}))
+PYEOF
+)
+    rm -f "$rs_resp_tmp"
 }
 
 # ─────────────────────────────────────────────
