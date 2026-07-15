@@ -27,6 +27,19 @@ CPU_TEMP_CRITICAL=94     # °C — trigger point for the opt-in protective throt
 CPU_PROTECT_DROP=100     # W — how much to drop each GPU's cap while protecting
 CPU_ALERT_FILE="/var/tmp/gpu_monitor_cpu_alert"  # throttles the CPU alert to 1/30min
 
+# --- CPU frequency thermal throttle (the direct, effective CPU heat lever) ---
+# When CPU temp is high, cap the max CPU frequency to cut heat at the source
+# (capping to ~4GHz took Zappa3's Ryzen from 88°C to 65°C). Restores full boost
+# once the CPU is clearly cool again. ON by default; disable/tune per rig via
+# /etc/gpu_monitor.conf (CPU_FREQ_THROTTLE=0). Runs every THERMAL_CHECK_INTERVAL.
+CPU_FREQ_THROTTLE="${CPU_FREQ_THROTTLE:-1}"
+CPU_FREQ_HOT_TEMP=85     # °C — cap max CPU frequency at/above this
+# Kept well below the temp a capped CPU runs at under load, so a sustained heavy
+# workload STAYS capped instead of flapping; the cap lifts only when the CPU is
+# genuinely idle-cool (workload lightened).
+CPU_FREQ_COOL_TEMP=60    # °C — restore full CPU frequency at/below this
+CPU_FREQ_CAP_MHZ=4000    # capped max CPU frequency (MHz) while hot
+
 # Per-GPU-model power curve (Watts) as "pattern:base[:TEMP@WATTS...]". Matched
 # by substring against the GPU name from nvidia-smi (case-insensitive), first
 # match wins. 'base' is the steady/normal cap. Each TEMP@WATTS step lowers the
@@ -263,6 +276,39 @@ thermal_adjust() {
                 && log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"
         fi
     done < <(nvidia-smi --query-gpu=index,name,temperature.gpu,power.limit --format=csv,noheader,nounits 2>/dev/null)
+}
+
+# Write a max-frequency (kHz) cap to every CPU core via cpufreq sysfs.
+_set_cpu_max_freq() {
+    local f="$1" p
+    for p in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do
+        echo "$f" > "$p" 2>/dev/null || true
+    done
+}
+
+# Fast CPU-frequency thermal throttle: cap max CPU freq when hot, restore full
+# boost when genuinely cool. Directly cuts CPU heat at the source. Quiet unless
+# it actually changes the cap. Runs every THERMAL_CHECK_INTERVAL.
+cpu_freq_adjust() {
+    [[ "$CPU_FREQ_THROTTLE" == "1" ]] || return
+    local cpu0=/sys/devices/system/cpu/cpu0/cpufreq
+    [[ -w "$cpu0/scaling_max_freq" ]] || return   # no writable cpufreq control
+    local ct; ct=$(get_cpu_temp)
+    [[ "$ct" =~ ^[0-9]+$ ]] || return
+    local hw_max cur_max cap_khz
+    hw_max=$(cat "$cpu0/cpuinfo_max_freq" 2>/dev/null)
+    cur_max=$(cat "$cpu0/scaling_max_freq" 2>/dev/null)
+    [[ "$hw_max" =~ ^[0-9]+$ && "$cur_max" =~ ^[0-9]+$ ]] || return
+    cap_khz=$(( CPU_FREQ_CAP_MHZ * 1000 ))
+    if (( ct >= CPU_FREQ_HOT_TEMP && cur_max > cap_khz )); then
+        _set_cpu_max_freq "$cap_khz"
+        log "  CPU THROTTLE: ${ct}°C ≥ ${CPU_FREQ_HOT_TEMP}°C → CPU max freq capped to ${CPU_FREQ_CAP_MHZ}MHz"
+        write_event "cpu_freq_throttle" "{\"cpu_temp\":$ct,\"cap_mhz\":$CPU_FREQ_CAP_MHZ}"
+    elif (( ct <= CPU_FREQ_COOL_TEMP && cur_max < hw_max )); then
+        _set_cpu_max_freq "$hw_max"
+        log "  CPU THROTTLE: cooled to ${ct}°C → CPU max freq restored to $(( hw_max / 1000 ))MHz"
+        write_event "cpu_freq_restore" "{\"cpu_temp\":$ct,\"max_mhz\":$(( hw_max / 1000 ))}"
+    fi
 }
 
 # Effective per-GPU power cap actually in force, read back from nvidia-smi.
@@ -1587,6 +1633,7 @@ main() {
             sleep "$THERMAL_CHECK_INTERVAL"
             slept=$(( slept + THERMAL_CHECK_INTERVAL ))
             thermal_adjust
+            cpu_freq_adjust
         done
     done
 }

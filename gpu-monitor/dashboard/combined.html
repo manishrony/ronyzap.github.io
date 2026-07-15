@@ -886,6 +886,7 @@ function eventBadge(type) {
   const m = {gpu_status:["badge-blue","GPU"],temp_warning:["badge-red","🌡️ TEMP"],
     gpu_fault:["badge-red","⚡ FAULT"],cpu_temp_warning:["badge-red","🔥 CPU"],
     cpu_thermal_protect:["badge-yellow","🛡️ CPU PROTECT"],
+    cpu_freq_throttle:["badge-yellow","🐢 CPU CAP"],cpu_freq_restore:["badge-blue","🚀 CPU FULL"],
     rental_start:["badge-green","▶ RENTED"],rental_end:["badge-yellow","■ ENDED"],
     price_change:["badge-purple","💰 PRICE"],startup:["badge-blue","🚀 START"]};
   const [cls,lbl] = m[type]||["badge-blue",type];
@@ -901,6 +902,8 @@ function eventDetail(e) {
   if (e.type==="temp_warning") return `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
   if (e.type==="cpu_temp_warning") return `CPU at ${e.cpu_temp}°C (>${e.threshold}°C)`;
   if (e.type==="cpu_thermal_protect") return `CPU ${e.cpu_temp}°C — dropped GPU power ${e.dropped_w}W`;
+  if (e.type==="cpu_freq_throttle") return `CPU ${e.cpu_temp}°C — capped CPU to ${e.cap_mhz}MHz`;
+  if (e.type==="cpu_freq_restore") return `CPU ${e.cpu_temp}°C — restored CPU to ${e.max_mhz}MHz`;
   if (e.type==="startup") return `Power ${e.power_limit}W threshold ${e.temp_threshold}°C`;
   return "";
 }
