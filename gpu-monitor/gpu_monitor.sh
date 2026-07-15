@@ -1084,11 +1084,32 @@ vastai_check() {
     # the dashboard's revenue math would undercount by the number of GPUs rented.
     # {real_instance_id} is Vast's actual numeric instance id (not the machine id)
     # — used to look up the rental's Docker image for workload classification.
-    local current_state
-    current_state=$(python3 -c "
+    # Parse the machine state. The /machines/ response goes through a temp file
+    # (not argv) so a large or awkward body can't get mangled, and both json
+    # loads are guarded: Vast.ai intermittently answers with a 200 whose body is
+    # an HTML error / rate-limit page / truncated JSON, which curl -sf accepts.
+    # On such a hiccup we log the real reason + response head and skip THIS cycle
+    # (exit 3) rather than silently dying — skipping is safe (no false
+    # rental_end), and next cycle recovers.
+    local mc_resp_tmp current_state parse_rc
+    mc_resp_tmp=$(mktemp)
+    printf '%s' "$response" > "$mc_resp_tmp"
+    current_state=$(python3 - "$gpu_slots_json" "$mc_resp_tmp" <<'PYEOF' 2>>"$LOG_FILE"
 import sys, json, socket
-slots_by_machine = json.loads(sys.argv[1])
-data = json.loads(sys.argv[2])
+try:
+    slots_by_machine = json.loads(sys.argv[1] or "{}")
+except Exception:
+    slots_by_machine = {}
+raw = ""
+try:
+    with open(sys.argv[2]) as f:
+        raw = f.read()
+    data = json.loads(raw)
+except Exception as e:
+    head = raw[:200].replace("\n", " ") if raw else "(empty)"
+    sys.stderr.write("VAST.AI parse: /machines/ not JSON: %s | len=%d head=%r\n"
+                     % (e, len(raw), head))
+    sys.exit(3)
 hn = socket.gethostname()
 lines = []
 for m in data.get('machines', []):
@@ -1119,9 +1140,17 @@ for m in data.get('machines', []):
     # needs it to draw every physical slot. Field 6 is how many are actually
     # rented, used for the Telegram/dashboard 'GPUs rented' display so a partial
     # rental (e.g. 4 of 8) doesn't misreport as the whole machine.
-    lines.append(f'{mid}|{rented}|{num_gpus}x {gpu_name}|\${cost_val:.3f}/hr|{real_iid}|{rented_count}')
+    lines.append('%s|%s|%sx %s|$%.3f/hr|%s|%s'
+                 % (mid, rented, num_gpus, gpu_name, cost_val, real_iid, rented_count))
 print('\n'.join(lines))
-" "$gpu_slots_json" "$response" 2>/dev/null) || { log "VAST.AI: Parse error"; return; }
+PYEOF
+)
+    parse_rc=$?
+    rm -f "$mc_resp_tmp"
+    if (( parse_rc != 0 )); then
+        log "VAST.AI: Parse error (skipping this cycle — see reason above)"
+        return
+    fi
 
     local last_state=""
     [[ -f "$VASTAI_LAST_STATE_FILE" ]] && last_state=$(cat "$VASTAI_LAST_STATE_FILE")
