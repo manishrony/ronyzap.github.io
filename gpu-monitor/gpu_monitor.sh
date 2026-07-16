@@ -96,17 +96,21 @@ GPU_FAN_FLOOR=()
 GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 
 # --- Workload-based power throttle (runs every THERMAL_CHECK_INTERVAL) ---------
-# Some rentals aren't worth full power/heat (e.g. low-value hash-cracking) but you
+# Low-value rentals (hash-cracking, mining) aren't worth full power/heat, but we
 # don't want to kick the renter. When a GPU compute process currently running on
 # the rig classifies (via classify_workload) into one of WORKLOAD_THROTTLE_TYPES,
 # cap EVERY GPU to WORKLOAD_THROTTLE_WATTS. The cap composes with the thermal
 # curve (whichever is lower wins) and lifts automatically the instant the
-# workload changes or the rental ends — no manual reset. 0/empty watts = off.
-# RIG-SPECIFIC: set in that rig's /etc/gpu_monitor.conf, not here.
-#   WORKLOAD_THROTTLE_WATTS=400
-#   WORKLOAD_THROTTLE_TYPES="cracking"     # space-separated classify_workload cats
-WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-0}"
-WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-}"
+# workload changes or the rental ends — no manual reset.
+#
+# Default: cracking + mining → 400W. This only pulls down cards whose curve is
+# above 400W (the RTX 5090s); a lower-TDP card (e.g. RTX 5080 at 300W) is already
+# below the cap so min(curve,400) leaves it untouched — i.e. this is effectively
+# a "throttle 5090s" policy without needing a model check. Override per-rig in
+# /etc/gpu_monitor.conf: set WORKLOAD_THROTTLE_WATTS=0 to disable, or change the
+# watts/type list.
+WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-400}"
+WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
 
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
 
