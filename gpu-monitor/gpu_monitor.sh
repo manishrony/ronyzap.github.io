@@ -57,11 +57,14 @@ POWER_LIMIT_HOT_FALLBACK=450  # floor cap if a GPU matches no rule above
 # POWER_LIMITS above. Same "base[:TEMP@WATTS...]" encoding, but keyed by the
 # physical GPU index instead of model name. Use when ONE card runs hotter than
 # its siblings (e.g. a lazy-fan MSI board) and you want just that card to shed
-# more power when hot, without touching the others. Empty = none.
+# more power when hot, without touching the others.
 #   "5:500:78@450:80@400" → GPU 5 only: 500W normally, 450W at ≥78°C, 400W at ≥80°C
-GPU_POWER_OVERRIDE=(
-    "5:500:78@450:80@400"   # GPU 5 (MSI, lazy VBIOS fan): allow down to 400W when hot
-)
+# RIG-SPECIFIC: the right index differs per machine, so DON'T hardcode it here —
+# set it in that rig's /etc/gpu_monitor.conf (sourced at startup, overrides this).
+# On Zappa2, GPU 5 is the MSI board; its conf carries the rule. Default empty so
+# every other rig leaves all cards on their model curve.
+#   GPU_POWER_OVERRIDE=("5:500:78@450:80@400")   # ← example, put in the conf
+GPU_POWER_OVERRIDE=()
 
 # --- Fast thermal-reactive throttle (runs every THERMAL_CHECK_INTERVAL) ---
 THERMAL_HYST=3             # °C hysteresis — restore a step up only once temp is
@@ -85,9 +88,10 @@ POWER_LIMIT_DEFAULT="${GPU_POWER_LIMIT:-$POWER_LIMIT_FALLBACK}"
 # if fan control isn't available the monitor logs one clear warning and falls
 # back to the power floor only — it never fails the cycle. On exit it restores
 # each controlled GPU to automatic (VBIOS) fan control.
-GPU_FAN_FLOOR=(
-    "5:80"   # GPU 5 (MSI, lazy VBIOS fan): hold fan at >=80% like its siblings
-)
+# RIG-SPECIFIC like GPU_POWER_OVERRIDE: set it in that rig's /etc/gpu_monitor.conf,
+# not here. Default empty so no rig touches a fan unless its conf asks for it.
+#   GPU_FAN_FLOOR=("5:80")   # ← example, put in the conf
+GPU_FAN_FLOOR=()
 # DISPLAY candidates to try for nvidia-settings (first that answers wins; cached).
 GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
