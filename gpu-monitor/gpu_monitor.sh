@@ -94,6 +94,20 @@ POWER_LIMIT_DEFAULT="${GPU_POWER_LIMIT:-$POWER_LIMIT_FALLBACK}"
 GPU_FAN_FLOOR=()
 # DISPLAY candidates to try for nvidia-settings (first that answers wins; cached).
 GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
+
+# --- Workload-based power throttle (runs every THERMAL_CHECK_INTERVAL) ---------
+# Some rentals aren't worth full power/heat (e.g. low-value hash-cracking) but you
+# don't want to kick the renter. When a GPU compute process currently running on
+# the rig classifies (via classify_workload) into one of WORKLOAD_THROTTLE_TYPES,
+# cap EVERY GPU to WORKLOAD_THROTTLE_WATTS. The cap composes with the thermal
+# curve (whichever is lower wins) and lifts automatically the instant the
+# workload changes or the rental ends — no manual reset. 0/empty watts = off.
+# RIG-SPECIFIC: set in that rig's /etc/gpu_monitor.conf, not here.
+#   WORKLOAD_THROTTLE_WATTS=400
+#   WORKLOAD_THROTTLE_TYPES="cracking"     # space-separated classify_workload cats
+WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-0}"
+WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-}"
+
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
 
 # --- Telegram config ---
@@ -297,12 +311,45 @@ set_power_limits() {
     done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
 }
 
+# True (0) if a GPU compute process currently running classifies into the
+# WORKLOAD_THROTTLE_TYPES set. Reuses build_gpu_proc_map (with its container-
+# namespace pmon fallback) and classify_workload (substring match, so a process
+# name like "./hashcat.bin" classifies 'cracking' exactly like an image would).
+_WORKLOAD_THROTTLE_STATE=0   # edge-tracking so we log the transition, not every tick
+workload_throttle_active() {
+    [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[0-9]+$ ]] && (( WORKLOAD_THROTTLE_WATTS > 0 )) || return 1
+    [[ -n "$WORKLOAD_THROTTLE_TYPES" ]] || return 1
+    local -A _procs; build_gpu_proc_map _procs
+    local gi cat t
+    for gi in "${!_procs[@]}"; do
+        cat=$(classify_workload "${_procs[$gi]}")
+        for t in $WORKLOAD_THROTTLE_TYPES; do
+            [[ "$cat" == "$t" ]] && return 0
+        done
+    done
+    return 1
+}
+
 # Fast thermal-reactive throttle: walk each GPU's per-model power curve
 # (e.g. 500→475@78°C→450@80°C) with hysteresis, adjusting the cap to match its
 # current temperature. Runs every THERMAL_CHECK_INTERVAL. Quiet on the common
-# no-change path (only logs when it actually moves a cap).
+# no-change path (only logs when it actually moves a cap). When a not-ideal
+# workload is running, an extra ceiling (WORKLOAD_THROTTLE_WATTS) is applied on
+# top — whichever of curve/throttle is lower wins — and lifts automatically when
+# the workload/rental changes.
 thermal_adjust() {
     [[ -n "$GPU_POWER_LIMIT" ]] && return   # manual override owns power; don't fight it
+    local throttle_cap=0
+    if workload_throttle_active; then throttle_cap="$WORKLOAD_THROTTLE_WATTS"; fi
+    if (( throttle_cap > 0 )) && (( _WORKLOAD_THROTTLE_STATE == 0 )); then
+        _WORKLOAD_THROTTLE_STATE=1
+        log "  WORKLOAD THROTTLE: not-ideal workload (${WORKLOAD_THROTTLE_TYPES}) running → capping all GPUs to ${throttle_cap}W"
+        write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"types\":\"$WORKLOAD_THROTTLE_TYPES\"}"
+    elif (( throttle_cap == 0 )) && (( _WORKLOAD_THROTTLE_STATE == 1 )); then
+        _WORKLOAD_THROTTLE_STATE=0
+        log "  WORKLOAD THROTTLE: workload cleared → restoring the automatic power curve"
+        write_event "workload_throttle" "{\"state\":\"off\"}"
+    fi
     local idx name temp curlimit target
     while IFS=',' read -r idx name temp curlimit; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
@@ -310,6 +357,10 @@ thermal_adjust() {
         curlimit=$(printf "%.0f" "$(echo "$curlimit" | xargs)" 2>/dev/null || echo 0)
         [[ "$temp" =~ ^[0-9]+$ ]] || continue
         target=$(thermal_target_power "$name" "$temp" "$curlimit" "$idx")
+        # Not-ideal workload: clamp to the throttle ceiling (never raise above it).
+        if (( throttle_cap > 0 )) && [[ "$target" =~ ^[0-9]+$ ]] && (( target > throttle_cap )); then
+            target="$throttle_cap"
+        fi
         if [[ "$target" =~ ^[0-9]+$ ]] && (( target != curlimit )); then
             nvidia-smi -i "$idx" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
                 && log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"
@@ -1782,6 +1833,7 @@ main() {
     log "Temp threshold      : ${TEMP_THRESHOLD}°C"
     (( ${#GPU_POWER_OVERRIDE[@]} )) && log "Per-GPU power ovr    : ${GPU_POWER_OVERRIDE[*]}"
     (( ${#GPU_FAN_FLOOR[@]} ))      && log "Per-GPU fan floor    : ${GPU_FAN_FLOOR[*]} (needs X+Coolbits; power floor otherwise)"
+    [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[1-9] ]] && log "Workload throttle   : ${WORKLOAD_THROTTLE_TYPES:-<none>} → ${WORKLOAD_THROTTLE_WATTS}W (auto, lifts when rental flips)"
     log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour)"
     log "Pricing interval    : ${PRICE_INTERVAL}s (30 min)"
     log "Telegram : $([ -n "$TELEGRAM_CHAT_ID" ] && echo 'configured' || echo 'NOT configured — run setup.sh')"
