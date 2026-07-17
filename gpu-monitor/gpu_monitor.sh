@@ -1343,7 +1343,7 @@ try:
         try: e = json.loads(line)
         except Exception: continue
         if (e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api'
-                and e.get('host') == host and e.get('src_ver') == 2):
+                and e.get('host') == host and e.get('src_ver') == 3):
             have[e.get('date')] = float(e.get('total', 0) or 0)
 except FileNotFoundError:
     pass
@@ -1358,8 +1358,14 @@ todo.sort()
 
 def fetch_day(d, mid):
     s = datetime.datetime(d.year, d.month, d.day, tzinfo=datetime.timezone.utc).timestamp()
+    # Single-day window [00:00:00, 23:59:59] of day d, in epoch-days. eday is
+    # INCLUSIVE, so using next midnight (s+86400) pulls day d+1 in too and every
+    # day gets double-counted — end at 23:59:59 instead. Need 6 decimals or
+    # 23:59:59 rounds back up to the next whole day.
+    sday = s / 86400.0
+    eday = (s + 86399) / 86400.0
     url = (f"{base}/api/v0/users/me/machine-earnings/?owner=me"
-           f"&sday={s/86400.0:.4f}&eday={(s+86400)/86400.0:.4f}&machid={mid}&api_key={apikey}")
+           f"&sday={sday:.6f}&eday={eday:.6f}&machid={mid}&api_key={apikey}")
     for attempt in range(3):
         try:
             out = subprocess.run(["curl", "-sL", "--max-time", "30", "-w", "__HTTP__%{http_code}", url],
@@ -1405,7 +1411,7 @@ try:
             continue
         f.write(json.dumps({"ts": nowts, "type": "daily_earnings", "host": host,
                             "date": ds, "total": tot, "machine_id": mids,
-                            "source": "vast_api", "src_ver": 2}) + "\n")
+                            "source": "vast_api", "src_ver": 3}) + "\n")
         f.flush()
         have[ds] = tot
         written += 1
