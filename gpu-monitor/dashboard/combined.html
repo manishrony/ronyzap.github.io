@@ -604,7 +604,7 @@ const fmtUSD  = v => "$" + Number(v).toFixed(2);
 const fmtTS   = ts => new Date(ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
 const fmtDate = ts => new Date(ts).toLocaleDateString([],{month:"short",day:"numeric"});
 const today   = () => { const d=new Date(); return new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate())); };
-const daysAgo = n  => { const d=new Date(); d.setDate(d.getDate()-n); d.setHours(0,0,0,0); return d; };
+const daysAgo = n  => new Date(today().getTime() - n*86400000);
 
 function eventsToday(events) { const c=today().toISOString(); return events.filter(e=>e.ts>=c); }
 function eventsIn(events, days) { const c=daysAgo(days).toISOString(); return events.filter(e=>e.ts>=c); }
