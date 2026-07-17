@@ -40,12 +40,8 @@
     border-bottom:1px solid var(--border);
   }
   .nav{ display:flex; align-items:center; justify-content:space-between; height:64px; }
-  .brand{ display:flex; align-items:center; gap:.55rem; font-weight:800; letter-spacing:-.02em; font-size:1.3rem; text-decoration:none; }
-  .brand-bolt{ width:22px; height:auto; flex:0 0 auto; display:block; }
-  .wm{ display:inline-flex; align-items:baseline; }
-  .wm-rony{ color:var(--fg); }
-  .wm-zap{ color:#2489e4; }
-  .wm-llc{ color:var(--faint); font-weight:600; font-size:.62em; letter-spacing:0; }
+  .brand{ display:flex; align-items:center; text-decoration:none; }
+  .brand-logo{ height:30px; width:auto; display:block; background:#fafafa; padding:5px 11px; border-radius:10px; }
   .nav-links{ display:flex; gap:1.4rem; align-items:center; font-size:.92rem; }
   .nav-links a{ color:var(--muted); text-decoration:none; }
   .nav-links a:hover{ color:var(--fg); }
@@ -109,15 +105,7 @@
 
 <header>
   <div class="container nav">
-    <a class="brand" href="/">
-      <svg class="brand-bolt" viewBox="0 0 48 56" aria-hidden="true">
-        <polygon points="28,2 10,30 20,30 14,54 38,21 27,21" fill="#2489e4"/>
-        <rect x="6"  y="35" width="6" height="6" rx="1.2" fill="#2489e4"/>
-        <rect x="3"  y="45" width="5" height="5" rx="1"   fill="#38bdf8"/>
-        <rect x="13" y="46" width="4" height="4" rx="1"   fill="#38bdf8"/>
-      </svg>
-      <span class="wm"><span class="wm-rony">Rony</span><span class="wm-zap">Zap</span><span class="wm-llc">&nbsp;LLC</span></span>
-    </a>
+    <a class="brand" href="/"><img class="brand-logo" src="/images/logo.png" alt="RonyZap LLC"></a>
     <nav class="nav-links">
       <a href="#what">What we do</a>
       <a href="#capabilities">Capabilities</a>
