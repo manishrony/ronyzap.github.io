@@ -1377,35 +1377,41 @@ def fetch_day(d, mid):
         return None
     return None
 
-synced = {}
-first = True
-for d in todo:
-    ds = d.strftime('%Y-%m-%d')
-    tot, got = 0.0, False
-    for mid in sorted(machids):
-        if not first: time.sleep(3)          # rate-limit spacing (endpoint threshold ~2s)
-        first = False
-        data = fetch_day(d, mid)
-        if not data: continue
-        for m in (data.get('per_machine') or []):
-            if str(m.get('machine_id')) in machids:
-                tot += sum(float(m.get(k, 0) or 0) for k in ('gpu_earn','sto_earn','bwu_earn','bwd_earn'))
-                got = True
-    if got: synced[ds] = round(tot, 4)
-
 nowts = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 mids = machids_s.replace(' ', ',')
-out_lines = []
-for ds, tot in synced.items():
-    if abs(have.get(ds, -1.0) - tot) < 0.005:   # unchanged since last sync
-        continue
-    out_lines.append(json.dumps({"ts": nowts, "type": "daily_earnings", "host": host,
-                                 "date": ds, "total": tot, "machine_id": mids,
-                                 "source": "vast_api", "src_ver": 2}))
-if out_lines:
-    with open(jsonl, 'a') as f:
-        f.write("\n".join(out_lines) + "\n")
-print(f"[EARNINGS] Vast API sync ({host} machids {mids}): {len(synced)} day(s), {len(out_lines)} updated, this-rig total ${sum(synced.values()):.2f}")
+written = 0
+seen = 0.0
+first = True
+# Append+flush each day as it's fetched so a restart mid-backfill keeps its
+# progress (the batch-at-end approach lost everything on interruption).
+f = open(jsonl, 'a')
+try:
+    for d in todo:
+        ds = d.strftime('%Y-%m-%d')
+        tot, got = 0.0, False
+        for mid in sorted(machids):
+            if not first: time.sleep(3)      # rate-limit spacing (endpoint threshold ~2s)
+            first = False
+            data = fetch_day(d, mid)
+            if not data: continue
+            for m in (data.get('per_machine') or []):
+                if str(m.get('machine_id')) in machids:
+                    tot += sum(float(m.get(k, 0) or 0) for k in ('gpu_earn','sto_earn','bwu_earn','bwd_earn'))
+                    got = True
+        if not got: continue
+        tot = round(tot, 4)
+        seen += tot
+        if abs(have.get(ds, -1.0) - tot) < 0.005:   # unchanged since last sync
+            continue
+        f.write(json.dumps({"ts": nowts, "type": "daily_earnings", "host": host,
+                            "date": ds, "total": tot, "machine_id": mids,
+                            "source": "vast_api", "src_ver": 2}) + "\n")
+        f.flush()
+        have[ds] = tot
+        written += 1
+finally:
+    f.close()
+print(f"[EARNINGS] Vast API sync ({host} machids {mids}): queried {len(todo)} day(s), wrote {written}, this-rig total ${seen:.2f}")
 PYEOF
 }
 
