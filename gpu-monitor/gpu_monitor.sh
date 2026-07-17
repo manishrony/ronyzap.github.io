@@ -127,6 +127,10 @@ VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
 # the same cycle (Vast rate-limits the repeat call, which would leave pricing
 # with an empty machine list and silently do nothing).
 MACHINES_CACHE_FILE="/var/tmp/gpu_monitor_machines_cache.json"
+# Per-machine count of rented GPUs (from gpu_occupancy) between cycles, so we can
+# detect an INCREMENTAL rental (e.g. a 2nd GPU renting on an already-rented box)
+# that the machine-level rental_start never fires for. One file per machine id.
+GPU_RENTED_COUNT_FILE="/var/tmp/gpu_monitor_gpu_rented_count"
 
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
@@ -1617,6 +1621,65 @@ print(json.dumps(obj))
     return 1
 }
 
+# Detect per-GPU rental count changes from the gpu_occupancy string, so an
+# incremental rental (a 2nd GPU renting while the 1st is still busy) or a partial
+# release gets a timestamped event + Telegram alert — the machine-level
+# rental_start/end only fires on the whole box going rented↔free and misses these.
+# Uses the /machines/ list vastai_check cached this cycle. Rate is the current
+# listing price (the exact locked rate for D-type contracts isn't host-visible).
+# First time it sees a machine it just seeds the count silently (no alert).
+check_gpu_rental_changes() {
+    [[ -z "$VASTAI_API_KEY" ]] && return
+    [[ -f "$MACHINES_CACHE_FILE" ]] && grep -q '"machines"' "$MACHINES_CACHE_FILE" 2>/dev/null || return
+
+    local mid gpu_name total occ_rented price
+    while IFS='|' read -r mid gpu_name total occ_rented price; do
+        [[ -z "$mid" ]] && continue
+        [[ "$occ_rented" =~ ^[0-9]+$ ]] || continue
+        local statef="${GPU_RENTED_COUNT_FILE}.${mid}"
+        # First sighting — seed silently so a deploy/restart doesn't fake alerts.
+        if [[ ! -f "$statef" ]]; then
+            echo "$occ_rented" > "$statef"
+            continue
+        fi
+        local prev; prev=$(cat "$statef" 2>/dev/null || echo 0)
+        [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+        if (( occ_rented > prev )); then
+            local added=$(( occ_rented - prev ))
+            log "  GPU RENTAL: +${added} GPU(s) rented on $mid → ${occ_rented}/${total} (listing ~\$${price}/hr)"
+            write_event "gpu_rental_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"direction\":\"up\",\"delta\":$added,\"rented\":$occ_rented,\"total\":$total,\"rate_estimate\":$price}"
+            tg_send "🟢 <b>GPU Rented</b> — $(hostname)
+Machine <b>$mid</b> | $gpu_name
+Now <b>${occ_rented}/${total}</b> rented (+${added})
+Listing rate: ~\$${price}/hr"
+        elif (( occ_rented < prev )); then
+            local removed=$(( prev - occ_rented ))
+            log "  GPU RENTAL: -${removed} GPU(s) freed on $mid → ${occ_rented}/${total} still rented"
+            write_event "gpu_rental_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"direction\":\"down\",\"delta\":-$removed,\"rented\":$occ_rented,\"total\":$total,\"rate_estimate\":$price}"
+            tg_send "🔴 <b>GPU Freed</b> — $(hostname)
+Machine <b>$mid</b> | $gpu_name
+Now <b>${occ_rented}/${total}</b> rented (-${removed})"
+        fi
+        echo "$occ_rented" > "$statef"
+    done < <(python3 - "$MACHINES_CACHE_FILE" <<'PYEOF' 2>>"$LOG_FILE"
+import sys, json, socket
+with open(sys.argv[1], encoding='utf-8', errors='replace') as f:
+    data = json.load(f)
+hn = socket.gethostname()
+for m in data.get('machines', []):
+    if m.get('hostname', '') != hn:
+        continue
+    mid = m.get('id', '')
+    gpu_name = m.get('gpu_name', 'unknown')
+    total = int(m.get('num_gpus', 0) or 0)
+    occ = (m.get('gpu_occupancy', '') or '').split()
+    occ_rented = sum(1 for c in occ[:total] if c in ('D', 'R'))
+    price = float(m.get('listed_gpu_cost') or m.get('min_bid_price', m.get('min_bid', 0)) or 0)
+    print('%s|%s|%s|%s|%.4f' % (mid, gpu_name, total, occ_rented, price))
+PYEOF
+)
+}
+
 vastai_pricing() {
     [[ -z "$VASTAI_API_KEY" ]] && return
 
@@ -1913,6 +1976,7 @@ main() {
 
         log ">>> Cycle start"
         vastai_check
+        check_gpu_rental_changes
         vastai_sync_earnings
         set_power_limits
         check_gpus
