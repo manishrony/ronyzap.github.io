@@ -91,11 +91,22 @@ PROFIT_THROTTLE_TIERS="5.00:250 7.00:300"
 
 This composes with the thermal curve and workload throttle exactly like they
 compose with each other (whichever cap is lowest wins), reacts within one
-`THERMAL_CHECK_INTERVAL` (~60s) of a rental starting/ending or its rate
-changing, and needs no restart to pick up a conf edit — restart
-`gpu-monitor` after changing the tiers themselves. It reads the LIVE rental
-rate `vastai_check()` already tracks each cycle, not the once-a-day earnings
-API, so it reacts immediately rather than a day later.
+`THERMAL_CHECK_INTERVAL` (~60s) of a rental starting/ending, and needs no
+restart to pick up a conf edit — restart `gpu-monitor` after changing the
+tiers themselves.
+
+Rate source: it prefers ACTUAL EARNED revenue (the most recently completed
+day's `daily_earnings` total, same data the dashboard uses) over the live
+per-machine rate `vastai_check()` tracks each cycle. This matters on Zappa3
+specifically because its rental is a D-type background contract that isn't
+visible via Vast's `/instances/` API — when that happens, the live "rate"
+falls back to the LISTING price (what's advertised for the *next* rental),
+which can be wildly different from what the current one is actually paying
+(we hit this directly: state showed $2.50/hr — the next-rental listing — for
+a rental actually earning ~$0.14/hr). Earned revenue doesn't have that
+problem. The live rate is only used as a fallback when there's no earnings
+data yet (a rental in its first few hours) — see `profit-override status` to
+inspect both signals directly.
 
 To temporarily force a specific cap (e.g. a renter's workload needs full
 power despite a low listed rate, or you want to force savings on a

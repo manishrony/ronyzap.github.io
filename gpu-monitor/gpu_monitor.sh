@@ -113,23 +113,33 @@ WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-400}"
 WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
 
 # --- Profitability-based power throttle (opt-in, runs every THERMAL_CHECK_INTERVAL) ---
-# Ties the GPU power cap to what the CURRENT rental is actually paying, for rigs
-# where a low-end card can lose money on electricity at full power on a
-# cheap rental. Uses the LIVE per-machine rate vastai_check() already tracks
-# every cycle in $VASTAI_LAST_STATE_FILE (no extra API calls) — deliberately
-# NOT the Vast earnings API, which is a once-a-day, rate-limited sync and can't
-# react within a rental.
+# Ties the GPU power cap to what the CURRENT rental is actually EARNING, for
+# rigs where a low-end card can lose money on electricity at full power on a
+# cheap rental.
+#
+# Primary signal: actual earned revenue from vastai_sync_earnings() (the most
+# recently COMPLETED day's total, or today's partial total extrapolated once
+# enough of the day has passed) — ground truth, immune to a stale/misleading
+# listing price. Falls back to the LIVE per-machine rate vastai_check() tracks
+# in $VASTAI_LAST_STATE_FILE only when no earnings data exists yet (e.g. a
+# rental in its first few hours), and even then only trusts a rate actually
+# resolved from live /instances/ data — never the fallback listing price
+# (listed_gpu_cost/min_bid_price), which is what's advertised for the NEXT
+# rental, not what a fully-rented D-type background contract is earning right
+# now (a fully-rented machine can't be re-priced anyway — see vastai_pricing's
+# "fully rented — skipping price adjustment"). Deliberately does NOT poll the
+# earnings API itself here — vastai_sync_earnings() already syncs it every
+# cycle; this just reads what's already in the log.
 #
 # PROFIT_THROTTLE_TIERS is ascending "dailyRateThreshold:watts" pairs. The
-# current rental's rate ($/hr × 24) is compared against each threshold in
-# order; the first tier whose threshold the rate is BELOW wins. At/above the
-# last threshold, no cap applies (full power / normal thermal curve). The cap
-# composes with the thermal curve and WORKLOAD_THROTTLE_WATTS exactly like
-# they compose with each other — whichever is lowest wins — and lifts
-# automatically when the rental ends or its rate crosses back above a tier.
-# No hysteresis needed: unlike temperature, this rate is a rental's LISTED
-# price, which only changes on a new rental_start/price_change, not tick to
-# tick — so there's nothing to flap against.
+# estimated daily rate is compared against each threshold in order; the first
+# tier whose threshold the rate is BELOW wins. At/above the last threshold, no
+# cap applies (full power / normal thermal curve). The cap composes with the
+# thermal curve and WORKLOAD_THROTTLE_WATTS exactly like they compose with
+# each other — whichever is lowest wins — and lifts automatically when the
+# rental ends or the rate crosses back above a tier. No hysteresis needed:
+# this is a slow-moving daily figure re-evaluated every cycle, not a noisy
+# tick-to-tick signal — nothing to flap against.
 #
 # A manual override (the `profit-override` CLI helper) always wins over the
 # computed tier, and is cleared automatically the moment the current rental
@@ -422,22 +432,85 @@ workload_throttle_active() {
 }
 
 # ── Profitability-based power throttle ────────────────────────────────────
-# Estimated $/day for THIS host's currently-rented machine(s), from the LIVE
-# rate vastai_check() tracks in $VASTAI_LAST_STATE_FILE (already scoped to this
-# host's machines — see vastai_check's hostname filter). Echoes nothing (and
-# returns non-zero) if nothing is rented or the state file isn't available yet.
-_profit_daily_rate() {
+# True if THIS host has ANY machine currently rented, regardless of whether
+# its rate is trustworthy. Gates the throttle so it only ever acts while
+# something is actually rented — earned-revenue data (below) is historical
+# and would otherwise happily "throttle" an idle, unrented card just because
+# yesterday was slow.
+_profit_currently_rented() {
+    [[ -f "$VASTAI_LAST_STATE_FILE" ]] || return 1
+    grep -q '^[^|]*|True|' "$VASTAI_LAST_STATE_FILE" 2>/dev/null
+}
+
+# Estimated $/day from ACTUAL EARNED revenue (Vast's own daily_earnings sync —
+# the same data the dashboard's revenue figures use), rather than a live
+# listed/instance rate. This is the PRIMARY signal: a fully-rented D-type
+# background contract's live "rate" (see _profit_live_daily_rate below) can
+# fall back to its NEXT rental's advertised listing price instead of what it's
+# actually earning right now — ground-truth earnings don't have that problem.
+# Prefers the most recently COMPLETED day's total (a real 24h sample); falls
+# back to extrapolating TODAY's partial total once enough of the day has
+# elapsed to not be noise-dominated. Returns nothing (abstain) if there's no
+# usable data yet — e.g. a rental still in its first few hours.
+_profit_earned_daily_rate() {
+    [[ -f "$JSONL_FILE" ]] || return 1
+    python3 - "$JSONL_FILE" "$(hostname)" <<'PYEOF' 2>/dev/null
+import sys, json, datetime
+jsonl, host = sys.argv[1], sys.argv[2]
+now = datetime.datetime.utcnow()
+today = now.strftime('%Y-%m-%d')
+yesterday = (now - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+by_date = {}   # date -> (newest ts seen, total)
+try:
+    for line in open(jsonl, errors='replace'):
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if (e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api'
+                and e.get('host') == host):
+            d = e.get('date')
+            ts = e.get('ts', '')
+            prev = by_date.get(d)
+            if not prev or ts > prev[0]:
+                by_date[d] = (ts, float(e.get('total', 0) or 0))
+except FileNotFoundError:
+    sys.exit(1)
+
+if yesterday in by_date and by_date[yesterday][1] > 0:
+    print(f"{by_date[yesterday][1]:.4f}")
+    sys.exit(0)
+
+# Extrapolate today's partial total, but only once at least 3h of the UTC
+# day have elapsed — a smaller window amplifies noise (a single short burst
+# early in the day would extrapolate to an implausible daily figure).
+elapsed_h = now.hour + now.minute / 60.0
+if today in by_date and elapsed_h >= 3.0:
+    print(f"{by_date[today][1] / elapsed_h * 24:.4f}")
+    sys.exit(0)
+
+sys.exit(1)
+PYEOF
+}
+
+# Estimated $/day from the LIVE rate vastai_check() tracks in
+# $VASTAI_LAST_STATE_FILE (already scoped to this host's machines). Fallback
+# signal only — used when no earned-revenue data is available yet. Echoes
+# nothing (and returns non-zero) if nothing is rented, or every rented
+# machine's rate is untrustworthy (see the rented_count check below).
+_profit_live_daily_rate() {
     [[ -f "$VASTAI_LAST_STATE_FILE" ]] || return 1
     local rented cost rate total=0 any=0 rented_count
     while IFS='|' read -r _ rented _ cost _ rented_count; do
         [[ "$rented" == "True" ]] || continue
         # rented_count==0 means vastai_check() found no matching /instances/
         # data for this machine (typical for a D-type background contract) and
-        # fell back to the LISTING price (listed_gpu_cost/min_bid_price) instead
-        # of the real per-instance rate. That fallback can be wildly off in
-        # either direction (frozen/stale once a machine auto-unlists while fully
-        # rented) — not trustworthy enough to drive a power-limit decision, so
-        # skip it rather than throttle (or fail to throttle) on bad data.
+        # fell back to the LISTING price (listed_gpu_cost/min_bid_price) — the
+        # price advertised for the NEXT rental, not what THIS one is earning.
+        # That fallback can be wildly off in either direction (frozen/stale
+        # once a machine auto-unlists while fully rented) — not trustworthy
+        # enough to drive a power-limit decision, so skip it rather than
+        # throttle (or fail to throttle) on bad data.
         [[ "$rented_count" =~ ^[1-9][0-9]*$ ]] || continue
         any=1
         rate=$(echo "$cost" | tr -dc '0-9.')
@@ -445,6 +518,11 @@ _profit_daily_rate() {
     done < "$VASTAI_LAST_STATE_FILE"
     (( any )) || return 1
     echo "$total * 24" | bc -l
+}
+
+# Best available $/day estimate: earned revenue first, live rate as fallback.
+_profit_effective_daily_rate() {
+    _profit_earned_daily_rate || _profit_live_daily_rate
 }
 
 # Echoes the profit-throttle wattage cap for a given daily-$ rate, or nothing
@@ -474,9 +552,10 @@ profit_override_clear() {
 }
 
 # Target wattage cap from the profit throttle this cycle, or empty for "no
-# cap". A manual override always wins; otherwise looks up the live rental
-# rate against PROFIT_THROTTLE_TIERS. Empty/disabled unless the rig's conf
-# sets PROFIT_THROTTLE_TIERS.
+# cap". A manual override always wins; otherwise requires something actually
+# rented, then looks up the best available daily-rate estimate (earned
+# revenue, falling back to the live rate) against PROFIT_THROTTLE_TIERS.
+# Empty/disabled unless the rig's conf sets PROFIT_THROTTLE_TIERS.
 profit_throttle_target() {
     local ov; ov=$(_profit_override_watts)
     if [[ -n "$ov" ]]; then
@@ -484,7 +563,8 @@ profit_throttle_target() {
         echo "$ov"; return
     fi
     [[ -n "$PROFIT_THROTTLE_TIERS" ]] || return
-    local rate; rate=$(_profit_daily_rate) || return
+    _profit_currently_rented || return
+    local rate; rate=$(_profit_effective_daily_rate) || return
     _profit_tier_watts "$rate"
 }
 
@@ -514,7 +594,7 @@ thermal_adjust() {
     if (( profit_cap > 0 )) && [[ "$profit_cap" != "$_PROFIT_THROTTLE_LAST_TIER" ]]; then
         _PROFIT_THROTTLE_LAST_TIER="$profit_cap"
         log "  PROFIT THROTTLE: rental rate below tier threshold → capping all GPUs to ${profit_cap}W"
-        write_event "profit_throttle" "{\"state\":\"on\",\"watts\":$profit_cap,\"daily_rate_est\":$(_profit_daily_rate 2>/dev/null || echo 0)}"
+        write_event "profit_throttle" "{\"state\":\"on\",\"watts\":$profit_cap,\"daily_rate_est\":$(_profit_effective_daily_rate 2>/dev/null || echo 0)}"
     elif (( profit_cap == 0 )) && [[ -n "$_PROFIT_THROTTLE_LAST_TIER" ]]; then
         _PROFIT_THROTTLE_LAST_TIER=""
         log "  PROFIT THROTTLE: rental now paying enough (or ended) → restoring full power"

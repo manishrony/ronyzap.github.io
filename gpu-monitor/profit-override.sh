@@ -19,6 +19,7 @@ set -euo pipefail
 
 OVERRIDE_FILE="/var/tmp/gpu_monitor_profit_override"
 STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
+JSONL_FILE="${GPU_DATA:-/var/log/gpu_monitor_data.jsonl}"
 
 case "${1:-status}" in
     status)
@@ -30,7 +31,48 @@ case "${1:-status}" in
         if [[ -f "$STATE_FILE" ]]; then
             echo ""
             echo "Live rental state:"
-            awk -F'|' '{printf "  machine %s | %s | %s | rented: %s\n", $1, $3, $4, $2}' "$STATE_FILE"
+            awk -F'|' '{printf "  machine %s | %s | %s | rented: %s | matched live instance: %s\n", $1, $3, $4, $2, ($6+0>0)?"yes":"no (listing-price fallback, ignored by the throttle)"}' "$STATE_FILE"
+        fi
+        if [[ -f "$JSONL_FILE" ]]; then
+            echo ""
+            echo "Earned-revenue estimate (what the throttle actually uses):"
+            python3 - "$JSONL_FILE" <<'PYEOF'
+import sys, json, datetime, socket
+jsonl = sys.argv[1]
+host = socket.gethostname()
+now = datetime.datetime.utcnow()
+today = now.strftime('%Y-%m-%d')
+yesterday = (now - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+by_date = {}
+try:
+    for line in open(jsonl, errors='replace'):
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api' and e.get('host') == host:
+            d = e.get('date')
+            ts = e.get('ts', '')
+            prev = by_date.get(d)
+            if not prev or ts > prev[0]:
+                by_date[d] = (ts, float(e.get('total', 0) or 0))
+except FileNotFoundError:
+    print("  no earnings data yet")
+    sys.exit(0)
+if yesterday in by_date:
+    print(f"  yesterday ({yesterday}): ${by_date[yesterday][1]:.2f}" + ("  <- used as the daily-rate estimate" if by_date[yesterday][1] > 0 else ""))
+else:
+    print(f"  yesterday ({yesterday}): no data")
+if today in by_date:
+    elapsed_h = now.hour + now.minute / 60.0
+    extrap = by_date[today][1] / elapsed_h * 24 if elapsed_h > 0 else 0
+    note = ""
+    if not (yesterday in by_date and by_date[yesterday][1] > 0):
+        note = "  <- used as the daily-rate estimate" if elapsed_h >= 3.0 else "  (too early in the day to extrapolate yet)"
+    print(f"  today so far ({today}): ${by_date[today][1]:.2f} ({elapsed_h:.1f}h elapsed -> ~${extrap:.2f}/day extrapolated){note}")
+else:
+    print(f"  today ({today}): no data yet")
+PYEOF
         fi
         ;;
     clear)
