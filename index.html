@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ronyzap</title>
+<meta name="description" content="ronyzap — GPU compute.">
+<style>
+  :root{
+    --bg:#0a0f1a; --card:#0d1f35; --border:#1a3a5c;
+    --fg:#e2e8f0; --muted:#64748b; --accent:#34d399; --accent2:#38bdf8;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f8fb; --card:#ffffff; --border:#e2e8f0; --fg:#0f172a; --muted:#64748b; }
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; align-items:center; justify-content:center; min-height:100vh;
+    background-image:radial-gradient(1200px 600px at 50% -10%, rgba(56,189,248,.10), transparent 60%);
+    padding:24px;
+  }
+  .wrap{ width:100%; max-width:520px; text-align:center; }
+  .logo{
+    font-size:2.6rem; font-weight:800; letter-spacing:-.02em; margin:0 0 .25rem;
+    background:linear-gradient(90deg,var(--accent2),var(--accent));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .tag{ color:var(--muted); font-size:1rem; margin:0 0 2rem; }
+  .card{
+    background:var(--card); border:1px solid var(--border); border-radius:16px;
+    padding:1.75rem; text-align:left;
+  }
+  .card h2{ font-size:.8rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 1rem; }
+  .btn{
+    display:flex; align-items:center; justify-content:space-between; gap:.75rem;
+    width:100%; text-decoration:none; color:var(--fg);
+    background:rgba(56,189,248,.06); border:1px solid var(--border); border-radius:12px;
+    padding:.95rem 1.15rem; font-weight:600; transition:border-color .15s, transform .05s;
+  }
+  .btn:hover{ border-color:var(--accent2); }
+  .btn:active{ transform:translateY(1px); }
+  .btn .sub{ display:block; font-weight:400; font-size:.8rem; color:var(--muted); margin-top:.15rem; }
+  .btn .arrow{ color:var(--accent2); font-size:1.2rem; }
+  .lock{ display:inline-flex; align-items:center; gap:.4rem; margin-top:1rem; color:var(--muted); font-size:.78rem; }
+  footer{ margin-top:1.75rem; color:var(--muted); font-size:.78rem; }
+  footer a{ color:var(--muted); }
+</style>
+</head>
+<body>
+  <main class="wrap">
+    <h1 class="logo">ronyzap</h1>
+    <p class="tag">GPU compute</p>
+
+    <div class="card">
+      <h2>Private</h2>
+      <a class="btn" href="https://dash.ronyzap.com/combined">
+        <span>
+          Operations dashboard
+          <span class="sub">Sign-in required — authorized accounts only</span>
+        </span>
+        <span class="arrow">→</span>
+      </a>
+      <div class="lock">🔒 Protected by Cloudflare Access</div>
+    </div>
+
+    <footer>© <span id="yr"></span> ronyzap</footer>
+  </main>
+  <script>document.getElementById("yr").textContent = new Date().getFullYear();</script>
+</body>
+</html>

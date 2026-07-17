@@ -1,0 +1,18 @@
+# Cloudflare Tunnel config for the hub rig (Zappa1).
+# Install to: /etc/cloudflared/config.yml
+#
+# Replace <TUNNEL-UUID> with the id printed by `cloudflared tunnel create zappa`
+# (it also writes the matching /root/.cloudflared/<TUNNEL-UUID>.json credentials).
+# See CLOUDFLARE-SETUP.md for the full, ordered runbook.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /root/.cloudflared/<TUNNEL-UUID>.json
+
+# Route the public hostname to the local dashboard. The dashboard listens on
+# 0.0.0.0:8080 on Zappa1, so the tunnel reaches it at localhost:8080 — no ports
+# are opened on your router; cloudflared dials OUT to Cloudflare.
+ingress:
+  - hostname: dash.ronyzap.com
+    service: http://localhost:8080
+  # Everything else gets a 404 (nothing else is exposed through the tunnel).
+  - service: http_status:404
