@@ -941,6 +941,8 @@ function eventBadge(type) {
     gpu_fault:["badge-red","⚡ FAULT"],cpu_temp_warning:["badge-red","🔥 CPU"],
     cpu_thermal_protect:["badge-yellow","🛡️ CPU PROTECT"],
     cpu_freq_throttle:["badge-yellow","🐢 CPU CAP"],cpu_freq_restore:["badge-blue","🚀 CPU FULL"],
+    workload_throttle:["badge-yellow","⚙️ WORKLOAD CAP"],
+    profit_throttle:["badge-yellow","💵 PROFIT CAP"],profit_override:["badge-purple","🔧 OVERRIDE"],
     rental_start:["badge-green","▶ RENTED"],rental_end:["badge-yellow","■ ENDED"],
     price_change:["badge-purple","💰 PRICE"],startup:["badge-blue","🚀 START"]};
   const [cls,lbl] = m[type]||["badge-blue",type];
@@ -958,6 +960,9 @@ function eventDetail(e) {
   if (e.type==="cpu_thermal_protect") return `CPU ${e.cpu_temp}°C — dropped GPU power ${e.dropped_w}W`;
   if (e.type==="cpu_freq_throttle") return `CPU ${e.cpu_temp}°C — capped CPU to ${e.cap_mhz}MHz`;
   if (e.type==="cpu_freq_restore") return `CPU ${e.cpu_temp}°C — restored CPU to ${e.max_mhz}MHz`;
+  if (e.type==="workload_throttle") return e.state==="on" ? `${e.types} running — capped to ${e.watts}W` : "workload cleared — power curve restored";
+  if (e.type==="profit_throttle") return e.state==="on" ? `rental paying ~$${Number(e.daily_rate_est||0).toFixed(2)}/day — capped to ${e.watts}W` : "rate improved or rental ended — full power restored";
+  if (e.type==="profit_override") return e.state==="cleared" ? `override cleared (${e.reason})` : "";
   if (e.type==="startup") return `Power ${e.power_limit}W threshold ${e.temp_threshold}°C`;
   return "";
 }

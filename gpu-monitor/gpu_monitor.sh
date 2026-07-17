@@ -112,6 +112,39 @@ GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-400}"
 WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
 
+# --- Profitability-based power throttle (opt-in, runs every THERMAL_CHECK_INTERVAL) ---
+# Ties the GPU power cap to what the CURRENT rental is actually paying, for rigs
+# where a low-end card can lose money on electricity at full power on a
+# cheap rental. Uses the LIVE per-machine rate vastai_check() already tracks
+# every cycle in $VASTAI_LAST_STATE_FILE (no extra API calls) — deliberately
+# NOT the Vast earnings API, which is a once-a-day, rate-limited sync and can't
+# react within a rental.
+#
+# PROFIT_THROTTLE_TIERS is ascending "dailyRateThreshold:watts" pairs. The
+# current rental's rate ($/hr × 24) is compared against each threshold in
+# order; the first tier whose threshold the rate is BELOW wins. At/above the
+# last threshold, no cap applies (full power / normal thermal curve). The cap
+# composes with the thermal curve and WORKLOAD_THROTTLE_WATTS exactly like
+# they compose with each other — whichever is lowest wins — and lifts
+# automatically when the rental ends or its rate crosses back above a tier.
+# No hysteresis needed: unlike temperature, this rate is a rental's LISTED
+# price, which only changes on a new rental_start/price_change, not tick to
+# tick — so there's nothing to flap against.
+#
+# A manual override (the `profit-override` CLI helper) always wins over the
+# computed tier, and is cleared automatically the moment the current rental
+# ends — so it only ever affects the rental you set it for, never a future one
+# you didn't mean it to.
+#
+# RIG-SPECIFIC: set in that rig's /etc/gpu_monitor.conf, not here. Default
+# empty so no rig throttles on profitability unless it opts in.
+#   PROFIT_THROTTLE_TIERS="5.00:250 7.00:300"   # ← example, put in the conf
+#     rate <  $5.00/day → cap 250W
+#     rate <  $7.00/day → cap 300W
+#     rate >= $7.00/day → no cap (full power)
+PROFIT_THROTTLE_TIERS="${PROFIT_THROTTLE_TIERS:-}"
+PROFIT_OVERRIDE_FILE="/var/tmp/gpu_monitor_profit_override"
+
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
 
 # --- Telegram config ---
@@ -360,6 +393,7 @@ set_power_limits() {
 # namespace pmon fallback) and classify_workload (substring match, so a process
 # name like "./hashcat.bin" classifies 'cracking' exactly like an image would).
 _WORKLOAD_THROTTLE_STATE=0   # edge-tracking so we log the transition, not every tick
+_PROFIT_THROTTLE_LAST_TIER=""   # edge-tracking for the profit throttle below (empty = not capping)
 workload_throttle_active() {
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[0-9]+$ ]] && (( WORKLOAD_THROTTLE_WATTS > 0 )) || return 1
     [[ -n "$WORKLOAD_THROTTLE_TYPES" ]] || return 1
@@ -372,6 +406,65 @@ workload_throttle_active() {
         done
     done
     return 1
+}
+
+# ── Profitability-based power throttle ────────────────────────────────────
+# Estimated $/day for THIS host's currently-rented machine(s), from the LIVE
+# rate vastai_check() tracks in $VASTAI_LAST_STATE_FILE (already scoped to this
+# host's machines — see vastai_check's hostname filter). Echoes nothing (and
+# returns non-zero) if nothing is rented or the state file isn't available yet.
+_profit_daily_rate() {
+    [[ -f "$VASTAI_LAST_STATE_FILE" ]] || return 1
+    local rented cost rate total=0 any=0
+    while IFS='|' read -r _ rented _ cost _ _; do
+        [[ "$rented" == "True" ]] || continue
+        any=1
+        rate=$(echo "$cost" | tr -dc '0-9.')
+        [[ -n "$rate" ]] && total=$(echo "$total + $rate" | bc -l)
+    done < "$VASTAI_LAST_STATE_FILE"
+    (( any )) || return 1
+    echo "$total * 24" | bc -l
+}
+
+# Echoes the profit-throttle wattage cap for a given daily-$ rate, or nothing
+# for "no cap" (full power). PROFIT_THROTTLE_TIERS is ascending
+# "threshold:watts" pairs; the first tier whose threshold the rate is BELOW wins.
+_profit_tier_watts() {
+    local rate="$1" pair thresh watts
+    for pair in $PROFIT_THROTTLE_TIERS; do
+        thresh="${pair%%:*}"; watts="${pair#*:}"
+        if (( $(echo "$rate < $thresh" | bc -l) )); then
+            echo "$watts"; return
+        fi
+    done
+}
+
+# Manual profit-throttle override (set via the `profit-override` CLI helper):
+# a watt number to force that cap, or "off" to force no cap. Always wins over
+# the computed tier. Cleared automatically on rental_end (see vastai_check).
+_profit_override_watts() {
+    [[ -f "$PROFIT_OVERRIDE_FILE" ]] && cat "$PROFIT_OVERRIDE_FILE"
+}
+profit_override_clear() {
+    [[ -f "$PROFIT_OVERRIDE_FILE" ]] || return
+    rm -f "$PROFIT_OVERRIDE_FILE"
+    log "  PROFIT THROTTLE: override cleared (rental ended) — resuming automatic tiering"
+    write_event "profit_override" "{\"state\":\"cleared\",\"reason\":\"rental_end\"}"
+}
+
+# Target wattage cap from the profit throttle this cycle, or empty for "no
+# cap". A manual override always wins; otherwise looks up the live rental
+# rate against PROFIT_THROTTLE_TIERS. Empty/disabled unless the rig's conf
+# sets PROFIT_THROTTLE_TIERS.
+profit_throttle_target() {
+    local ov; ov=$(_profit_override_watts)
+    if [[ -n "$ov" ]]; then
+        [[ "$ov" == "off" ]] && return
+        echo "$ov"; return
+    fi
+    [[ -n "$PROFIT_THROTTLE_TIERS" ]] || return
+    local rate; rate=$(_profit_daily_rate) || return
+    _profit_tier_watts "$rate"
 }
 
 # Fast thermal-reactive throttle: walk each GPU's per-model power curve
@@ -394,6 +487,18 @@ thermal_adjust() {
         log "  WORKLOAD THROTTLE: workload cleared → restoring the automatic power curve"
         write_event "workload_throttle" "{\"state\":\"off\"}"
     fi
+    local profit_cap=0 profit_target
+    profit_target=$(profit_throttle_target)
+    [[ "$profit_target" =~ ^[0-9]+$ ]] && profit_cap="$profit_target"
+    if (( profit_cap > 0 )) && [[ "$profit_cap" != "$_PROFIT_THROTTLE_LAST_TIER" ]]; then
+        _PROFIT_THROTTLE_LAST_TIER="$profit_cap"
+        log "  PROFIT THROTTLE: rental rate below tier threshold → capping all GPUs to ${profit_cap}W"
+        write_event "profit_throttle" "{\"state\":\"on\",\"watts\":$profit_cap,\"daily_rate_est\":$(_profit_daily_rate 2>/dev/null || echo 0)}"
+    elif (( profit_cap == 0 )) && [[ -n "$_PROFIT_THROTTLE_LAST_TIER" ]]; then
+        _PROFIT_THROTTLE_LAST_TIER=""
+        log "  PROFIT THROTTLE: rental now paying enough (or ended) → restoring full power"
+        write_event "profit_throttle" "{\"state\":\"off\"}"
+    fi
     local idx name temp curlimit target changed=0
     while IFS=',' read -r idx name temp curlimit; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
@@ -405,14 +510,19 @@ thermal_adjust() {
         if (( throttle_cap > 0 )) && [[ "$target" =~ ^[0-9]+$ ]] && (( target > throttle_cap )); then
             target="$throttle_cap"
         fi
+        # Low-paying rental: clamp to the profit-tier ceiling (never raise above it).
+        if (( profit_cap > 0 )) && [[ "$target" =~ ^[0-9]+$ ]] && (( target > profit_cap )); then
+            target="$profit_cap"
+        fi
         if [[ "$target" =~ ^[0-9]+$ ]] && (( target != curlimit )); then
             nvidia-smi -i "$idx" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
                 && { log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"; changed=1; }
         fi
     done < <(nvidia-smi --query-gpu=index,name,temperature.gpu,power.limit --format=csv,noheader,nounits 2>/dev/null)
-    # A cap moved (thermal step or workload throttle engaging/lifting) — refresh
-    # the dashboard's power snapshot now so it reflects reality within ~60s instead
-    # of waiting up to 5 min for the next scheduled snapshot.
+    # A cap moved (thermal step, workload throttle, or profit throttle engaging/
+    # lifting) — refresh the dashboard's power snapshot now so it reflects
+    # reality within ~60s instead of waiting up to 5 min for the next scheduled
+    # snapshot.
     (( changed )) && snapshot_gpu_status
 }
 
@@ -1637,6 +1747,7 @@ Rate: <b>$cost</b>"
 Machine: <b>$mid</b> | GPUs freed: $ended_gpus
 Last rate: ${old_cost:-$cost}"
                         write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$ended_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\"}"
+                        profit_override_clear
                     fi
                 fi
             fi
@@ -1652,6 +1763,7 @@ Last rate: ${old_cost:-$cost}"
                     [[ "${old_rented_count:-0}" -gt 0 ]] && gone_gpus="${old_rented_count}x ${gpus#*x }"
                     log "VAST.AI: Machine $mid disappeared while rented ($gone_gpus)"
                     write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gone_gpus\",\"rate\":\"$cost\",\"status\":\"gone\"}"
+                    profit_override_clear
                 fi
             fi
         done <<< "$last_state"
@@ -2187,6 +2299,7 @@ main() {
     (( ${#GPU_POWER_OVERRIDE[@]} )) && log "Per-GPU power ovr    : ${GPU_POWER_OVERRIDE[*]}"
     (( ${#GPU_FAN_FLOOR[@]} ))      && log "Per-GPU fan floor    : ${GPU_FAN_FLOOR[*]} (needs X+Coolbits; power floor otherwise)"
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[1-9] ]] && log "Workload throttle   : ${WORKLOAD_THROTTLE_TYPES:-<none>} → ${WORKLOAD_THROTTLE_WATTS}W (auto, lifts when rental flips)"
+    [[ -n "$PROFIT_THROTTLE_TIERS" ]] && log "Profit throttle     : ${PROFIT_THROTTLE_TIERS} (auto, lifts when rental ends or rate improves)"
     [[ -n "$PDU_HOSTS" ]] && log "PDU metering        : ${PDU_HOSTS} @ ${PDU_VOLTAGE}V, \$${PDU_ENERGY_RATE}/kWh (every ${PDU_POLL_INTERVAL}s)"
     log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour)"
     log "Pricing interval    : ${PRICE_INTERVAL}s (30 min)"

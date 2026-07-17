@@ -78,6 +78,49 @@ minute. At 60 it caps once and holds ~67°C for the whole workload, lifting only
 when the job actually ends. If Zappa3 ever flaps between capped/restored in
 `/var/log/gpu_monitor.log`, this is the knob — lower it, don't raise it.
 
+**Zappa3** also carries the profitability power throttle — its RTX 5080s at
+full power (360W curve, ~800W wall) can run break-even or at a loss against a
+cheap rental once electricity ($0.25/kWh) is counted. Its conf carries:
+
+```bash
+PROFIT_THROTTLE_TIERS="5.00:250 7.00:300"
+#   rate <  $5.00/day → cap 250W (VBIOS floor)
+#   rate <  $7.00/day → cap 300W
+#   rate >= $7.00/day → no cap (full 360W curve)
+```
+
+This composes with the thermal curve and workload throttle exactly like they
+compose with each other (whichever cap is lowest wins), reacts within one
+`THERMAL_CHECK_INTERVAL` (~60s) of a rental starting/ending or its rate
+changing, and needs no restart to pick up a conf edit — restart
+`gpu-monitor` after changing the tiers themselves. It reads the LIVE rental
+rate `vastai_check()` already tracks each cycle, not the once-a-day earnings
+API, so it reacts immediately rather than a day later.
+
+To temporarily force a specific cap (e.g. a renter's workload needs full
+power despite a low listed rate, or you want to force savings on a
+currently-good rental), use the `profit-override` CLI helper on that rig:
+
+```bash
+sudo profit-override 360      # force this wattage regardless of the computed tier
+sudo profit-override off      # disable profit throttling — full power (thermal curve still applies)
+sudo profit-override status   # show current override + live rental rate
+sudo profit-override clear    # remove the override, resume automatic tiering
+```
+
+The override is scoped to the **current rental only** — `gpu_monitor.sh`
+clears it automatically the instant that rental ends (`rental_end`), so it
+never silently carries over and controls a future rental you didn't mean it
+to. If you raise Zappa3's price and want the new rental to run unthrottled by
+default, you don't need to do anything — once the old rental ends the
+override (if any) clears and the next rental starts fresh under the normal
+tier logic (which will naturally apply no cap if the new rate is ≥$7/day).
+
+Tune the tiers if reality diverges from the plan: if renters bail or jobs
+slow unacceptably at 250W, raise the low tier to 300W in the conf; if the
+break-even point moves (electricity rate or actual wall power changes),
+adjust the thresholds accordingly.
+
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU
