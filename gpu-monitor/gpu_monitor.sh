@@ -1320,10 +1320,14 @@ PYEOF
         return
     fi
 
-    # last 8 days, in epoch-DAYS (the vastai CLI divides the unix timestamp by 86400)
-    local now sday eday base resp mid allfile
+    # Lookback window in days, in epoch-DAYS (the vastai CLI divides the unix
+    # timestamp by 86400). Covers full history cheaply: one API call returns the
+    # whole range, and finalized past days aren't re-written. Widen for a deeper
+    # one-time backfill via EARNINGS_SYNC_DAYS in /etc/gpu_monitor.conf.
+    local days now sday eday base resp mid allfile
+    days="${EARNINGS_SYNC_DAYS:-60}"
     now=$(date +%s)
-    sday=$(awk -v n="$now" 'BEGIN{printf "%.4f", (n-8*86400)/86400.0}')
+    sday=$(awk -v n="$now" -v d="$days" 'BEGIN{printf "%.4f", (n-d*86400)/86400.0}')
     eday=$(awk -v n="$now" 'BEGIN{printf "%.4f", (n+86400)/86400.0}')
     base="https://console.vast.ai"
     allfile=$(mktemp)
