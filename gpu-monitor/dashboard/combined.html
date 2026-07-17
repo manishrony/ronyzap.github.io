@@ -1303,7 +1303,7 @@ function renderRig(idx) {
 
   if (activeRigTab === "daily") {
     document.getElementById("rd-revenue").textContent = fmtUSD(computeRevenue(revEvents, today(), new Date()));
-    document.getElementById("rd-rentals").textContent = todayEvs.filter(e=>e.type==="rental_start").length;
+    document.getElementById("rd-rentals").textContent = countRentals(events, today(), new Date());
     document.getElementById("rd-warns").textContent   = todayEvs.filter(e=>e.type==="temp_warning").length;
     document.getElementById("rd-prices").textContent  = todayEvs.filter(e=>e.type==="price_change").length;
 
@@ -1341,7 +1341,7 @@ function renderRig(idx) {
   if (activeRigTab === "weekly") {
     const rev7 = computeRevenue(revEvents, daysAgo(7), new Date());
     document.getElementById("rw-revenue").textContent = fmtUSD(rev7);
-    document.getElementById("rw-rentals").textContent = weekEvs.filter(e=>e.type==="rental_start").length;
+    document.getElementById("rw-rentals").textContent = countRentals(events, daysAgo(7), new Date());
     document.getElementById("rw-avg").textContent     = fmtUSD(rev7/7)+"/d";
     document.getElementById("rw-prices").textContent  = weekEvs.filter(e=>e.type==="price_change").length;
 
@@ -1715,7 +1715,7 @@ function renderRigYearDetail(events, year) {
 
   document.getElementById("ry-stat1-label").textContent="Revenue "+year;
   document.getElementById("ry-revenue").textContent=fmtUSD(yRev);
-  document.getElementById("ry-rentals").textContent=yEvs.filter(e=>e.type==="rental_start").length;
+  document.getElementById("ry-rentals").textContent=countRentals(events,yS,yCap);
   document.getElementById("ry-avg").textContent=fmtUSD(yRev/moEl)+"/mo";
   document.getElementById("ry-days").textContent=yEvs.filter(e=>e.type==="daily_earnings"&&(e.total||0)>0).length;
 
