@@ -48,7 +48,7 @@ CPU_FREQ_CAP_MHZ=4500    # capped max CPU frequency (MHz) while hot
 #   "5090:500:78@475:80@450" → 500W normally, 475W at ≥78°C, 450W at ≥80°C
 POWER_LIMITS=(
     "5090:500:78@475:80@450"
-    "5080:300:80@275"
+    "5080:300:80@250"
 )
 POWER_LIMIT_FALLBACK=500      # base cap if a GPU matches no rule above
 POWER_LIMIT_HOT_FALLBACK=450  # floor cap if a GPU matches no rule above
@@ -428,9 +428,17 @@ workload_throttle_active() {
 # returns non-zero) if nothing is rented or the state file isn't available yet.
 _profit_daily_rate() {
     [[ -f "$VASTAI_LAST_STATE_FILE" ]] || return 1
-    local rented cost rate total=0 any=0
-    while IFS='|' read -r _ rented _ cost _ _; do
+    local rented cost rate total=0 any=0 rented_count
+    while IFS='|' read -r _ rented _ cost _ rented_count; do
         [[ "$rented" == "True" ]] || continue
+        # rented_count==0 means vastai_check() found no matching /instances/
+        # data for this machine (typical for a D-type background contract) and
+        # fell back to the LISTING price (listed_gpu_cost/min_bid_price) instead
+        # of the real per-instance rate. That fallback can be wildly off in
+        # either direction (frozen/stale once a machine auto-unlists while fully
+        # rented) — not trustworthy enough to drive a power-limit decision, so
+        # skip it rather than throttle (or fail to throttle) on bad data.
+        [[ "$rented_count" =~ ^[1-9][0-9]*$ ]] || continue
         any=1
         rate=$(echo "$cost" | tr -dc '0-9.')
         [[ -n "$rate" ]] && total=$(echo "$total + $rate" | bc -l)
