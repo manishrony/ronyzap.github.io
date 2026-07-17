@@ -11,7 +11,7 @@ _Last updated: 2026-07-16_
 |--------|----------|------------------|-----------|------------------------------|-------|
 | Zappa1 | zappa1   | 192.168.1.171    | 8080      | **Hub** (serves combined view) | 2× RTX 5090 |
 | Zappa2 | zappa2   | 192.168.1.196    | 8081      | Node                         | 8× RTX 5090 (GPU 5 = MSI, lazy-fan → per-GPU override in its conf); AMD EPYC 9 B14 |
-| Zappa3 | zappa3   | 192.168.1.211    | 8082      | Node                         | RTX 5080 (300W curve, 275W@80°C; below the 400W workload throttle so it's unaffected) |
+| Zappa3 | zappa3   | 192.168.1.211    | 8082      | Node                         | RTX 5080 (300W curve, 275W@80°C; conf sets WORKLOAD_THROTTLE_WATTS=250 → cracking/mining throttle to 250W) |
 
 > ⚠️ These are **DHCP** addresses and have drifted before (Zappa3 moved
 > 192.168.1.150 → .211 on 2026-07-16, which broke the hub's peer link). Set a
@@ -77,10 +77,12 @@ WORKLOAD_THROTTLE_TYPES="cracking mining"
 
 - Only affects cards whose curve exceeds 400W — i.e. the **RTX 5090s**
   (Zappa1/Zappa2). **Zappa3's RTX 5080s are unaffected** (300W curve is already
-  below 400W), so their cracking/mining rentals run their normal curve.
+  below 400W).
 - Override per rig in `/etc/gpu_monitor.conf`: `WORKLOAD_THROTTLE_WATTS=0` to
-  disable, or change the watts / type list. To also throttle the 5080s, set a
-  lower value on Zappa3 (e.g. `WORKLOAD_THROTTLE_WATTS=250`).
+  disable, or change the watts / type list.
+- **Zappa3 (RTX 5080)** carries `WORKLOAD_THROTTLE_WATTS=250` in its conf, so its
+  cracking/mining rentals throttle to 250W — below the 5080's normal 300 / 275°C
+  curve. Non-cracking/mining rentals run the normal curve.
 
 ## Config each rig needs (`/etc/gpu_monitor.conf`, chmod 600)
 
