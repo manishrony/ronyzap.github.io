@@ -1646,11 +1646,20 @@ for m in data.get('machines', []):
     listed_v  = m.get('listed_gpu_cost')
     min_bid_v = m.get('min_bid_price', m.get('min_bid', 0))
     cur_bid   = float(listed_v or min_bid_v or 0)
-    num_gpus = m.get('num_gpus', 1)
-    print(f'{mid}|{rented}|{listed}|{gpu_name}|{cur_bid}|{num_gpus}')
+    num_gpus = int(m.get('num_gpus', 1) or 1)
+    # Per-GPU occupancy ('x D D …': D/R = rented, x/I/blank = free) → free count,
+    # so pricing can tell a PARTIAL rental (some GPUs free) from a FULL one. If
+    # the occupancy string is missing, fall back to the old conservative view
+    # (rented ⇒ treat as full ⇒ don't price).
+    occ_chars = (m.get('gpu_occupancy', '') or '').split()
+    if occ_chars:
+        free_count = sum(1 for c in occ_chars[:num_gpus] if c not in ('D', 'R'))
+    else:
+        free_count = 0 if rented else num_gpus
+    print(f'{mid}|{rented}|{listed}|{gpu_name}|{cur_bid}|{num_gpus}|{free_count}')
 " 2>> "$LOG_FILE" > "$tmpfile"
 
-    while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus; do
+    while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus free_count; do
 
         [[ -z "$mid" ]] && continue
 
@@ -1719,8 +1728,10 @@ PYEOF
                 [[ -f "$alert_file" ]] && last_ts=$(cat "$alert_file" 2>/dev/null || echo 0)
                 if (( now_ts - last_ts > 14400 )); then
                     local rented_tag=""
-                    [[ "$rented" == "True" ]] && rented_tag="
-<i>Currently rented — auto-pricing paused. Check market page for trends.</i>"
+                    [[ "$rented" == "True" && "${free_count:-0}" -le 0 ]] && rented_tag="
+<i>Fully rented — auto-pricing paused. Check market page for trends.</i>"
+                    [[ "$rented" == "True" && "${free_count:-0}" -gt 0 ]] && rented_tag="
+<i>Partially rented — ${free_count} free GPU(s) still auto-pricing.</i>"
                     tg_send "⚠️ <b>Price Below Market</b> — $(hostname)
 Machine <b>$mid</b> | $gpu_name x${num_gpus}
 Your price: <b>\$$cur_bid/hr</b>
@@ -1742,12 +1753,17 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
             log "  Machine $mid: not listed — skipping price adjustment"
             continue
         fi
-        # Active rental (full or partial) — don't touch price. Renters lock in
-        # the rate they started at; changing it mid-rental is surprising and,
-        # for on-demand listings, can look like a bait-and-switch.
-        if [[ "$rented" == "True" ]]; then
-            log "  Machine $mid: active rental — skipping price adjustment"
+        # Skip pricing only when FULLY rented (no free GPUs — Vast auto-unlists
+        # those anyway). A PARTIAL rental keeps pricing the still-free GPUs toward
+        # the market median so they get filled; the already-rented GPU keeps its
+        # locked-in rate regardless (lowering the listing can't touch an open
+        # contract), so there's no bait-and-switch on the free GPUs.
+        if [[ "$rented" == "True" && "${free_count:-0}" -le 0 ]]; then
+            log "  Machine $mid: fully rented — skipping price adjustment"
             continue
+        fi
+        if [[ "$rented" == "True" ]]; then
+            log "  Machine $mid: partially rented — ${free_count} free GPU(s), pricing them toward median"
         fi
 
         # Target the market MEDIAN (fall back to floor if median is unavailable).
