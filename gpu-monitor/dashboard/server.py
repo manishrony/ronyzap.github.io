@@ -27,7 +27,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/api/peer"):
             self._serve_peer()
         elif self.path in ("/", "/index.html"):
-            self._serve_file(DASH_DIR / "index.html", "text/html; charset=utf-8")
+            # On the hub (peers configured) open straight on the all-rigs view so
+            # dash.ronyzap.com lands on /combined; standalone rigs keep the single view.
+            if PEER_URLS:
+                self.send_response(302)
+                self.send_header("Location", "/combined")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+            else:
+                self._serve_file(DASH_DIR / "index.html", "text/html; charset=utf-8")
         elif self.path in ("/combined", "/combined.html"):
             self._serve_file(DASH_DIR / "combined.html", "text/html; charset=utf-8")
         elif self.path in ("/market", "/market.html"):

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RonyZap LLC — GPU Computing Infrastructure</title>
-<meta name="description" content="RonyZap LLC is a computer-industry company building and operating high-performance GPU computing infrastructure for AI, rendering, and research workloads.">
+<title>RonyZap LLC — Computing Infrastructure &amp; Technology</title>
+<meta name="description" content="RonyZap LLC is a company in the computer industry, building and operating high-performance computing infrastructure and technology services.">
 <style>
   :root{
     --bg:#0a0f1a; --bg2:#0d1424; --card:#0d1f35; --border:#1a3a5c;
@@ -32,7 +32,6 @@
   a{ color:inherit; }
   .container{ width:100%; max-width:1040px; margin:0 auto; padding:0 24px; }
 
-  /* Header */
   header{
     position:sticky; top:0; z-index:10;
     background:color-mix(in srgb, var(--bg) 82%, transparent);
@@ -41,75 +40,55 @@
   }
   .nav{ display:flex; align-items:center; justify-content:space-between; height:64px; }
   .brand{ display:flex; align-items:center; gap:.6rem; font-weight:800; letter-spacing:-.01em; font-size:1.15rem; text-decoration:none; }
-  .brand .mark{
-    width:28px; height:28px; border-radius:8px;
-    background:linear-gradient(135deg,var(--accent2),var(--accent));
-    display:inline-block;
-  }
+  .brand .mark{ width:28px; height:28px; border-radius:8px; background:linear-gradient(135deg,var(--accent2),var(--accent)); display:inline-block; }
   .nav-links{ display:flex; gap:1.4rem; align-items:center; font-size:.92rem; }
   .nav-links a{ color:var(--muted); text-decoration:none; }
   .nav-links a:hover{ color:var(--fg); }
-  .nav-cta{
-    color:var(--fg) !important; border:1px solid var(--border); border-radius:9px;
-    padding:.4rem .8rem; font-weight:600;
-  }
+  .nav-cta{ color:var(--fg) !important; border:1px solid var(--border); border-radius:9px; padding:.4rem .8rem; font-weight:600; }
   .nav-cta:hover{ border-color:var(--accent2); }
   @media (max-width:640px){ .nav-links a:not(.nav-cta){ display:none; } }
 
-  /* Hero */
   .hero{
     padding:88px 0 64px;
     background-image:radial-gradient(900px 420px at 50% -80px, color-mix(in srgb, var(--accent2) 16%, transparent), transparent 70%);
   }
   .eyebrow{ color:var(--accent); font-weight:700; font-size:.8rem; letter-spacing:.14em; text-transform:uppercase; margin:0 0 1rem; }
-  .hero h1{
-    font-size:clamp(2rem,5vw,3.3rem); line-height:1.1; letter-spacing:-.02em; font-weight:800; margin:0 0 1.1rem; max-width:16ch;
-  }
-  .hero h1 .grad{
-    background:linear-gradient(90deg,var(--accent2),var(--accent));
-    -webkit-background-clip:text; background-clip:text; color:transparent;
-  }
+  .hero h1{ font-size:clamp(2rem,5vw,3.3rem); line-height:1.1; letter-spacing:-.02em; font-weight:800; margin:0 0 1.1rem; max-width:16ch; }
+  .hero h1 .grad{ background:linear-gradient(90deg,var(--accent2),var(--accent)); -webkit-background-clip:text; background-clip:text; color:transparent; }
   .hero p{ color:var(--muted); font-size:1.12rem; max-width:60ch; margin:0 0 2rem; }
   .cta-row{ display:flex; flex-wrap:wrap; gap:.8rem; }
-  .btn{
-    display:inline-flex; align-items:center; gap:.5rem; text-decoration:none; font-weight:600;
-    border-radius:11px; padding:.8rem 1.3rem; border:1px solid transparent;
-  }
+  .btn{ display:inline-flex; align-items:center; gap:.5rem; text-decoration:none; font-weight:600; border-radius:11px; padding:.8rem 1.3rem; border:1px solid transparent; }
   .btn-primary{ background:linear-gradient(135deg,var(--accent2),var(--accent)); color:#04121f; }
   .btn-primary:hover{ filter:brightness(1.05); }
   .btn-ghost{ border-color:var(--border); color:var(--fg); }
   .btn-ghost:hover{ border-color:var(--accent2); }
 
-  /* Sections */
   section{ padding:56px 0; }
   .section-head{ max-width:60ch; margin-bottom:2.2rem; }
   .section-head h2{ font-size:clamp(1.5rem,3.2vw,2rem); letter-spacing:-.01em; margin:0 0 .6rem; }
   .section-head p{ color:var(--muted); margin:0; }
   .grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1.1rem; }
-  .card{
-    background:var(--card); border:1px solid var(--border); border-radius:16px; padding:1.5rem;
-  }
-  .card .icon{
-    width:40px; height:40px; border-radius:11px; display:flex; align-items:center; justify-content:center;
-    background:color-mix(in srgb, var(--accent2) 14%, transparent); font-size:1.2rem; margin-bottom:1rem;
-  }
+  .card{ background:var(--card); border:1px solid var(--border); border-radius:16px; padding:1.5rem; }
+  .card .icon{ width:40px; height:40px; border-radius:11px; display:flex; align-items:center; justify-content:center; background:color-mix(in srgb, var(--accent2) 14%, transparent); font-size:1.2rem; margin-bottom:1rem; }
   .card h3{ margin:0 0 .5rem; font-size:1.08rem; }
   .card p{ color:var(--muted); margin:0; font-size:.95rem; }
 
-  /* Stats strip */
   .stats{ background:var(--bg2); border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
   .stats .grid{ grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); text-align:center; }
-  .stat b{ display:block; font-size:1.9rem; font-weight:800; letter-spacing:-.02em;
-    background:linear-gradient(90deg,var(--accent2),var(--accent)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .stat b{ display:block; font-size:1.9rem; font-weight:800; letter-spacing:-.02em; background:linear-gradient(90deg,var(--accent2),var(--accent)); -webkit-background-clip:text; background-clip:text; color:transparent; }
   .stat span{ color:var(--muted); font-size:.9rem; }
 
-  /* Ops / private */
-  .ops{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:1rem;
-    background:var(--card); border:1px solid var(--border); border-radius:16px; padding:1.5rem 1.75rem; }
+  .ops{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:1rem; background:var(--card); border:1px solid var(--border); border-radius:16px; padding:1.5rem 1.75rem; }
   .ops p{ margin:0; color:var(--muted); font-size:.95rem; }
   .ops .lock{ color:var(--faint); font-size:.8rem; }
 
-  /* Footer */
+  /* Contact */
+  .contact-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1.1rem; }
+  .contact-card{ background:var(--card); border:1px solid var(--border); border-radius:16px; padding:1.5rem; }
+  .contact-card .label{ color:var(--faint); font-size:.78rem; text-transform:uppercase; letter-spacing:.1em; margin:0 0 .4rem; }
+  .contact-card a, .contact-card .val{ color:var(--fg); text-decoration:none; font-weight:600; font-size:1.05rem; }
+  .contact-card a:hover{ color:var(--accent2); }
+
   footer{ border-top:1px solid var(--border); padding:2.4rem 0; color:var(--faint); font-size:.88rem; }
   .foot-row{ display:flex; flex-wrap:wrap; gap:.5rem 1.5rem; align-items:center; justify-content:space-between; }
   .foot-links{ display:flex; gap:1.2rem; }
@@ -126,65 +105,62 @@
       <a href="#what">What we do</a>
       <a href="#capabilities">Capabilities</a>
       <a href="#company">Company</a>
+      <a href="#contact">Contact</a>
       <a class="nav-cta" href="https://dash.ronyzap.com/combined">Operations&nbsp;↗</a>
     </nav>
   </div>
 </header>
 
 <main>
-  <!-- Hero -->
   <div class="hero">
     <div class="container">
       <p class="eyebrow">Computer Industry</p>
-      <h1>High-performance <span class="grad">GPU computing</span> infrastructure.</h1>
-      <p>RonyZap LLC builds and operates modern GPU compute capacity for AI training and
-         inference, rendering, and research workloads — provisioned on demand and
-         monitored around the clock.</p>
+      <h1>High-performance <span class="grad">computing infrastructure</span>.</h1>
+      <p>RonyZap LLC builds and operates modern computing infrastructure and technology
+         services — provisioned for demanding workloads and monitored around the clock.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="#what">Learn more</a>
-        <a class="btn btn-ghost" href="https://dash.ronyzap.com/combined">Operations dashboard ↗</a>
+        <a class="btn btn-ghost" href="#contact">Contact us</a>
       </div>
     </div>
   </div>
 
-  <!-- What we do -->
   <section id="what">
     <div class="container">
       <div class="section-head">
         <h2>What we do</h2>
-        <p>A focused computer-industry operation: we run GPU hardware efficiently and
-           make that capacity available for demanding compute.</p>
+        <p>A focused computer-industry operation: we run high-performance hardware
+           efficiently and make that capacity available for demanding compute.</p>
       </div>
       <div class="grid">
         <div class="card">
           <div class="icon">⚡</div>
-          <h3>GPU Compute</h3>
-          <p>Fleets of current-generation GPUs available for on-demand and reserved
-             workloads, tuned for throughput per watt.</p>
+          <h3>Compute Infrastructure</h3>
+          <p>Modern, high-performance hardware available for on-demand and reserved
+             workloads, tuned for throughput and efficiency.</p>
         </div>
         <div class="card">
-          <div class="icon">🧠</div>
-          <h3>AI &amp; Research</h3>
-          <p>Capacity for model training, inference, batch rendering, and scientific
-             compute — scaled to the job.</p>
+          <div class="icon">🧩</div>
+          <h3>Technology Services</h3>
+          <p>Capacity and support for a range of demanding compute, batch processing,
+             and research workloads — scaled to the job.</p>
         </div>
         <div class="card">
           <div class="icon">🛡️</div>
           <h3>Reliable Operations</h3>
-          <p>Every rig is monitored continuously for power, thermals, and uptime, with
-             automated safeguards keeping hardware in its safe envelope.</p>
+          <p>Every system is monitored continuously for power, thermals, and uptime,
+             with automated safeguards keeping hardware in its safe envelope.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Stats -->
   <div class="stats">
     <section>
       <div class="container">
         <div class="grid">
           <div class="stat"><b>24/7</b><span>Power &amp; thermal monitoring</span></div>
-          <div class="stat"><b>GPU</b><span>Accelerated compute</span></div>
+          <div class="stat"><b>High-perf</b><span>Accelerated compute</span></div>
           <div class="stat"><b>On-demand</b><span>Flexible capacity</span></div>
           <div class="stat"><b>Efficient</b><span>Performance per watt</span></div>
         </div>
@@ -192,12 +168,11 @@
     </section>
   </div>
 
-  <!-- Capabilities -->
   <section id="capabilities">
     <div class="container">
       <div class="section-head">
         <h2>Capabilities</h2>
-        <p>Purpose-built to keep accelerated hardware productive and healthy.</p>
+        <p>Purpose-built to keep high-performance hardware productive and healthy.</p>
       </div>
       <div class="grid">
         <div class="card">
@@ -209,7 +184,7 @@
         <div class="card">
           <div class="icon">🌡️</div>
           <h3>Thermal &amp; power management</h3>
-          <p>Per-GPU power curves and workload-aware throttling protect components and
+          <p>Per-device power curves and workload-aware throttling protect components and
              manage energy draw.</p>
         </div>
         <div class="card">
@@ -222,14 +197,13 @@
     </div>
   </section>
 
-  <!-- Company -->
   <section id="company">
     <div class="container">
       <div class="section-head">
         <h2>Company</h2>
         <p>RonyZap LLC is a privately held company in the computer industry, focused on
-           GPU computing infrastructure. We operate our own hardware and continuously
-           invest in efficiency, reliability, and capacity.</p>
+           high-performance computing infrastructure. We operate our own hardware and
+           continuously invest in efficiency, reliability, and capacity.</p>
       </div>
       <div class="ops">
         <div>
@@ -237,6 +211,29 @@
           <p class="lock">🔒 Restricted access — authorized accounts only.</p>
         </div>
         <a class="btn btn-ghost" href="https://dash.ronyzap.com/combined">Sign in ↗</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="contact">
+    <div class="container">
+      <div class="section-head">
+        <h2>Contact us</h2>
+        <p>Get in touch — we'd be glad to hear from you.</p>
+      </div>
+      <div class="contact-grid">
+        <div class="contact-card">
+          <p class="label">Email</p>
+          <a href="mailto:info@ronyzap.com">info@ronyzap.com</a>
+        </div>
+        <div class="contact-card">
+          <p class="label">Phone</p>
+          <a href="tel:+14842061099">484-206-1099</a>
+        </div>
+        <div class="contact-card">
+          <p class="label">Company</p>
+          <span class="val">RonyZap LLC</span>
+        </div>
       </div>
     </div>
   </section>
@@ -248,7 +245,7 @@
     <div class="foot-links">
       <a href="#what">What we do</a>
       <a href="#capabilities">Capabilities</a>
-      <a href="https://dash.ronyzap.com/combined">Operations</a>
+      <a href="#contact">Contact</a>
     </div>
   </div>
 </footer>
