@@ -1285,40 +1285,115 @@ PYEOF
     rm -f "$tmpfile" "$slots_tmpfile"
 }
 
-# Summarise tracked revenue from JSONL log (no API call needed — Vast.ai
-# does not expose host-side billing history via their v1 API).
-# Historical earnings are injected manually via daily_earnings events from CSV export.
+# Pull REAL host earnings from Vast's billing API and write accurate per-day
+# daily_earnings events for THIS rig's machine(s) — the source of truth. The
+# rental-based estimate undercounts D-type background contracts (hashcat/mining),
+# so those numbers were always low; this replaces them with Vast's own figures.
+#
+# Endpoint (from the vastai CLI `show earnings`):
+#   GET /api/v0/users/me/machine-earnings?owner=me&sday=&eday=&machid=&api_key=
+#   sday/eday are epoch DAYS (unix_seconds / 86400). Response has per_day[] with
+#   {day, gpu_earn, sto_earn, bwu_earn, bwd_earn}.
+# Scoped per-rig by machid so each rig logs only its own machine(s); the combined
+# dashboard sums across rigs (no double counting). Idempotent: only appends a day
+# when its total changes, and the dashboard keeps the newest per (date, machine).
 vastai_sync_earnings() {
     [[ -z "$VASTAI_API_KEY" ]] && return
+    { [[ -f "$MACHINES_CACHE_FILE" ]] && grep -q '"machines"' "$MACHINES_CACHE_FILE" 2>/dev/null; } || return
 
-    python3 - "$JSONL_FILE" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
+    local machids
+    machids=$(python3 - "$MACHINES_CACHE_FILE" <<'PYEOF' 2>/dev/null
+import sys, json, socket
+try: d = json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+hn = socket.gethostname()
+ids = []
+for m in d.get('machines', []):
+    if m.get('hostname', '') == hn:
+        mid = m.get('id', m.get('machine_id'))
+        if mid is not None: ids.append(str(mid))
+print(" ".join(sorted(set(ids))))
+PYEOF
+)
+    if [[ -z "$machids" ]]; then
+        log "[EARNINGS] no Vast machine matches hostname $(hostname); skipping earnings sync"
+        return
+    fi
+
+    # last 8 days, in epoch-DAYS (the vastai CLI divides the unix timestamp by 86400)
+    local now sday eday base resp mid allfile
+    now=$(date +%s)
+    sday=$(awk -v n="$now" 'BEGIN{printf "%.4f", (n-8*86400)/86400.0}')
+    eday=$(awk -v n="$now" 'BEGIN{printf "%.4f", (n+86400)/86400.0}')
+    base="https://console.vast.ai"
+    allfile=$(mktemp)
+    for mid in $machids; do
+        resp=$(curl -sf --max-time 30 \
+            "${base}/api/v0/users/me/machine-earnings?owner=me&sday=${sday}&eday=${eday}&machid=${mid}&api_key=${VASTAI_API_KEY}" 2>/dev/null)
+        [[ -n "$resp" ]] && printf '%s\n' "$resp" >> "$allfile"
+    done
+
+    python3 - "$JSONL_FILE" "$(hostname)" "$allfile" "$machids" <<'PYEOF' 2>>"$LOG_FILE"
 import sys, json, datetime
+jsonl, host, respfile, machids = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
-jsonl = sys.argv[1]
-total = 0.0
-daily_total = 0.0
-today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+def to_date(v):
+    if isinstance(v, str):
+        s = v.strip()
+        if len(s) >= 10 and s[4:5] == '-': return s[:10]
+        try: v = float(s)
+        except Exception: return None
+    try: v = float(v)
+    except Exception: return None
+    u = v*86400.0 if v < 100000 else (v if v < 1e11 else v/1000.0)
+    try: return datetime.datetime.utcfromtimestamp(u).strftime('%Y-%m-%d')
+    except Exception: return None
 
+totals = {}
 try:
-    with open(jsonl) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-                t = ev.get('type', '')
-                if t == 'daily_earnings':
-                    total += float(ev.get('total', 0))
-                    if ev.get('date', '') == today:
-                        daily_total += float(ev.get('total', 0))
-            except Exception:
-                pass
+    for line in open(respfile, errors='replace'):
+        line = line.strip()
+        if not line: continue
+        try: d = json.loads(line)
+        except Exception: continue
+        for row in (d.get('per_day') or []):
+            dt = to_date(row.get('day'))
+            if not dt: continue
+            t = sum(float(row.get(k, 0) or 0) for k in ('gpu_earn','sto_earn','bwu_earn','bwd_earn'))
+            totals[dt] = totals.get(dt, 0.0) + t
 except FileNotFoundError:
     pass
 
-print(f"[EARNINGS] Logged daily_earnings: total=${total:.2f}  today=${daily_total:.2f}")
+if not totals:
+    print("[EARNINGS] Vast API returned no per_day data (check key / date format); keeping estimates")
+    sys.exit(0)
+
+# only append days whose total changed vs the last API-sourced value stored
+prev = {}
+try:
+    for line in open(jsonl, errors='replace'):
+        try: e = json.loads(line)
+        except Exception: continue
+        if e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api' and e.get('host') == host:
+            prev[e.get('date')] = float(e.get('total', 0) or 0)
+except FileNotFoundError:
+    pass
+
+nowts = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+mids = machids.replace(' ', ',')
+written = 0
+with open(jsonl, 'a') as f:
+    for dt in sorted(totals):
+        newt = round(totals[dt], 4)
+        if abs(prev.get(dt, -1.0) - newt) < 0.005:  # unchanged since last sync
+            continue
+        f.write(json.dumps({"ts": nowts, "type": "daily_earnings", "host": host,
+                            "date": dt, "total": newt, "machine_id": mids, "source": "vast_api"}) + "\n")
+        written += 1
+tot = sum(totals.values())
+print(f"[EARNINGS] Vast API sync: {len(totals)} day(s), {written} updated, range total ${tot:.2f} (machids {mids})")
 PYEOF
+    rm -f "$allfile"
 }
 
 # Fetch per-GPU rental slot assignments from instances API.

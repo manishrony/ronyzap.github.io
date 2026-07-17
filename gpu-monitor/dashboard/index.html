@@ -335,14 +335,25 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
   let total = 0;
   const covered = new Set();
+  // Collapse daily_earnings to one value per (date, machine): newest ts wins,
+  // API-sourced entries supersede legacy ones for the same date.
+  const deMap = new Map(), apiDates = new Set();
   allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
-    const dayS = new Date(e.ts).getTime();
-    const dayE = dayS + 86400000;
-    if (dayE > pS && dayS < pE) {
-      total += (e.total || 0);
-      if ((e.total || 0) > 0) covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
-    }
+    const date = e.date || e.ts.slice(0, 10);
+    const key = date + "|" + String(e.machine_id || "");
+    const prev = deMap.get(key);
+    if (!prev || e.ts > prev.ts) deMap.set(key, e);
+    if (e.source === "vast_api") apiDates.add(date);
   });
+  for (const e of deMap.values()) {
+    const date = e.date || e.ts.slice(0, 10);
+    if (apiDates.has(date) && e.source !== "vast_api") continue;
+    const dayS = new Date(date + "T00:00:00Z").getTime();
+    if (dayS + 86400000 > pS && dayS < pE) {
+      total += (e.total || 0);
+      if ((e.total || 0) > 0) covered.add(date);
+    }
+  }
   // Build per-machine non-overlapping sessions (handles duplicate rental_start from restarts)
   const sessions = {};
   const sorted = [...allEvents].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0);
