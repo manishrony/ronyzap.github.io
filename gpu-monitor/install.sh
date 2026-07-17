@@ -32,6 +32,8 @@ FIXRENTAL_SRC="$(dirname "$0")/fix-active-rental.sh"
 FIXRENTAL_DEST="/usr/local/bin/fix-active-rental"
 EARNINGS_SRC="$(dirname "$0")/earnings-today.sh"
 EARNINGS_DEST="/usr/local/bin/earnings-today"
+PDUPOWER_SRC="$(dirname "$0")/pdu-power.sh"
+PDUPOWER_DEST="/usr/local/bin/pdu-power"
 DASH_SRC="$(dirname "$0")/dashboard"
 DASH_DEST="/opt/gpu-monitor/dashboard"
 MONITOR_SVC="/etc/systemd/system/gpu-monitor.service"
@@ -64,6 +66,10 @@ chmod +x "$FIXRENTAL_DEST"
 echo "[*] Installing earnings-today helper..."
 cp "$EARNINGS_SRC" "$EARNINGS_DEST"
 chmod +x "$EARNINGS_DEST"
+
+echo "[*] Installing pdu-power helper..."
+cp "$PDUPOWER_SRC" "$PDUPOWER_DEST"
+chmod +x "$PDUPOWER_DEST"
 
 echo "[*] Installing dashboard to $DASH_DEST ..."
 mkdir -p "$DASH_DEST"
@@ -137,6 +143,7 @@ echo "     Activity:  vast-activity (self-test verdicts, launched instances, res
 echo "     Backfill:  backfill-workloads (one-off: classify past rentals' workload type from kaalia.log)"
 echo "     Fix rental:fix-active-rental (one-off: correct the active rental's GPU count + rate from live API)"
 echo "     Earnings:  earnings-today (today's rentals, times, prices + revenue; pass YYYY-MM-DD for a past day)"
+echo "     PDU power: pdu-power (live rack watts + today/lifetime kWh & cost; hub rig only, needs PDU_HOSTS)"
 
 # Without /etc/gpu_monitor.conf the VASTAI_API_KEY is empty and ALL Vast.ai
 # integration silently no-ops (no rental detection, no revenue, no pricing, no

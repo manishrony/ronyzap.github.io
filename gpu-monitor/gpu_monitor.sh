@@ -132,6 +132,36 @@ MACHINES_CACHE_FILE="/var/tmp/gpu_monitor_machines_cache.json"
 # that the machine-level rental_start never fires for. One file per machine id.
 GPU_RENTED_COUNT_FILE="/var/tmp/gpu_monitor_gpu_rented_count"
 
+# --- APC PDU power metering (optional) -----------------------------------------
+# Reads live load CURRENT from an APC Metered Rack PDU over SNMP and integrates it
+# into energy (kWh) + electricity cost, so the dashboard can show real power draw
+# and net profit (rental revenue − power cost). The AP7811B and similar metered
+# units do NOT expose power (W) or a cumulative kWh register over SNMP — only load
+# current — so we compute power = amps × voltage and integrate over time here.
+#
+# The PDU meters the WHOLE rack (every rig plugged into it), so configure this on
+# ONE rig only — the hub (Zappa1). Leave PDU_HOSTS empty on the others; the poller
+# no-ops when it's unset, exactly like the Vast key. Set the real values in that
+# rig's /etc/gpu_monitor.conf:
+#   PDU_HOSTS="192.168.1.x"          # one or more PDU IPs, space/comma separated
+#   PDU_SNMP_COMMUNITY="zappa1"      # SNMPv1 read community (NOT "public" here)
+#   PDU_VOLTAGE=240                  # line voltage for the amps→watts conversion
+#   PDU_ENERGY_RATE=0.25             # $/kWh blended rate for cost
+#   PDU_KWH_BASELINE=0               # seed lifetime kWh already consumed before now
+PDU_HOSTS="${PDU_HOSTS:-}"
+PDU_SNMP_VERSION="${PDU_SNMP_VERSION:-1}"
+PDU_SNMP_COMMUNITY="${PDU_SNMP_COMMUNITY:-public}"
+PDU_VOLTAGE="${PDU_VOLTAGE:-240}"
+PDU_ENERGY_RATE="${PDU_ENERGY_RATE:-0.25}"
+PDU_KWH_BASELINE="${PDU_KWH_BASELINE:-0}"
+# Phase-current COLUMN OID (PowerNet-MIB rPDULoadStatusLoad). We snmpwalk the whole
+# column and SUM every row, so single- and 3-phase PDUs both work. Value is in
+# TENTHS of an amp (183 → 18.3 A).
+PDU_CURRENT_OID="${PDU_CURRENT_OID:-.1.3.6.1.4.1.318.1.1.26.6.3.1.5}"
+PDU_POLL_INTERVAL=300    # seconds between PDU samples (aligned with the 5-min snapshot)
+PDU_STATE_FILE="/var/tmp/gpu_monitor_pdu_energy"   # "cumulative_kwh last_epoch"
+PDU_SNMP_WARNED_FILE="/var/tmp/gpu_monitor_pdu_snmp_warned"
+
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
 PRICE_FLOORS=(
@@ -704,6 +734,115 @@ snapshot_gpu_status() {
     local cpu_field="" ct; ct=$(get_cpu_temp)
     [[ "$ct" =~ ^[0-9]+$ ]] && cpu_field=",\"cpu_temp\":$ct"
     write_event "gpu_status" "{\"gpus\":$gpu_json_arr$cpu_field}"
+}
+
+# ─────────────────────────────────────────────
+# APC PDU power metering
+# ─────────────────────────────────────────────
+# Sample live load current from each configured PDU over SNMP, convert amps→watts
+# (× PDU_VOLTAGE), integrate the elapsed interval into cumulative energy (kWh),
+# and log a pdu_power event for the dashboard. No-ops silently when PDU_HOSTS is
+# unset (only the hub rig configures it). The metered AP7811B exposes ONLY load
+# current — no watt or kWh register — so all energy/cost here is derived.
+pdu_poll() {
+    [[ -z "$PDU_HOSTS" ]] && return
+    if ! command -v snmpwalk >/dev/null 2>&1; then
+        if [[ ! -f "$PDU_SNMP_WARNED_FILE" ]]; then
+            log "PDU: snmpwalk not found — install net-snmp (apt install snmp) to meter PDU power. Skipping."
+            touch "$PDU_SNMP_WARNED_FILE"
+        fi
+        return
+    fi
+
+    # Collect "host=tenthsOfAmps" pairs; SUM every row of the current column so a
+    # 3-phase PDU (multiple rows) totals correctly. A host that doesn't answer is
+    # dropped from this sample (its current is treated as absent, not zero-forever).
+    local host raw sum pairs=""
+    for host in ${PDU_HOSTS//,/ }; do
+        [[ -z "$host" ]] && continue
+        raw=$(snmpwalk -v"$PDU_SNMP_VERSION" -c "$PDU_SNMP_COMMUNITY" -Oqv -t 3 -r 1 \
+              "$host" "$PDU_CURRENT_OID" 2>>"$LOG_FILE")
+        if [[ -z "$raw" ]]; then
+            if [[ ! -f "$PDU_SNMP_WARNED_FILE" ]]; then
+                log "PDU: no SNMP response from $host (check IP / community / v$PDU_SNMP_VERSION). Skipping this sample."
+                touch "$PDU_SNMP_WARNED_FILE"
+            fi
+            continue
+        fi
+        # Sum integer rows (tenths of amps). Non-numeric lines contribute 0.
+        sum=$(awk '{v=$1+0; s+=v} END{print s+0}' <<< "$raw")
+        pairs+="${host}=${sum};"
+        rm -f "$PDU_SNMP_WARNED_FILE" 2>/dev/null   # clear the warned latch on success
+    done
+    [[ -z "$pairs" ]] && return
+
+    # Math + energy integration + event write in python (float-safe, atomic state).
+    local out
+    out=$(python3 - "$PDU_STATE_FILE" "$JSONL_FILE" "$PDU_VOLTAGE" "$PDU_ENERGY_RATE" \
+                    "$PDU_KWH_BASELINE" "$(hostname)" "$pairs" "$PDU_POLL_INTERVAL" <<'PYEOF' 2>>"$LOG_FILE"
+import sys, os, time, json, datetime
+
+state_f, jsonl, voltage, rate, baseline, host, pairs, poll_int = sys.argv[1:9]
+voltage = float(voltage); rate = float(rate); baseline = float(baseline)
+poll_int = float(poll_int)
+
+readings, total_a = [], 0.0
+for part in pairs.split(";"):
+    if "=" not in part:
+        continue
+    h, v = part.split("=", 1)
+    try:
+        a = float(v) / 10.0            # tenths of amps -> amps
+    except ValueError:
+        continue
+    w = a * voltage
+    readings.append({"host": h, "amps": round(a, 1), "watts": round(w)})
+    total_a += a
+if not readings:
+    sys.exit(0)
+total_w = total_a * voltage
+
+now = time.time()
+cum, last = 0.0, now
+if os.path.exists(state_f):
+    try:
+        parts = open(state_f).read().split()
+        cum, last = float(parts[0]), float(parts[1])
+    except Exception:
+        cum, last = 0.0, now
+dt = now - last
+# Ignore absurd gaps (service restart, clock jump, long downtime) so a stale
+# last-timestamp can't manufacture a huge energy spike. Fall back to one nominal
+# poll interval's worth of accrual instead.
+if dt <= 0 or dt > 3 * poll_int:
+    dt = poll_int
+kwh_int = total_w * dt / 3_600_000.0
+cum += kwh_int
+
+tmp = state_f + ".tmp"
+with open(tmp, "w") as f:
+    f.write("%f %f" % (cum, now))
+os.replace(tmp, state_f)
+
+ev = {
+    "ts":   datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "type": "pdu_power",
+    "host": host,
+    "amps": round(total_a, 1),
+    "watts": round(total_w),
+    "kwh_interval": round(kwh_int, 5),
+    "cumulative_kwh": round(cum, 3),
+    "cumulative_kwh_total": round(cum + baseline, 3),
+    "rate": rate,
+    "cost_interval": round(kwh_int * rate, 5),
+    "pdus": readings,
+}
+with open(jsonl, "a") as f:
+    f.write(json.dumps(ev) + "\n")
+print("%d %.1f %.3f" % (round(total_w), total_a, cum + baseline))
+PYEOF
+)
+    [[ -n "$out" ]] && log "PDU: ${out%% *}W  $(awk '{print $2}' <<<"$out")A  lifetime $(awk '{print $3}' <<<"$out") kWh (\$$(awk -v k="$(awk '{print $3}' <<<"$out")" -v r="$PDU_ENERGY_RATE" 'BEGIN{printf "%.2f", k*r}'))"
 }
 
 # ─────────────────────────────────────────────
@@ -1948,6 +2087,7 @@ main() {
     (( ${#GPU_POWER_OVERRIDE[@]} )) && log "Per-GPU power ovr    : ${GPU_POWER_OVERRIDE[*]}"
     (( ${#GPU_FAN_FLOOR[@]} ))      && log "Per-GPU fan floor    : ${GPU_FAN_FLOOR[*]} (needs X+Coolbits; power floor otherwise)"
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[1-9] ]] && log "Workload throttle   : ${WORKLOAD_THROTTLE_TYPES:-<none>} → ${WORKLOAD_THROTTLE_WATTS}W (auto, lifts when rental flips)"
+    [[ -n "$PDU_HOSTS" ]] && log "PDU metering        : ${PDU_HOSTS} @ ${PDU_VOLTAGE}V, \$${PDU_ENERGY_RATE}/kWh (every ${PDU_POLL_INTERVAL}s)"
     log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour)"
     log "Pricing interval    : ${PRICE_INTERVAL}s (30 min)"
     log "Telegram : $([ -n "$TELEGRAM_CHAT_ID" ] && echo 'configured' || echo 'NOT configured — run setup.sh')"
@@ -1971,6 +2111,7 @@ main() {
     # Sync past rental events from Vast.ai API (backfills revenue history)
     vastai_init_state
     vastai_sync_earnings
+    pdu_poll   # seed a PDU reading immediately so the dashboard isn't blank
 
     local last_price_check=0
 
@@ -2010,6 +2151,8 @@ main() {
             # Refresh the dashboard's power/temp snapshot every ~5 min so it
             # doesn't lag the hourly cycle.
             (( slept % 300 == 0 )) && snapshot_gpu_status
+            # Sample the PDU on the same cadence (no-ops unless PDU_HOSTS is set).
+            (( slept % PDU_POLL_INTERVAL == 0 )) && pdu_poll
         done
     done
 }

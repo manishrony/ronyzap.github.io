@@ -82,6 +82,31 @@
       <p class="text-xs text-slate-500 mt-1" id="stat-price-sub"></p>
     </div>
   </div>
+  <div id="power-row" class="hidden">
+    <h2 class="text-sm font-semibold text-slate-400 mb-3">Rack Power — APC PDU (all rigs on this PDU)</h2>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Power Now</p>
+        <p class="text-2xl font-bold text-amber-400" id="stat-power-now">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="stat-power-now-sub"></p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Energy Today</p>
+        <p class="text-2xl font-bold text-slate-200" id="stat-energy-today">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="stat-energy-today-sub"></p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Power Cost Today</p>
+        <p class="text-2xl font-bold text-orange-400" id="stat-power-cost">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="stat-power-cost-sub"></p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Lifetime Energy</p>
+        <p class="text-2xl font-bold text-slate-200" id="stat-power-life">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="stat-power-life-sub"></p>
+      </div>
+    </div>
+  </div>
   <div>
     <h2 class="text-sm font-semibold text-slate-400 mb-3">GPU Status</h2>
     <div id="gpu-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -452,11 +477,6 @@ function renderOverview() {
   const endEl = document.getElementById("stat-rental-end");
   if (rateEl) rateEl.textContent = latestPC?.new_price ? "Listed: $" + Number(latestPC.new_price).toFixed(4) + "/hr" : "";
   if (endEl) endEl.textContent = latestPC?.expire_date ? "Ends: " + latestPC.expire_date : "";
-  const latestPC = [...STATE.events].filter(e => e.type === "price_change").pop();
-  const rateEl = document.getElementById("stat-rental-rate");
-  const endEl = document.getElementById("stat-rental-end");
-  if (rateEl) rateEl.textContent = latestPC?.new_price ? "Listed: $" + Number(latestPC.new_price).toFixed(4) + "/hr" : "";
-  if (endEl) endEl.textContent = latestPC?.expire_date ? "Ends: " + latestPC.expire_date : "";
 
   const last = lastGPUStatus();
   if (last && last.gpus && last.gpus.length) {
@@ -496,7 +516,7 @@ function renderOverview() {
       [{ label: "Ask Price ($/hr)", data: priceEvs.map(e => e.new_price), borderColor: "#c084fc", backgroundColor: "#c084fc20", fill: true }]);
   }
 
-  const recentEvs = [...STATE.events].reverse().slice(0, 50);
+  const recentEvs = [...STATE.events].filter(e => e.type !== "pdu_power").reverse().slice(0, 50);
   const tbody = document.getElementById("events-table");
   tbody.innerHTML = recentEvs.map(e => {
     let detail = "";
@@ -512,6 +532,32 @@ function renderOverview() {
       <td class="py-2 text-xs text-slate-400">${detail}</td>
     </tr>`;
   }).join("");
+
+  renderPowerRow();
+}
+
+// Rack power from pdu_power events (this rig only). Hidden unless a PDU reports.
+// Energy for a window = sum of per-sample kwh_interval, so it composes cleanly.
+function renderPowerRow() {
+  const row = document.getElementById("power-row");
+  const pdu = STATE.events.filter(e => e.type === "pdu_power");
+  if (!pdu.length) { row.classList.add("hidden"); return; }
+  row.classList.remove("hidden");
+  const latest = pdu[pdu.length - 1];
+  const rate = Number(latest.rate) || 0;
+  const tS = today().getTime();
+  const kwhToday = pdu.reduce((a, e) =>
+    new Date(e.ts).getTime() >= tS ? a + (Number(e.kwh_interval) || 0) : a, 0);
+  const lifeKwh = Number(latest.cumulative_kwh_total) || Number(latest.cumulative_kwh) || 0;
+  document.getElementById("stat-power-now").textContent = (Number(latest.watts)||0).toLocaleString() + " W";
+  document.getElementById("stat-power-now-sub").textContent =
+    (Number(latest.amps)||0).toFixed(1) + " A @ $" + rate.toFixed(2) + "/kWh · " + fmtTS(latest.ts);
+  document.getElementById("stat-energy-today").textContent = kwhToday.toFixed(1) + " kWh";
+  document.getElementById("stat-energy-today-sub").textContent = pdu.filter(e=>new Date(e.ts).getTime()>=tS).length + " samples today";
+  document.getElementById("stat-power-cost").textContent = fmtUSD(kwhToday * rate);
+  document.getElementById("stat-power-cost-sub").textContent = "at $" + rate.toFixed(2) + "/kWh (all rigs on PDU)";
+  document.getElementById("stat-power-life").textContent = lifeKwh.toLocaleString(undefined,{maximumFractionDigits:0}) + " kWh";
+  document.getElementById("stat-power-life-sub").textContent = "≈ " + fmtUSD(lifeKwh * rate) + " to date";
 }
 
 function renderGPUCards(last) {

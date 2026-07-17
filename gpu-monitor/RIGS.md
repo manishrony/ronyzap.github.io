@@ -95,3 +95,39 @@ TELEGRAM_CHAT_ID="<telegram chat id>"
 Without this file, Vast.ai rental detection, revenue, pricing and Telegram
 alerts are all disabled and the rig shows "Free / $0" regardless of actual
 rentals.
+
+## APC PDU power metering (hub only)
+
+The rack's APC Metered PDU (AP7811B) is read over SNMP to show real power draw,
+energy (kWh) and electricity cost on the dashboard, plus **net profit** (combined
+rental revenue − power cost) on the combined view.
+
+**Configure it on ONE rig only — the hub (Zappa1).** The PDU meters the whole
+rack, so if every rig polled it the energy would be counted 2–3×. The poller is
+built into `gpu_monitor.sh` and no-ops silently unless `PDU_HOSTS` is set, so
+it's safe that the same script ships everywhere.
+
+Add to **Zappa1's** `/etc/gpu_monitor.conf`:
+
+```bash
+PDU_HOSTS="192.168.1.<pdu-ip>"   # one or more PDU IPs, space/comma separated
+PDU_SNMP_COMMUNITY="zappa1"      # SNMPv1 read community (NOT the default "public")
+PDU_VOLTAGE=240                  # line voltage for the amps→watts conversion
+PDU_ENERGY_RATE=0.25             # $/kWh blended rate
+PDU_KWH_BASELINE=0               # optional: kWh already consumed before metering began
+```
+
+Then `apt install snmp` (for `snmpwalk`) and `sudo systemctl restart gpu-monitor`.
+
+Why derived, not read directly: the AP7811B exposes **only load current** over
+SNMP — its power (W) and cumulative-kWh registers return `notsupported`. The
+monitor snmpwalks the phase-current column (`.1.3.6.1.4.1.318.1.1.26.6.3.1.5`,
+tenths of an amp), sums all rows (handles 1- or 3-phase), multiplies by
+`PDU_VOLTAGE`, and integrates over time into cumulative kWh. Because energy is
+accumulated only while the monitor runs, seed `PDU_KWH_BASELINE` with any
+pre-existing consumption if you want the lifetime figure to include it.
+
+Check it from the terminal with `sudo pdu-power` (live watts + today + lifetime)
+or `sudo pdu-power YYYY-MM-DD` for a past day. If SNMP can't be reached the
+monitor logs one clear warning and keeps running; the dashboard power row simply
+stays hidden until samples arrive.

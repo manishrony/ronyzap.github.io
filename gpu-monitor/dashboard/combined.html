@@ -119,6 +119,33 @@
     </div>
   </div>
 
+  <!-- Power / net-profit row (only shown when a PDU is reporting) -->
+  <div id="c-power-row" class="px-6 pb-2 hidden">
+    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rack power (APC PDU) &amp; net profit</p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Power Now</p>
+        <p class="text-2xl font-bold text-amber-400" id="c-power-now">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="c-power-now-sub"></p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Power Cost Today</p>
+        <p class="text-2xl font-bold text-orange-400" id="c-power-cost">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="c-power-cost-sub"></p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Net Profit Today</p>
+        <p class="text-2xl font-bold" id="c-net-today">—</p>
+        <p class="text-xs text-slate-500 mt-1">Revenue − power cost</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Lifetime Energy</p>
+        <p class="text-2xl font-bold text-slate-200" id="c-power-life">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="c-power-life-sub"></p>
+      </div>
+    </div>
+  </div>
+
   <!-- Rig cards (clickable) -->
   <div class="px-6 pb-4">
     <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rigs — click to drill down</p>
@@ -950,6 +977,41 @@ function barChart(id, labels, datasets, color) {
 }
 
 // ── Render combined ───────────────────────────────────────────────────
+// Rack power + net profit, from pdu_power events (logged by whichever rig has the
+// PDU configured). Energy for a window = sum of per-sample kwh_interval in it, so
+// it composes exactly like revenue. Hidden entirely when no PDU is reporting.
+function renderPower(allEvs, revToday, rev30d) {
+  const row = document.getElementById("c-power-row");
+  const pdu = allEvs.filter(e => e.type === "pdu_power");
+  if (!pdu.length) { row.classList.add("hidden"); return; }
+  row.classList.remove("hidden");
+
+  const latest = pdu[pdu.length - 1];
+  const rate = Number(latest.rate) || 0;
+  const tS = today().getTime();
+  const sumKwh = (from) => pdu.reduce((a, e) =>
+    new Date(e.ts).getTime() >= from ? a + (Number(e.kwh_interval) || 0) : a, 0);
+  const kwhToday = sumKwh(tS);
+  const kwh30d   = sumKwh(daysAgo(30).getTime());
+  const costToday = kwhToday * rate;
+  const cost30d   = kwh30d * rate;
+  const lifeKwh = Number(latest.cumulative_kwh_total) || Number(latest.cumulative_kwh) || 0;
+
+  document.getElementById("c-power-now").textContent = (Number(latest.watts)||0).toLocaleString() + " W";
+  document.getElementById("c-power-now-sub").textContent =
+    (Number(latest.amps)||0).toFixed(1) + " A @ $" + rate.toFixed(2) + "/kWh · " + fmtTS(latest.ts);
+  document.getElementById("c-power-cost").textContent = fmtUSD(costToday);
+  document.getElementById("c-power-cost-sub").textContent = kwhToday.toFixed(1) + " kWh today · 30d " + fmtUSD(cost30d);
+
+  const net = revToday - costToday;
+  const netEl = document.getElementById("c-net-today");
+  netEl.textContent = (net < 0 ? "-" : "") + fmtUSD(Math.abs(net));
+  netEl.className = "text-2xl font-bold " + (net >= 0 ? "text-emerald-400" : "text-red-400");
+
+  document.getElementById("c-power-life").textContent = lifeKwh.toLocaleString(undefined,{maximumFractionDigits:0}) + " kWh";
+  document.getElementById("c-power-life-sub").textContent = "≈ " + fmtUSD(lifeKwh * rate) + " electricity to date";
+}
+
 function renderCombined() {
   const allEvs = DATA.flatMap((d,i)=>(d.events||[]).map(e=>({...e,_rig:i})))
     .sort((a,b)=>a.ts<b.ts?-1:1);
@@ -991,6 +1053,8 @@ function renderCombined() {
   document.getElementById("c-prices").textContent = priceChanges.length;
   document.getElementById("c-prices-sub").textContent = DATA.map((_,i)=>rigName(i)+": "+eventsToday(DATA[i].events).filter(e=>e.type==="price_change").length).join(" · ");
 
+  renderPower(allEvs, rev, rev30d);
+
   // Render rig summary cards
   DATA.forEach((d,i) => renderRigCard(i, d));
 
@@ -1029,7 +1093,7 @@ function renderCombined() {
 
   // Combined events table
   const tbody = document.getElementById("c-events");
-  const recent = [...allEvs].reverse().slice(0,60);
+  const recent = [...allEvs].filter(e=>e.type!=="pdu_power").reverse().slice(0,60);
   tbody.innerHTML = recent.map(e=>`<tr class="hover:bg-slate-800/30">
     <td class="py-1.5 pr-3 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
     <td class="py-1.5 pr-3"><span class="text-xs px-2 py-0.5 rounded border" style="color:${rigColor(e._rig)};border-color:${rigColor(e._rig)}66;background:${rigColor(e._rig)}1a;">${rigName(e._rig)}</span></td>
@@ -1180,7 +1244,7 @@ function renderRig(idx) {
       [{label:"Ask $/hr",data:priceEvs.map(e=>e.new_price),borderColor:"#c084fc",backgroundColor:"#c084fc20",fill:true}]);
 
     const tbody = document.getElementById("r-events");
-    tbody.innerHTML = [...events].reverse().slice(0,50).map(e=>`<tr class="hover:bg-slate-800/30">
+    tbody.innerHTML = [...events].filter(e=>e.type!=="pdu_power").reverse().slice(0,50).map(e=>`<tr class="hover:bg-slate-800/30">
       <td class="py-1.5 pr-4 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
       <td class="py-1.5 pr-4">${eventBadge(e.type)}</td>
       <td class="py-1.5 text-xs text-slate-400">${eventDetail(e)}</td>
