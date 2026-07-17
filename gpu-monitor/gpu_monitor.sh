@@ -1335,10 +1335,12 @@ PYEOF
     for mid in $machids; do
         (( first )) || sleep 3        # space calls: the endpoint is throttled (~2s threshold)
         first=0
-        url="${base}/api/v0/users/me/machine-earnings?owner=me&sday=${sday}&eday=${eday}&machid=${mid}&api_key=${VASTAI_API_KEY}"
+        # NOTE: the trailing slash before '?' is required — without it Vast 301-
+        # redirects and the JSON is lost. -L is a safety net if that ever changes.
+        url="${base}/api/v0/users/me/machine-earnings/?owner=me&sday=${sday}&eday=${eday}&machid=${mid}&api_key=${VASTAI_API_KEY}"
         resp=""
         for attempt in 1 2 3; do
-            resp=$(curl -s --max-time 30 -w '__HTTP__%{http_code}' "$url" 2>>"$LOG_FILE")
+            resp=$(curl -sL --max-time 30 -w '__HTTP__%{http_code}' "$url" 2>>"$LOG_FILE")
             code="${resp##*__HTTP__}"; resp="${resp%__HTTP__*}"
             if [[ "$code" == "200" ]]; then break; fi
             if [[ "$code" == "429" ]]; then
