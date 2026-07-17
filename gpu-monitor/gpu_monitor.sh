@@ -1320,99 +1320,93 @@ PYEOF
         return
     fi
 
-    # Lookback window in days, in epoch-DAYS (the vastai CLI divides the unix
-    # timestamp by 86400). Covers full history cheaply: one API call returns the
-    # whole range, and finalized past days aren't re-written. Widen for a deeper
-    # one-time backfill via EARNINGS_SYNC_DAYS in /etc/gpu_monitor.conf.
-    local days now sday eday base resp mid allfile
+    # Pull per-day, per-MACHINE earnings for THIS rig only. The API's per_day
+    # array is ACCOUNT-WIDE (machid does not filter it), so reading it made every
+    # rig log the same account total and the combined view triple-counted. Instead
+    # query one day at a time and read per_machine — the only per-machine
+    # breakdown — keeping just our own machine(s). Idempotent: refreshes the last
+    # 3 days each run and backfills older days once. src_ver=2 marks the corrected
+    # per-machine entries; older account-wide entries are re-queried and replaced.
+    local days
     days="${EARNINGS_SYNC_DAYS:-60}"
-    now=$(date +%s)
-    sday=$(awk -v n="$now" -v d="$days" 'BEGIN{printf "%.4f", (n-d*86400)/86400.0}')
-    eday=$(awk -v n="$now" 'BEGIN{printf "%.4f", (n+86400)/86400.0}')
-    base="https://console.vast.ai"
-    allfile=$(mktemp)
-    local first=1 code url attempt
-    for mid in $machids; do
-        (( first )) || sleep 3        # space calls: the endpoint is throttled (~2s threshold)
-        first=0
-        # NOTE: the trailing slash before '?' is required — without it Vast 301-
-        # redirects and the JSON is lost. -L is a safety net if that ever changes.
-        url="${base}/api/v0/users/me/machine-earnings/?owner=me&sday=${sday}&eday=${eday}&machid=${mid}&api_key=${VASTAI_API_KEY}"
-        resp=""
-        for attempt in 1 2 3; do
-            resp=$(curl -sL --max-time 30 -w '__HTTP__%{http_code}' "$url" 2>>"$LOG_FILE")
-            code="${resp##*__HTTP__}"; resp="${resp%__HTTP__*}"
-            if [[ "$code" == "200" ]]; then break; fi
-            if [[ "$code" == "429" ]]; then
-                log "[EARNINGS] machine $mid: 429 rate-limited (attempt $attempt); backing off"
-                sleep $(( attempt * 3 )); resp=""; continue
-            fi
-            log "[EARNINGS] machine $mid: HTTP $code — ${resp:0:160}"; resp=""; break
-        done
-        [[ -n "$resp" ]] && printf '%s\n' "$resp" >> "$allfile"
-    done
+    python3 - "$JSONL_FILE" "$(hostname)" "$VASTAI_API_KEY" "$machids" "$days" <<'PYEOF' 2>>"$LOG_FILE"
+import sys, json, time, datetime, subprocess
+jsonl, host, apikey, machids_s, days_s = sys.argv[1:6]
+machids = set(machids_s.split())
+days = int(float(days_s))
+base = "https://console.vast.ai"
 
-    python3 - "$JSONL_FILE" "$(hostname)" "$allfile" "$machids" <<'PYEOF' 2>>"$LOG_FILE"
-import sys, json, datetime
-jsonl, host, respfile, machids = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-
-def to_date(v):
-    if isinstance(v, str):
-        s = v.strip()
-        if len(s) >= 10 and s[4:5] == '-': return s[:10]
-        try: v = float(s)
-        except Exception: return None
-    try: v = float(v)
-    except Exception: return None
-    u = v*86400.0 if v < 100000 else (v if v < 1e11 else v/1000.0)
-    try: return datetime.datetime.utcfromtimestamp(u).strftime('%Y-%m-%d')
-    except Exception: return None
-
-totals = {}
-try:
-    for line in open(respfile, errors='replace'):
-        line = line.strip()
-        if not line: continue
-        try: d = json.loads(line)
-        except Exception: continue
-        for row in (d.get('per_day') or []):
-            dt = to_date(row.get('day'))
-            if not dt: continue
-            t = sum(float(row.get(k, 0) or 0) for k in ('gpu_earn','sto_earn','bwu_earn','bwd_earn'))
-            totals[dt] = totals.get(dt, 0.0) + t
-except FileNotFoundError:
-    pass
-
-if not totals:
-    print("[EARNINGS] Vast API returned no per_day data (check key / date format); keeping estimates")
-    sys.exit(0)
-
-# only append days whose total changed vs the last API-sourced value stored
-prev = {}
+# API-sourced, per-machine (src_ver 2) daily_earnings already stored for this host
+have = {}
 try:
     for line in open(jsonl, errors='replace'):
         try: e = json.loads(line)
         except Exception: continue
-        if e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api' and e.get('host') == host:
-            prev[e.get('date')] = float(e.get('total', 0) or 0)
+        if (e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api'
+                and e.get('host') == host and e.get('src_ver') == 2):
+            have[e.get('date')] = float(e.get('total', 0) or 0)
 except FileNotFoundError:
     pass
 
+today = datetime.datetime.utcnow().date()
+todo = []
+for i in range(days):
+    d = today - datetime.timedelta(days=i)
+    if i < 3 or d.strftime('%Y-%m-%d') not in have:   # last 3 days always; backfill the rest once
+        todo.append(d)
+todo.sort()
+
+def fetch_day(d, mid):
+    s = datetime.datetime(d.year, d.month, d.day, tzinfo=datetime.timezone.utc).timestamp()
+    url = (f"{base}/api/v0/users/me/machine-earnings/?owner=me"
+           f"&sday={s/86400.0:.4f}&eday={(s+86400)/86400.0:.4f}&machid={mid}&api_key={apikey}")
+    for attempt in range(3):
+        try:
+            out = subprocess.run(["curl", "-sL", "--max-time", "30", "-w", "__HTTP__%{http_code}", url],
+                                 capture_output=True, text=True, timeout=45).stdout
+        except Exception:
+            return None
+        code = out.rsplit("__HTTP__", 1)[-1].strip() if "__HTTP__" in out else ""
+        body = out.rsplit("__HTTP__", 1)[0]
+        if code == "200":
+            try: return json.loads(body)
+            except Exception: return None
+        if code == "429":
+            time.sleep((attempt + 1) * 3); continue
+        print(f"[EARNINGS] {d} machine {mid}: HTTP {code} — {body[:100]}")
+        return None
+    return None
+
+synced = {}
+first = True
+for d in todo:
+    ds = d.strftime('%Y-%m-%d')
+    tot, got = 0.0, False
+    for mid in sorted(machids):
+        if not first: time.sleep(3)          # rate-limit spacing (endpoint threshold ~2s)
+        first = False
+        data = fetch_day(d, mid)
+        if not data: continue
+        for m in (data.get('per_machine') or []):
+            if str(m.get('machine_id')) in machids:
+                tot += sum(float(m.get(k, 0) or 0) for k in ('gpu_earn','sto_earn','bwu_earn','bwd_earn'))
+                got = True
+    if got: synced[ds] = round(tot, 4)
+
 nowts = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-mids = machids.replace(' ', ',')
-written = 0
-with open(jsonl, 'a') as f:
-    for dt in sorted(totals):
-        newt = round(totals[dt], 4)
-        if abs(prev.get(dt, -1.0) - newt) < 0.005:  # unchanged since last sync
-            continue
-        f.write(json.dumps({"ts": nowts, "type": "daily_earnings", "host": host,
-                            "date": dt, "total": newt, "machine_id": mids, "source": "vast_api"}) + "\n")
-        written += 1
-tot = sum(totals.values())
-print(f"[EARNINGS] Vast API sync: {len(totals)} day(s), {written} updated, range total ${tot:.2f} (machids {mids})")
+mids = machids_s.replace(' ', ',')
+out_lines = []
+for ds, tot in synced.items():
+    if abs(have.get(ds, -1.0) - tot) < 0.005:   # unchanged since last sync
+        continue
+    out_lines.append(json.dumps({"ts": nowts, "type": "daily_earnings", "host": host,
+                                 "date": ds, "total": tot, "machine_id": mids,
+                                 "source": "vast_api", "src_ver": 2}))
+if out_lines:
+    with open(jsonl, 'a') as f:
+        f.write("\n".join(out_lines) + "\n")
+print(f"[EARNINGS] Vast API sync ({host} machids {mids}): {len(synced)} day(s), {len(out_lines)} updated, this-rig total ${sum(synced.values()):.2f}")
 PYEOF
-    rm -f "$allfile"
 }
 
 # Fetch per-GPU rental slot assignments from instances API.
