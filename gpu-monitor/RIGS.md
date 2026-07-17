@@ -63,6 +63,21 @@ don't have — so on Zappa2 the fan floor is inert and GPU 5 relies on the 400W
 power floor (safe, ~10% hashrate trim only when ≥80 °C). The other rigs have no
 override (their GPU 5 is a normal card).
 
+**Zappa3** — the Ryzen 5 9600X runs hot under load, so it uses the CPU-frequency
+throttle (`amd-pstate-epp`, `scaling_max_freq` writable). Its conf must carry:
+
+```bash
+CPU_FREQ_HOT_TEMP=80     # cap max CPU freq to 4.5GHz at/above 80°C
+CPU_FREQ_COOL_TEMP=60    # only restore full boost once genuinely idle-cool (≤60°C)
+```
+
+⚠️ `CPU_FREQ_COOL_TEMP` **must be below the temp a capped CPU runs at under load**
+(~67°C at 4.5GHz on this chip). An earlier value of 68 sat *above* that, so every
+cycle it restored full boost, spiked to ~89°C, re-capped, and flapped once a
+minute. At 60 it caps once and holds ~67°C for the whole workload, lifting only
+when the job actually ends. If Zappa3 ever flaps between capped/restored in
+`/var/log/gpu_monitor.log`, this is the knob — lower it, don't raise it.
+
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU
