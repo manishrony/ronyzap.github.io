@@ -1602,7 +1602,6 @@ def fetch_day(d, mid):
 nowts = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 mids = machids_s.replace(' ', ',')
 written = 0
-seen = 0.0
 first = True
 # Append+flush each day as it's fetched so a restart mid-backfill keeps its
 # progress (the batch-at-end approach lost everything on interruption).
@@ -1622,8 +1621,8 @@ try:
                     got = True
         if not got: continue
         tot = round(tot, 4)
-        seen += tot
         if abs(have.get(ds, -1.0) - tot) < 0.005:   # unchanged since last sync
+            have[ds] = tot
             continue
         f.write(json.dumps({"ts": nowts, "type": "daily_earnings", "host": host,
                             "date": ds, "total": tot, "machine_id": mids,
@@ -1633,7 +1632,11 @@ try:
         written += 1
 finally:
     f.close()
-print(f"[EARNINGS] Vast API sync ({host} machids {mids}): queried {len(todo)} day(s), wrote {written}, this-rig total ${seen:.2f}")
+# have now covers every day this host has ever synced (up to EARNINGS_SYNC_DAYS
+# back) — sum it for the real running total, not just the days queried THIS
+# run (which shrinks to ~3 days once the backfill is done, and printing that
+# partial sum as "total" made it look like revenue was swinging wildly).
+print(f"[EARNINGS] Vast API sync ({host} machids {mids}): queried {len(todo)} day(s), wrote {written}, {len(have)}-day running total ${sum(have.values()):.2f}")
 PYEOF
 }
 
