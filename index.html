@@ -82,6 +82,10 @@
   .ops p{ margin:0; color:var(--muted); font-size:.95rem; }
   .ops .lock{ color:var(--faint); font-size:.8rem; }
 
+  .pill{ display:inline-flex; align-items:center; gap:.4rem; font-size:.85rem; font-weight:600;
+    padding:.4rem .85rem; border-radius:999px; border:1px solid var(--border);
+    background:color-mix(in srgb, var(--accent) 8%, transparent); color:var(--fg); }
+
   /* Contact */
   .contact-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1.1rem; }
   .contact-card{ background:var(--card); border:1px solid var(--border); border-radius:16px; padding:1.5rem; }
@@ -104,7 +108,7 @@
     <nav class="nav-links">
       <a href="#what">What we do</a>
       <a href="#capabilities">Capabilities</a>
-      <a href="#company">Company</a>
+      <a href="#about">About</a>
       <a href="#contact">Contact</a>
       <a class="nav-cta" href="https://dash.ronyzap.com/combined">Operations&nbsp;↗</a>
     </nav>
@@ -197,13 +201,19 @@
     </div>
   </section>
 
-  <section id="company">
+  <section id="about">
     <div class="container">
       <div class="section-head">
-        <h2>Company</h2>
-        <p>RonyZap LLC is a privately held company in the computer industry, focused on
-           high-performance computing infrastructure. We operate our own hardware and
-           continuously invest in efficiency, reliability, and capacity.</p>
+        <h2>About us</h2>
+        <p>RonyZap LLC is a <strong style="color:var(--fg)">women-owned</strong>,
+           Pennsylvania-based company in the computer industry, founded in 2025. We
+           build and operate high-performance computing infrastructure — running our
+           own hardware and continuously investing in efficiency, reliability, and capacity.</p>
+      </div>
+      <div class="badges" style="display:flex;flex-wrap:wrap;gap:.6rem;margin-bottom:2rem;">
+        <span class="pill">👩‍💼 Women-owned</span>
+        <span class="pill">📍 Pennsylvania, USA</span>
+        <span class="pill">🗓️ Founded 2025</span>
       </div>
       <div class="ops">
         <div>
@@ -241,7 +251,7 @@
 
 <footer>
   <div class="container foot-row">
-    <div>© <span id="yr"></span> RonyZap LLC · Computer Industry</div>
+    <div>© <span id="yr"></span> RonyZap LLC · Women-owned · Pennsylvania, USA</div>
     <div class="foot-links">
       <a href="#what">What we do</a>
       <a href="#capabilities">Capabilities</a>
