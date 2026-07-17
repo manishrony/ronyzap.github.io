@@ -1331,9 +1331,22 @@ PYEOF
     eday=$(awk -v n="$now" 'BEGIN{printf "%.4f", (n+86400)/86400.0}')
     base="https://console.vast.ai"
     allfile=$(mktemp)
+    local first=1 code url attempt
     for mid in $machids; do
-        resp=$(curl -sf --max-time 30 \
-            "${base}/api/v0/users/me/machine-earnings?owner=me&sday=${sday}&eday=${eday}&machid=${mid}&api_key=${VASTAI_API_KEY}" 2>/dev/null)
+        (( first )) || sleep 3        # space calls: the endpoint is throttled (~2s threshold)
+        first=0
+        url="${base}/api/v0/users/me/machine-earnings?owner=me&sday=${sday}&eday=${eday}&machid=${mid}&api_key=${VASTAI_API_KEY}"
+        resp=""
+        for attempt in 1 2 3; do
+            resp=$(curl -s --max-time 30 -w '__HTTP__%{http_code}' "$url" 2>>"$LOG_FILE")
+            code="${resp##*__HTTP__}"; resp="${resp%__HTTP__*}"
+            if [[ "$code" == "200" ]]; then break; fi
+            if [[ "$code" == "429" ]]; then
+                log "[EARNINGS] machine $mid: 429 rate-limited (attempt $attempt); backing off"
+                sleep $(( attempt * 3 )); resp=""; continue
+            fi
+            log "[EARNINGS] machine $mid: HTTP $code — ${resp:0:160}"; resp=""; break
+        done
         [[ -n "$resp" ]] && printf '%s\n' "$resp" >> "$allfile"
     done
 
@@ -2187,9 +2200,11 @@ main() {
     log "Effective power cap : ${effective_power_limit}W (read back from nvidia-smi)"
     write_event "startup" "{\"power_limit\":\"$effective_power_limit\",\"temp_threshold\":$TEMP_THRESHOLD}"
 
-    # Sync past rental events from Vast.ai API (backfills revenue history)
+    # Sync past rental events from Vast.ai API (backfills revenue history).
+    # Earnings sync is left to the main loop (runs right after vastai_check
+    # populates the machine cache) so the rate-limited earnings endpoint isn't
+    # hit twice within seconds at startup.
     vastai_init_state
-    vastai_sync_earnings
     pdu_poll   # seed a PDU reading immediately so the dashboard isn't blank
 
     local last_price_check=0
