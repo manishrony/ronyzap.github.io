@@ -84,15 +84,19 @@
     </div>
   </div>
   <div class="flex items-center gap-3">
-    <a href="#c-power-row" class="text-xs text-slate-400 hover:text-white">⚡ Power</a>
-    <a href="/market" class="text-xs text-slate-400 hover:text-white">📈 Market</a>
-    <span class="text-slate-700">|</span>
     <!-- Rig status pills -->
     <div id="pills-container" class="flex items-center gap-3"></div>
     <span class="text-xs text-slate-500 font-mono"><span id="countdown">60</span>s</span>
     <button onclick="openSettings()" class="text-slate-400 hover:text-white text-lg">⚙</button>
   </div>
 </div>
+
+<!-- Primary navigation -->
+<nav class="px-6 py-2.5 border-b border-slate-800 flex items-center gap-2 text-sm bg-slate-900/40">
+  <a href="/combined" class="px-3.5 py-1.5 rounded-md bg-blue-600 text-white font-semibold">🏠 Dashboard</a>
+  <a href="/market"   class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">📈 Market</a>
+  <a href="#c-power-row" class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">⚡ Power &amp; Energy</a>
+</nav>
 
 <!-- ════════════════════ COMBINED VIEW ════════════════════════════ -->
 <div id="view-combined">
@@ -677,21 +681,27 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
   let total = 0;
 
-  // Deduplicate daily_earnings by date — guards against the same combined earnings
-  // being stored in multiple rig JSONL files (first-seen per date wins)
-  const deMap = new Map();
+  // Collapse daily_earnings to one value per (date, machine): newest ts wins
+  // (idempotent re-syncs), and API-sourced entries supersede any legacy/manual
+  // entry for the same date. Per-date total = sum across machines/rigs.
+  const deMap = new Map();      // "date|machine" -> newest event
+  const apiDates = new Set();   // dates that have a Vast-API entry
   allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
     const date = e.date || e.ts.slice(0, 10);
-    if (!deMap.has(date)) deMap.set(date, e);
+    const key = date + "|" + String(e.machine_id || "");
+    const prev = deMap.get(key);
+    if (!prev || e.ts > prev.ts) deMap.set(key, e);
+    if (e.source === "vast_api") apiDates.add(date);
   });
 
   const covered = new Set();
   for (const e of deMap.values()) {
-    const dayS = new Date(e.ts).getTime();
-    const dayE = dayS + 86400000;
-    if (dayE > pS && dayS < pE) {
+    const date = e.date || e.ts.slice(0, 10);
+    if (apiDates.has(date) && e.source !== "vast_api") continue; // don't mix legacy with API
+    const dayS = new Date(date + "T00:00:00Z").getTime();
+    if (dayS + 86400000 > pS && dayS < pE) {
       total += (e.total || 0);
-      if ((e.total || 0) > 0) covered.add(e.date || new Date(dayS).toISOString().slice(0, 10));
+      if ((e.total || 0) > 0) covered.add(date);
     }
   }
 
