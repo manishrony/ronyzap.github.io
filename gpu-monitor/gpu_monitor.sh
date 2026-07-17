@@ -364,7 +364,7 @@ thermal_adjust() {
         log "  WORKLOAD THROTTLE: workload cleared → restoring the automatic power curve"
         write_event "workload_throttle" "{\"state\":\"off\"}"
     fi
-    local idx name temp curlimit target
+    local idx name temp curlimit target changed=0
     while IFS=',' read -r idx name temp curlimit; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
         temp=$(echo "$temp" | xargs)
@@ -377,9 +377,13 @@ thermal_adjust() {
         fi
         if [[ "$target" =~ ^[0-9]+$ ]] && (( target != curlimit )); then
             nvidia-smi -i "$idx" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
-                && log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"
+                && { log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"; changed=1; }
         fi
     done < <(nvidia-smi --query-gpu=index,name,temperature.gpu,power.limit --format=csv,noheader,nounits 2>/dev/null)
+    # A cap moved (thermal step or workload throttle engaging/lifting) — refresh
+    # the dashboard's power snapshot now so it reflects reality within ~60s instead
+    # of waiting up to 5 min for the next scheduled snapshot.
+    (( changed )) && snapshot_gpu_status
 }
 
 # ── Per-GPU fan floor ─────────────────────────────────────────────────────────
