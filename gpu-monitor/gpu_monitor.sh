@@ -457,7 +457,7 @@ _profit_earned_daily_rate() {
     python3 - "$JSONL_FILE" "$(hostname)" <<'PYEOF' 2>/dev/null
 import sys, json, datetime
 jsonl, host = sys.argv[1], sys.argv[2]
-now = datetime.datetime.utcnow()
+now = datetime.datetime.now(datetime.timezone.utc)
 today = now.strftime('%Y-%m-%d')
 yesterday = (now - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
 by_date = {}   # date -> (newest ts seen, total)
@@ -1487,7 +1487,7 @@ for m in machines:
         'backfilled':      True,
         'image':           image,
         'workload_type':   workload_type,
-        'expire_date':     (datetime.datetime.utcnow() + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d'),
+        'expire_date':     (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d'),
     }
     with open(jsonl, 'a') as f:
         f.write(json.dumps(event) + '\n')

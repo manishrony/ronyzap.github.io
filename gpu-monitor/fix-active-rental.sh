@@ -150,7 +150,7 @@ for mid, info in correct.items():
         ev['image'] = info['image']
     expire_note = ""
     if not ev.get('expire_date'):
-        ev['expire_date'] = (datetime.datetime.utcnow() + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d')
+        ev['expire_date'] = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d')
         expire_note = f"  [added expire_date {ev['expire_date']}]"
     ev['patched'] = True
     lines[li] = json.dumps(ev)

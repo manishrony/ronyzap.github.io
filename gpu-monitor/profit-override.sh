@@ -36,11 +36,11 @@ case "${1:-status}" in
         if [[ -f "$JSONL_FILE" ]]; then
             echo ""
             echo "Earned-revenue estimate (what the throttle actually uses):"
-            python3 - "$JSONL_FILE" <<'PYEOF'
+            python3 - "$JSONL_FILE" <<'PYEOF' 2>/dev/null
 import sys, json, datetime, socket
 jsonl = sys.argv[1]
 host = socket.gethostname()
-now = datetime.datetime.utcnow()
+now = datetime.datetime.now(datetime.timezone.utc)
 today = now.strftime('%Y-%m-%d')
 yesterday = (now - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
 by_date = {}
