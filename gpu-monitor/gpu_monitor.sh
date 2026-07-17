@@ -122,29 +122,35 @@ TELEGRAM_CHAT_ID=""      # Auto-populated from /etc/gpu_monitor.conf
 VASTAI_API_KEY=""
 VASTAI_API="https://console.vast.ai/api/v1"
 VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
+# vastai_check caches the /machines/ response it successfully fetches each cycle
+# here; vastai_pricing reuses it instead of hitting /machines/ a second time in
+# the same cycle (Vast rate-limits the repeat call, which would leave pricing
+# with an empty machine list and silently do nothing).
+MACHINES_CACHE_FILE="/var/tmp/gpu_monitor_machines_cache.json"
 
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
 PRICE_FLOORS=(
-    "5090:31"
+    "5090:30"
     "5080:18"
     "4090:20"
     "4080:15"
     "3090:10"
     "3080:8"
 )
-# Asymmetric steps toward the (fee-adjusted) market median:
-#  - UP fast when we're underpriced (below median): grab the higher rate quickly
-#  - DOWN slow when overpriced (above median): give up rate reluctantly
-PRICE_ADJUST_UP_MIN=2    # cents to RAISE per cycle when below median (min)
-PRICE_ADJUST_UP_MAX=3    # cents to RAISE per cycle when below median (max)
-PRICE_ADJUST_DOWN=1      # cents to LOWER per cycle when above median (fixed)
+# Symmetric small steps toward the (fee-adjusted) market median: move 1-2¢ per
+# cycle in whichever direction closes the gap, so price tracks the market without
+# lurching.
+PRICE_ADJUST_UP_MIN=1    # cents to RAISE per cycle when below target (min)
+PRICE_ADJUST_UP_MAX=2    # cents to RAISE per cycle when below target (max)
+PRICE_ADJUST_DOWN_MIN=1  # cents to LOWER per cycle when above target (min)
+PRICE_ADJUST_DOWN_MAX=2  # cents to LOWER per cycle when above target (max)
 MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 
 # Vast.ai's platform fee sits between the host's price and what renters see, so
 # the median LISTING price is above the real competitive target. Multiply the
-# market median by this factor (≈15% off) to get the price we aim for.
-MARKET_PRICE_DISCOUNT=0.85
+# market median by this factor (deduct 10%) to get the price we aim for.
+MARKET_PRICE_DISCOUNT=0.90
 
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
@@ -1328,6 +1334,9 @@ PYEOF
         log "VAST.AI: Parse error (skipping this cycle — see reason above)"
         return
     fi
+    # Response parsed cleanly — cache it so vastai_pricing (later this cycle) can
+    # reuse it instead of re-fetching /machines/ and getting rate-limited.
+    printf '%s' "$response" > "$MACHINES_CACHE_FILE" 2>/dev/null || true
 
     local last_state=""
     [[ -f "$VASTAI_LAST_STATE_FILE" ]] && last_state=$(cat "$VASTAI_LAST_STATE_FILE")
@@ -1613,8 +1622,19 @@ vastai_pricing() {
 
     log "--- Pricing Check ---"
 
-    local machines_json
-    machines_json=$(vastai_get_machines) || { log "PRICING: Could not fetch machines"; return; }
+    # Reuse the machine list vastai_check fetched at the top of this cycle (avoids
+    # a second /machines/ hit that Vast rate-limits, which would leave pricing with
+    # an empty list and silently skip everything). Fall back to a fresh fetch only
+    # if the cache is missing or doesn't contain a machines array.
+    local machines_json=""
+    if [[ -f "$MACHINES_CACHE_FILE" ]] && grep -q '"machines"' "$MACHINES_CACHE_FILE" 2>/dev/null; then
+        machines_json=$(cat "$MACHINES_CACHE_FILE" 2>/dev/null)
+        log "  Using machine list cached by vastai_check this cycle"
+    fi
+    if ! printf '%s' "$machines_json" | grep -q '"machines"'; then
+        log "  No usable cache — fetching /machines/ directly"
+        machines_json=$(vastai_get_machines) || { log "PRICING: Could not fetch machines"; return; }
+    fi
 
     # Write machine list to temp file; reading from a file (not a pipe) keeps the
     # while loop in the current shell — functions, write_event, and variable
@@ -1778,9 +1798,10 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
         # Asymmetric step: UP 2-3¢ when below the fee-adjusted median, DOWN 1¢
         # when above it.
         local up_cents=$(( RANDOM % (PRICE_ADJUST_UP_MAX - PRICE_ADJUST_UP_MIN + 1) + PRICE_ADJUST_UP_MIN ))
+        local down_cents=$(( RANDOM % (PRICE_ADJUST_DOWN_MAX - PRICE_ADJUST_DOWN_MIN + 1) + PRICE_ADJUST_DOWN_MIN ))
         local adjust_up adjust_down
         adjust_up=$(printf "%.4f" "$(echo "scale=4; $up_cents / 100" | bc)")
-        adjust_down=$(printf "%.4f" "$(echo "scale=4; $PRICE_ADJUST_DOWN / 100" | bc)")
+        adjust_down=$(printf "%.4f" "$(echo "scale=4; $down_cents / 100" | bc)")
 
         local new_price direction
         if (( $(echo "${cur_bid:-0} < 0.01" | bc -l) )); then
@@ -1791,7 +1812,7 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
             direction="↑ (below floor \$$floor)"
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
-            direction="↓ ${PRICE_ADJUST_DOWN}¢ (above median)"
+            direction="↓ ${down_cents}¢ (above median)"
         elif (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
             direction="↑ ${up_cents}¢ (below median)"
