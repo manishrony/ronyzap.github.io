@@ -1622,28 +1622,33 @@ vastai_pricing() {
 
     log "--- Pricing Check ---"
 
-    # Reuse the machine list vastai_check fetched at the top of this cycle (avoids
-    # a second /machines/ hit that Vast rate-limits, which would leave pricing with
-    # an empty list and silently skip everything). Fall back to a fresh fetch only
-    # if the cache is missing or doesn't contain a machines array.
-    local machines_json=""
+    # Feed the machine list to the parser as a FILE, never through a shell
+    # variable + `echo … | python3 -c`. That old path did not reliably deliver the
+    # (large) /machines/ JSON to the parser — pricing saw an empty list and
+    # silently skipped everything, even though the same bytes parse fine when read
+    # from a file (which is how vastai_check does it). Prefer the cache vastai_check
+    # wrote this cycle (avoids a second, rate-limited /machines/ hit); else fetch
+    # fresh into a temp file. Either way python reads the file directly.
+    local src_file="" fetched_tmp=""
     if [[ -f "$MACHINES_CACHE_FILE" ]] && grep -q '"machines"' "$MACHINES_CACHE_FILE" 2>/dev/null; then
-        machines_json=$(cat "$MACHINES_CACHE_FILE" 2>/dev/null)
+        src_file="$MACHINES_CACHE_FILE"
         log "  Using machine list cached by vastai_check this cycle"
-    fi
-    if ! printf '%s' "$machines_json" | grep -q '"machines"'; then
+    else
         log "  No usable cache — fetching /machines/ directly"
-        machines_json=$(vastai_get_machines) || { log "PRICING: Could not fetch machines"; return; }
+        fetched_tmp=$(mktemp)
+        vastai_get_machines > "$fetched_tmp" 2>/dev/null
+        if ! grep -q '"machines"' "$fetched_tmp" 2>/dev/null; then
+            log "PRICING: Could not fetch machines"; rm -f "$fetched_tmp"; return
+        fi
+        src_file="$fetched_tmp"
     fi
 
-    # Write machine list to temp file; reading from a file (not a pipe) keeps the
-    # while loop in the current shell — functions, write_event, and variable
-    # assignments all work correctly without subshell interference.
     local tmpfile
     tmpfile=$(mktemp)
-    echo "$machines_json" | python3 -c "
+    python3 - "$src_file" <<'PYEOF' 2>> "$LOG_FILE" > "$tmpfile"
 import sys, json, socket
-data = json.load(sys.stdin)
+with open(sys.argv[1], encoding='utf-8', errors='replace') as f:
+    data = json.load(f)
 hn = socket.gethostname()
 for m in data.get('machines', []):
     if m.get('hostname', '') != hn:
@@ -1676,8 +1681,9 @@ for m in data.get('machines', []):
         free_count = sum(1 for c in occ_chars[:num_gpus] if c not in ('D', 'R'))
     else:
         free_count = 0 if rented else num_gpus
-    print(f'{mid}|{rented}|{listed}|{gpu_name}|{cur_bid}|{num_gpus}|{free_count}')
-" 2>> "$LOG_FILE" > "$tmpfile"
+    print('%s|%s|%s|%s|%s|%s|%s' % (mid, rented, listed, gpu_name, cur_bid, num_gpus, free_count))
+PYEOF
+    [[ -n "$fetched_tmp" ]] && rm -f "$fetched_tmp"
 
     while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus free_count; do
 
