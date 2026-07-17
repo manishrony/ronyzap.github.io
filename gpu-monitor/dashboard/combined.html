@@ -84,6 +84,9 @@
     </div>
   </div>
   <div class="flex items-center gap-3">
+    <a href="#c-power-row" class="text-xs text-slate-400 hover:text-white">⚡ Power</a>
+    <a href="/market" class="text-xs text-slate-400 hover:text-white">📈 Market</a>
+    <span class="text-slate-700">|</span>
     <!-- Rig status pills -->
     <div id="pills-container" class="flex items-center gap-3"></div>
     <span class="text-xs text-slate-500 font-mono"><span id="countdown">60</span>s</span>
@@ -142,6 +145,20 @@
         <p class="text-xs text-slate-500 mb-1">Lifetime Energy</p>
         <p class="text-2xl font-bold text-slate-200" id="c-power-life">—</p>
         <p class="text-xs text-slate-500 mt-1" id="c-power-life-sub"></p>
+      </div>
+    </div>
+    <div class="card p-4 mt-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">Daily rack energy &amp; cost (metered)</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-slate-500 text-xs border-b border-slate-800">
+            <th class="text-left py-2 pr-4">Day (UTC)</th>
+            <th class="text-right py-2 pr-4">Energy</th>
+            <th class="text-right py-2 pr-4">Avg Power</th>
+            <th class="text-right py-2">Cost</th>
+          </tr></thead>
+          <tbody id="c-power-daily"></tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -1010,6 +1027,29 @@ function renderPower(allEvs, revToday, rev30d) {
 
   document.getElementById("c-power-life").textContent = lifeKwh.toLocaleString(undefined,{maximumFractionDigits:0}) + " kWh";
   document.getElementById("c-power-life-sub").textContent = "≈ " + fmtUSD(lifeKwh * rate) + " electricity to date";
+
+  // Daily consolidated energy/cost (metered days only; baseline is lifetime-only).
+  const kwhByDay = {}, wSumByDay = {}, nByDay = {};
+  for (const e of pdu) {
+    const d = String(e.ts).slice(0, 10);
+    kwhByDay[d]  = (kwhByDay[d]  || 0) + (Number(e.kwh_interval) || 0);
+    wSumByDay[d] = (wSumByDay[d] || 0) + (Number(e.watts) || 0);
+    nByDay[d]    = (nByDay[d]    || 0) + 1;
+  }
+  const days = Object.keys(kwhByDay).sort().reverse().slice(0, 14);
+  const tbody = document.getElementById("c-power-daily");
+  if (tbody) {
+    tbody.innerHTML = days.map(d => {
+      const kwh = kwhByDay[d];
+      const avgW = Math.round(wSumByDay[d] / Math.max(1, nByDay[d]));
+      return `<tr class="hover:bg-slate-800/30">
+        <td class="py-1.5 pr-4 text-slate-300">${d}</td>
+        <td class="py-1.5 pr-4 text-right text-slate-200">${kwh.toFixed(1)} kWh</td>
+        <td class="py-1.5 pr-4 text-right text-slate-400">${avgW.toLocaleString()} W</td>
+        <td class="py-1.5 text-right text-orange-400">${fmtUSD(kwh * rate)}</td>
+      </tr>`;
+    }).join("") || `<tr><td class="py-2 text-slate-600" colspan="4">No metered days yet.</td></tr>`;
+  }
 }
 
 function renderCombined() {
