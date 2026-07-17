@@ -57,7 +57,19 @@
 const DEFAULT_RIGS = [
   { name:"Zappa1", url:"" },
   { name:"Zappa2", url:"peer" },
+  { name:"Zappa3", url:"peer/1" },
 ];
+// Ask the server for the real rig list (self + every configured peer) so new
+// rigs show up automatically — same source the combined dashboard uses.
+async function loadRigsFromServer() {
+  try {
+    const r = await fetch("/api/config?" + Date.now(), { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return null;
+    const cfg = await r.json();
+    if (!Array.isArray(cfg.rigs) || !cfg.rigs.length) return null;
+    return cfg.rigs;
+  } catch { return null; }
+}
 function loadConfig() {
   try { return JSON.parse(localStorage.getItem("rig_config")) || DEFAULT_RIGS; }
   catch { return DEFAULT_RIGS; }
@@ -77,8 +89,9 @@ function getSlot(ts) {
 // ── Fetch ─────────────────────────────────────────────────────────────
 async function fetchRig(idx) {
   const rig = RIGS[idx];
-  const base = (!rig.url || rig.url === "peer") ? window.location.origin : rig.url;
-  const path = (rig.url === "peer") ? "/api/peer" : "/api/data";
+  // Self = /api/data; peers are proxied server-side via /api/peer, /api/peer/1, …
+  const base = window.location.origin;
+  const path = rig.url ? "/api/" + rig.url : "/api/data";
   try {
     const r = await fetch(base + path + "?" + Date.now(), {signal: AbortSignal.timeout(8000)});
     if (!r.ok) throw new Error();
@@ -389,7 +402,13 @@ setInterval(() => {
   if (countdown <= 0) { countdown = 300; fetchAll(); }
 }, 1000);
 
-fetchAll();
+// Load the real rig list from the server (includes Zappa3 and any future peers),
+// then fetch. Falls back to DEFAULT_RIGS if /api/config is unreachable.
+(async () => {
+  const serverRigs = await loadRigsFromServer();
+  if (serverRigs) RIGS = serverRigs;
+  fetchAll();
+})();
 </script>
 </body>
 </html>
