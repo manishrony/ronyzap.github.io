@@ -214,6 +214,19 @@ PRICE_ADJUST_DOWN_MIN=1  # cents to LOWER per cycle when above target (min)
 PRICE_ADJUST_DOWN_MAX=2  # cents to LOWER per cycle when above target (max)
 MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
 
+# Best-effort "no later than" date for the CURRENT listing window (now +
+# MAX_RENTAL_DAYS), used to show a contract-end estimate on the dashboard.
+# This is Vast's max LISTING duration, not a confirmed real contract end date
+# (Vast doesn't expose the renter's actual commitment to the host API) — it's
+# an upper bound, and a D-type/bid rental can end earlier whenever the renter
+# releases it. Shared by the rental_start writers and the pricing loop so
+# there's one date-math implementation, not three.
+estimated_expire_date() {
+    date -d "+${MAX_RENTAL_DAYS} days" '+%Y-%m-%d' 2>/dev/null \
+        || date -v "+${MAX_RENTAL_DAYS}d" '+%Y-%m-%d' 2>/dev/null \
+        || echo "in ${MAX_RENTAL_DAYS} days"
+}
+
 # Vast.ai's platform fee sits between the host's price and what renters see, so
 # the median LISTING price is above the real competitive target. Multiply the
 # market median by this factor (deduct 10%) to get the price we aim for.
@@ -1228,10 +1241,14 @@ vastai_init_state() {
     slots_tmpfile=$(mktemp)
     vastai_fetch_gpu_slots > "$slots_tmpfile"
 
-    python3 - "$tmpfile" "$JSONL_FILE" "$slots_tmpfile" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
+    python3 - "$tmpfile" "$JSONL_FILE" "$slots_tmpfile" "$MAX_RENTAL_DAYS" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
 import sys, json, datetime, socket, glob, re
 
 tmpf, jsonl, slots_f = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    max_rental_days = int(sys.argv[4])
+except Exception:
+    max_rental_days = 5
 
 def get_instance_image(instance_id):
     if not instance_id:
@@ -1382,6 +1399,7 @@ for m in machines:
         'backfilled':      True,
         'image':           image,
         'workload_type':   workload_type,
+        'expire_date':     (datetime.datetime.utcnow() + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d'),
     }
     with open(jsonl, 'a') as f:
         f.write(json.dumps(event) + '\n')
@@ -1728,14 +1746,15 @@ PYEOF
                 IFS='|' read -r _ old_rented _ old_cost _ old_rented_count <<< "$old_line"
                 if [[ "$old_rented" != "$rented" ]]; then
                     if [[ "$rented" == "True" ]]; then
-                        local image workload_type
+                        local image workload_type expire_date
                         image=$(get_instance_image "$real_iid")
                         workload_type=$(classify_workload "$image")
-                        log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown})"
+                        expire_date=$(estimated_expire_date)
+                        log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown}, est. end: $expire_date)"
                         tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
 Machine: <b>$mid</b> | GPUs rented: $rented_gpus
 Rate: <b>$cost</b>"
-                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\"}"
+                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\",\"expire_date\":\"$expire_date\"}"
                     else
                         # Rental just ended — current rented_count is 0, so report
                         # what WAS rented (from the prior state) for a consistent
@@ -2256,9 +2275,7 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
         fi
 
         local expire_date
-        expire_date=$(date -d "+${MAX_RENTAL_DAYS} days" '+%Y-%m-%d' 2>/dev/null \
-            || date -v "+${MAX_RENTAL_DAYS}d" '+%Y-%m-%d' 2>/dev/null \
-            || echo "in ${MAX_RENTAL_DAYS} days")
+        expire_date=$(estimated_expire_date)
 
         log "  Machine $mid: \$$cur_bid → \$$new_price/hr $direction (max rental: $expire_date)"
 

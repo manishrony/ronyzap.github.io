@@ -487,7 +487,8 @@ function renderOverview() {
   const rateEl = document.getElementById("stat-rental-rate");
   const endEl = document.getElementById("stat-rental-end");
   if (rateEl) rateEl.textContent = latestPC?.new_price ? "Listed: $" + Number(latestPC.new_price).toFixed(4) + "/hr" : "";
-  if (endEl) endEl.textContent = latestPC?.expire_date ? "Ends: " + latestPC.expire_date : "";
+  const rentEndDate = isRented ? (lastRentStart.expire_date || latestPC?.expire_date) : null;
+  if (endEl) endEl.textContent = rentEndDate ? "Est. end (max listing window): " + rentEndDate : "";
 
   const last = lastGPUStatus();
   if (last && last.gpus && last.gpus.length) {

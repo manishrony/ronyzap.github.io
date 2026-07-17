@@ -2,8 +2,11 @@
 # One-off: correct the CURRENTLY-OPEN rental_start entry(ies) in the JSONL for
 # machines on this host, using live Vast.ai API data. Fixes entries written
 # before the rented-count / actual-rate fixes — i.e. entries that show the whole
-# machine ("8x RTX 5090") instead of the rented count ("4x"), or a zero/stale
-# rate that makes the dashboard show $0 revenue for an active rental.
+# machine ("8x RTX 5090") instead of the rented count ("4x"), a zero/stale
+# rate that makes the dashboard show $0 revenue for an active rental, or a
+# missing expire_date (added later — vastai_init_state() only backfills
+# expire_date onto NEW rental_start events, so a rental that was already open
+# before that fix shipped needs this to pick it up).
 #
 # It only touches the single open rental_start per machine (the current session);
 # closed/historical sessions are left as-is. The JSONL is backed up first.
@@ -19,6 +22,7 @@ set -euo pipefail
 JSONL_FILE="${GPU_DATA:-/var/log/gpu_monitor_data.jsonl}"
 CONF="/etc/gpu_monitor.conf"
 VASTAI_API="https://console.vast.ai/api/v1"
+MAX_RENTAL_DAYS="${MAX_RENTAL_DAYS:-5}"   # matches gpu_monitor.sh's default; overridden if the conf sets it
 
 # shellcheck disable=SC1090
 [[ -f "$CONF" ]] && source "$CONF"
@@ -46,10 +50,14 @@ backup="${JSONL_FILE}.bak.$(date +%s)"
 cp "$JSONL_FILE" "$backup"
 echo "[*] Backed up JSONL to $backup"
 
-python3 - "$JSONL_FILE" "$machines_json" "$instances_json" <<'PYEOF'
-import sys, json, socket, glob, re
+python3 - "$JSONL_FILE" "$machines_json" "$instances_json" "$MAX_RENTAL_DAYS" <<'PYEOF'
+import sys, json, socket, glob, re, datetime
 
 jsonl, machines_raw, instances_raw = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    max_rental_days = int(sys.argv[4])
+except Exception:
+    max_rental_days = 5
 hn = socket.gethostname()
 
 machines = json.loads(machines_raw).get('machines', [])
@@ -140,9 +148,13 @@ for mid, info in correct.items():
     if not ev.get('workload_type') or ev.get('workload_type') == 'unknown':
         ev['workload_type'] = info['workload']
         ev['image'] = info['image']
+    expire_note = ""
+    if not ev.get('expire_date'):
+        ev['expire_date'] = (datetime.datetime.utcnow() + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d')
+        expire_note = f"  [added expire_date {ev['expire_date']}]"
     ev['patched'] = True
     lines[li] = json.dumps(ev)
-    print(f"[FIX] Machine {mid}: {old_gpus} @ {old_rate}  ->  {new_gpus} @ {new_rate}  ({ev.get('workload_type')})")
+    print(f"[FIX] Machine {mid}: {old_gpus} @ {old_rate}  ->  {new_gpus} @ {new_rate}  ({ev.get('workload_type')}){expire_note}")
     patched += 1
 
 if patched:

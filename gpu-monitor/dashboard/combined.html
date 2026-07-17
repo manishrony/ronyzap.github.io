@@ -1211,7 +1211,8 @@ function renderRigCard(idx, d) {
       rentalBar.classList.remove("hidden");
       document.getElementById("rc"+idx+"-rental-rate").textContent = "● Rented @ " + (lastRent.rate || "—");
       const lastPc = [...(d.events||[])].filter(e=>e.type==="price_change").pop();
-      document.getElementById("rc"+idx+"-rental-end").textContent = lastPc?.expire_date ? "ends " + lastPc.expire_date : "";
+      const rcExpDate = lastRent.expire_date || lastPc?.expire_date;
+      document.getElementById("rc"+idx+"-rental-end").textContent = rcExpDate ? "ends ~" + rcExpDate : "";
     } else {
       rentalBar.classList.add("hidden");
     }
@@ -1247,8 +1248,8 @@ function renderRig(idx) {
     const lastPriceEv = [...events].filter(e=>e.type==="price_change").pop();
     if (isRented) {
       document.getElementById("r-rental-rate").textContent = lastRent.rate || "";
-      const expDate = lastPriceEv?.expire_date;
-      document.getElementById("r-rental-end").textContent = expDate ? "Contract ends: "+expDate : "";
+      const expDate = lastRent.expire_date || lastPriceEv?.expire_date;
+      document.getElementById("r-rental-end").textContent = expDate ? "Est. contract end (max listing window): "+expDate : "";
     } else {
       document.getElementById("r-rental-rate").textContent = "";
       document.getElementById("r-rental-end").textContent = "";
