@@ -1571,6 +1571,15 @@ for m in machines:
         # almost exactly — this is exactly the case that used to backfill a
         # stale/wrong rate from the listed price below.
         cur_bid = earn_hour
+    elif rented:
+        # Weakest fallback: no /instances/ match AND no earn_hour data yet.
+        # listed_gpu_cost/min_bid_price are PER-GPU (Vast's console labels
+        # them "$/GPU") — multiply by the actually-rented GPU count (from
+        # gpu_occupancy; num_gpus if missing) so this is a correct TOTAL,
+        # not an understated per-GPU rate on a multi-GPU machine.
+        occ_chars = (m.get('gpu_occupancy', '') or '').split()
+        occ_count = sum(1 for c in occ_chars if c in ('D', 'R')) or int(num_gpus or 1)
+        cur_bid = cur_bid * occ_count
 
     if not mid or not rented:
         continue
@@ -1956,7 +1965,20 @@ for m in data.get('machines', []):
         # to the listed/advertised price (which may be for a different,
         # future rental entirely).
         cost_val = earn_hour
+    elif rented:
+        # Weakest fallback: no /instances/ match AND no earn_hour data yet
+        # (e.g. a rental in its very first moments). listed_gpu_cost/
+        # min_bid_price are PER-GPU prices (Vast's own console labels them
+        # "$/GPU") — multiply by the actually-rented GPU count (from
+        # gpu_occupancy; num_gpus if that string is missing) so this is a
+        # correct TOTAL, not an understated per-GPU rate on a multi-GPU machine.
+        occ_chars = (m.get('gpu_occupancy', '') or '').split()
+        occ_count = sum(1 for c in occ_chars if c in ('D', 'R')) or int(num_gpus or 1)
+        cost_val = per_gpu_price * occ_count
     else:
+        # Not rented — informational only (nothing is being earned), so the
+        # per-GPU listed price is left as-is rather than multiplied by the
+        # full machine's GPU count.
         cost_val = per_gpu_price
     # Field 3 keeps the TOTAL gpu count (num_gpus) — the per-GPU slot renderer
     # needs it to draw every physical slot. Field 6 is how many are actually

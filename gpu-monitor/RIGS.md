@@ -130,6 +130,17 @@ If you ever want to check for other undocumented `/machines/` fields we
 aren't using yet, `sudo dump-machine-json` (see below) dumps the full raw
 response.
 
+**Units, since this is an easy place to get wrong**: `earn_hour`/`earn_day`
+are confirmed to already be MACHINE TOTALS (not per-GPU) — the
+`daily_earnings` cross-check above ($0.191/hr, itself a confirmed machine
+total) matched `earn_hour` directly with no ×/÷ needed. `listed_gpu_cost`/
+`min_bid_price`, however, genuinely ARE per-GPU (Vast's own console labels
+them "$/GPU") — these only surface as the *weakest* fallback tier now (no
+`/instances/` match AND no `earn_hour` data yet, e.g. a rental in its very
+first moments), and that tier multiplies by the actually-rented GPU count
+(from `gpu_occupancy`) before treating it as a total, so a 2-GPU machine
+falling all the way back to this tier doesn't understate its rate by half.
+
 To temporarily force a specific cap (e.g. a renter's workload needs full
 power despite a low listed rate, or you want to force savings on a
 currently-good rental), use the `profit-override` CLI helper on that rig:
