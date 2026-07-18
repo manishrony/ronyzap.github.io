@@ -104,11 +104,29 @@ for m in machines:
         total += float(i.get('dph_total', i.get('dph_base', 0)) or 0)
         if not iid:
             iid = str(i.get('id', ''))
-    print(f"[LIVE] Machine {mid} ({gpu_name}): {count} GPU(s) rented, ${total:.3f}/hr total")
+
+    fallback_note = ""
+    if (count <= 0 or total <= 0):
+        # No /instances/ match at all — typical for a Dedicated (D-type)
+        # background contract, invisible to that endpoint entirely.
+        # /machines/'s own earn_hour is a real, live, per-machine rate;
+        # confirmed 2026-07-18 (machine 143953) to match the account
+        # console's actual "Avg earnings" almost exactly — use it, and
+        # count rented GPUs from gpu_occupancy ('D'/'R' = rented) instead
+        # of the (empty, for this case) instance list.
+        earn_hour = float(m.get('earn_hour') or 0)
+        occ_chars = (m.get('gpu_occupancy', '') or '').split()
+        occ_count = sum(1 for c in occ_chars if c in ('D', 'R'))
+        if earn_hour > 0 and occ_count > 0:
+            count, total = occ_count, earn_hour
+            fallback_note = "  [from /machines/ earn_hour + gpu_occupancy — no /instances/ match]"
+
+    print(f"[LIVE] Machine {mid} ({gpu_name}): {count} GPU(s) rented, ${total:.3f}/hr total{fallback_note}")
     if count > 0 and total > 0:
         img = get_image(iid)
         correct[mid] = {'count': count, 'rate': total, 'gpu_name': gpu_name,
-                        'iid': iid, 'image': img, 'workload': classify_workload(img)}
+                        'iid': iid, 'image': img, 'workload': classify_workload(img),
+                        'end_date': m.get('end_date')}
 
 if not correct:
     print("[FIX] No active rentals with a live rate on this host — nothing to patch.")
@@ -149,8 +167,23 @@ for mid, info in correct.items():
         ev['workload_type'] = info['workload']
         ev['image'] = info['image']
     expire_note = ""
+    # Prefer /machines/'s own real end_date (confirmed 2026-07-18, machine
+    # 143953, to match the account console's "Contract end" exactly) over
+    # both the existing estimated value and the max_rental_days guess.
+    real_end = info.get('end_date')
+    if real_end and ev.get('expire_date_source') != 'vast_api':
+        try:
+            new_expire = datetime.datetime.fromtimestamp(float(real_end), tz=datetime.timezone.utc).strftime('%Y-%m-%d')
+            old_expire = ev.get('expire_date')
+            ev['expire_date'] = new_expire
+            ev['expire_date_source'] = 'vast_api'
+            if old_expire != new_expire:
+                expire_note = f"  [expire_date {old_expire or '(none)'} -> {new_expire}, from Vast's real end_date]"
+        except Exception:
+            pass
     if not ev.get('expire_date'):
         ev['expire_date'] = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d')
+        ev['expire_date_source'] = 'estimated'
         expire_note = f"  [added expire_date {ev['expire_date']}]"
     ev['patched'] = True
     lines[li] = json.dumps(ev)

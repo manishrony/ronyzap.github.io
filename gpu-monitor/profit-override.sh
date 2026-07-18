@@ -31,7 +31,12 @@ case "${1:-status}" in
         if [[ -f "$STATE_FILE" ]]; then
             echo ""
             echo "Live rental state:"
-            awk -F'|' '{printf "  machine %s | %s | %s | rented: %s | matched live instance: %s\n", $1, $3, $4, $2, ($6+0>0)?"yes":"no (listing-price fallback, ignored by the throttle)"}' "$STATE_FILE"
+            awk -F'|' '{
+                if ($6+0>0)        src="yes, matched live instance";
+                else if ($7+0>0)   src="no live instance match, but using live earn_day rate ($" $7/24 "/hr, reliable)";
+                else               src="no (listing-price fallback, unreliable)";
+                printf "  machine %s | %s | %s | rented: %s | rate source: %s\n", $1, $3, $4, $2, src
+            }' "$STATE_FILE"
         fi
         if [[ -f "$JSONL_FILE" ]]; then
             echo ""

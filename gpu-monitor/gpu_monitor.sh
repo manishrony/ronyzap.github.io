@@ -260,6 +260,19 @@ estimated_expire_date() {
         || echo "in ${MAX_RENTAL_DAYS} days"
 }
 
+# Converts a Unix epoch (int or float string) to YYYY-MM-DD (UTC). Used for
+# /machines/'s own end_date field — Vast's REAL contract-end timestamp
+# (confirmed 2026-07-18, machine 143953: end_date matched the account
+# console's "Contract end" exactly) — preferred over estimated_expire_date()'s
+# guess whenever present. Echoes nothing and returns non-zero on bad input.
+epoch_to_date() {
+    local epoch="$1" epoch_int
+    [[ "$epoch" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+    epoch_int=$(printf '%.0f' "$epoch" 2>/dev/null) || return 1
+    date -u -d "@${epoch_int}" '+%Y-%m-%d' 2>/dev/null \
+        || date -u -r "$epoch_int" '+%Y-%m-%d' 2>/dev/null
+}
+
 # Vast.ai's platform fee sits between the host's price and what renters see, so
 # the median LISTING price is above the real competitive target. Multiply the
 # market median by this factor (deduct 10%) to get the price we aim for.
@@ -577,7 +590,7 @@ PYEOF
 _profit_live_daily_rate() {
     [[ -f "$VASTAI_LAST_STATE_FILE" ]] || return 1
     local rented cost rate total=0 any=0 rented_count
-    while IFS='|' read -r _ rented _ cost _ rented_count; do
+    while IFS='|' read -r _ rented _ cost _ rented_count _ _; do
         [[ "$rented" == "True" ]] || continue
         # rented_count==0 means vastai_check() found no matching /instances/
         # data for this machine (typical for a D-type background contract) and
@@ -586,7 +599,10 @@ _profit_live_daily_rate() {
         # That fallback can be wildly off in either direction (frozen/stale
         # once a machine auto-unlists while fully rented) — not trustworthy
         # enough to drive a power-limit decision, so skip it rather than
-        # throttle (or fail to throttle) on bad data.
+        # throttle (or fail to throttle) on bad data. (This is now the
+        # weakest of three signals — see _profit_live_earn_rate() below,
+        # which vastai_check() populates from /machines/'s own earn_hour even
+        # in exactly this rented_count==0 case.)
         [[ "$rented_count" =~ ^[1-9][0-9]*$ ]] || continue
         any=1
         rate=$(echo "$cost" | tr -dc '0-9.')
@@ -596,9 +612,32 @@ _profit_live_daily_rate() {
     echo "$total * 24" | bc -l
 }
 
-# Best available $/day estimate: earned revenue first, live rate as fallback.
+# Live per-machine earn_day from /machines/ itself (state file field 7) —
+# Vast's own real-time $/day figure, confirmed 2026-07-18 (machine 143953) to
+# match the account console's actual "Avg earnings" almost exactly (0.19/hr,
+# 3.92/day) — including for a Dedicated (D-type) contract that has no
+# /instances/ visibility at all. This is the PRIMARY signal: unlike
+# _profit_earned_daily_rate() (yesterday's completed day only) it updates
+# every cycle, and unlike _profit_live_daily_rate() it isn't blind to D-type
+# contracts. Sums across every currently-rented machine on this host.
+_profit_live_earn_rate() {
+    [[ -f "$VASTAI_LAST_STATE_FILE" ]] || return 1
+    local rented earn_day total=0 any=0
+    while IFS='|' read -r _ rented _ _ _ _ earn_day _; do
+        [[ "$rented" == "True" ]] || continue
+        [[ "$earn_day" =~ ^[0-9]+(\.[0-9]+)?$ ]] || continue
+        (( $(echo "$earn_day > 0" | bc -l) )) || continue
+        any=1
+        total=$(echo "$total + $earn_day" | bc -l)
+    done < "$VASTAI_LAST_STATE_FILE"
+    (( any )) || return 1
+    echo "$total"
+}
+
+# Best available $/day estimate: live per-machine earn_day first (see above),
+# then yesterday's actual earned revenue, then the weakest live-rate fallback.
 _profit_effective_daily_rate() {
-    _profit_earned_daily_rate || _profit_live_daily_rate
+    _profit_live_earn_rate || _profit_earned_daily_rate || _profit_live_daily_rate
 }
 
 # Echoes the profit-throttle wattage cap for a given daily-$ rate, or nothing
@@ -1515,6 +1554,7 @@ for m in machines:
     gpu_name = m.get('gpu_name', 'unknown')
     num_gpus = m.get('num_gpus', 0)
     cur_bid  = float(m.get('listed_gpu_cost') or m.get('min_bid_price', m.get('min_bid', 0)) or 0)
+    earn_hour = float(m.get('earn_hour') or 0)
 
     # Prefer the actual total $/hr being earned (sum of rented instances' real
     # dph_total) over the per-GPU listed price — otherwise a partial rental
@@ -1523,6 +1563,14 @@ for m in machines:
     rented_slots = [s for s in slots_by_machine.get(mid, {}).values() if s.get('instance_id')]
     if rented_slots:
         cur_bid = sum(float(s.get('rate', 0) or 0) for s in rented_slots)
+    elif earn_hour > 0:
+        # No /instances/ match at all — typical for a Dedicated (D-type)
+        # background contract, invisible to that endpoint. earn_hour is
+        # /machines/'s own live per-machine rate; confirmed 2026-07-18
+        # (machine 143953) to match the account console's real "Avg earnings"
+        # almost exactly — this is exactly the case that used to backfill a
+        # stale/wrong rate from the listed price below.
+        cur_bid = earn_hour
 
     if not mid or not rented:
         continue
@@ -1560,6 +1608,19 @@ for m in machines:
     rented_count = len(rented_slots) if rented_slots else num_gpus
     gpus_str = f'{rented_count}x {gpu_name}'
 
+    # end_date is /machines/'s own real contract-end timestamp; confirmed
+    # 2026-07-18 (machine 143953) to match the account console's "Contract
+    # end" exactly. Prefer it over the max_rental_days guess whenever present.
+    end_date_raw = m.get('end_date')
+    expire_source = 'estimated'
+    expire_date = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d')
+    if end_date_raw:
+        try:
+            expire_date = datetime.datetime.fromtimestamp(float(end_date_raw), tz=datetime.timezone.utc).strftime('%Y-%m-%d')
+            expire_source = 'vast_api'
+        except Exception:
+            pass
+
     event = {
         'ts':              now_str,
         'type':            'rental_start',
@@ -1573,7 +1634,8 @@ for m in machines:
         'backfilled':      True,
         'image':           image,
         'workload_type':   workload_type,
-        'expire_date':     (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=max_rental_days)).strftime('%Y-%m-%d'),
+        'expire_date':     expire_date,
+        'expire_date_source': expire_source,
     }
     with open(jsonl, 'a') as f:
         f.write(json.dumps(event) + '\n')
@@ -1812,13 +1874,23 @@ vastai_check() {
     local gpu_slots_json
     gpu_slots_json=$(vastai_fetch_gpu_slots)
 
-    # State: one line per machine: {mid}|{rented}|{num_gpus}x{gpu_name}|{bid}/hr|{real_instance_id}
+    # State: one line per machine: {mid}|{rented}|{num_gpus}x{gpu_name}|{bid}/hr|
+    # {real_instance_id}|{rented_count}|{earn_day}|{end_date}
     # {bid} is the ACTUAL total $/hr being earned (sum of rented instances' real
     # dph_total from gpu_slots_json), not the per-GPU listed price — otherwise a
     # partial rental (e.g. 4 of 8 GPUs) would record only the single-GPU rate and
     # the dashboard's revenue math would undercount by the number of GPUs rented.
     # {real_instance_id} is Vast's actual numeric instance id (not the machine id)
     # — used to look up the rental's Docker image for workload classification.
+    # {earn_day} is /machines/'s own live earn_day field — Vast's real per-machine
+    # $/day figure, confirmed (2026-07-18, machine 143953) to match the account
+    # console's "Avg earnings" almost exactly (0.19/hr, 3.92/day) even for a
+    # Dedicated (D-type) contract that {bid} above can't see via /instances/. This
+    # is the ONLY host-visible live rate source for D-type contracts — see
+    # _profit_live_earn_rate() below. {end_date} is /machines/'s own end_date
+    # (epoch seconds) — Vast's real contract-end timestamp, confirmed to match the
+    # console's "Contract end" exactly; used in place of the estimated_expire_date()
+    # guess whenever present.
     # Parse the machine state. The /machines/ response goes through a temp file
     # (not argv) so a large or awkward body can't get mangled, and both json
     # loads are guarded: Vast.ai intermittently answers with a 200 whose body is
@@ -1869,14 +1941,30 @@ for m in data.get('machines', []):
     actual_rate = sum(float(s.get('rate', 0) or 0) for s in rented_slots)
     real_iid = rented_slots[0]['instance_id'] if rented_slots else ''
     rented_count = len(rented_slots)
+    earn_hour = float(m.get('earn_hour') or 0)
+    earn_day = float(m.get('earn_day') or 0)
+    end_date = m.get('end_date') or ''
 
-    cost_val = actual_rate if (rented and rented_slots) else per_gpu_price
+    if rented and rented_slots:
+        cost_val = actual_rate
+    elif rented and earn_hour > 0:
+        # No /instances/ match — typical for a Dedicated (D-type) background
+        # contract, which that endpoint can't see at all. earn_hour is
+        # /machines/'s own live per-machine rate; confirmed 2026-07-18
+        # (machine 143953) to match the account console's real "Avg earnings"
+        # almost exactly, so it's far more trustworthy here than falling back
+        # to the listed/advertised price (which may be for a different,
+        # future rental entirely).
+        cost_val = earn_hour
+    else:
+        cost_val = per_gpu_price
     # Field 3 keeps the TOTAL gpu count (num_gpus) — the per-GPU slot renderer
     # needs it to draw every physical slot. Field 6 is how many are actually
     # rented, used for the Telegram/dashboard 'GPUs rented' display so a partial
-    # rental (e.g. 4 of 8) doesn't misreport as the whole machine.
-    lines.append('%s|%s|%sx %s|$%.3f/hr|%s|%s'
-                 % (mid, rented, num_gpus, gpu_name, cost_val, real_iid, rented_count))
+    # rental (e.g. 4 of 8) doesn't misreport as the whole machine. Fields 7-8 are
+    # earn_day/end_date — see the comment above vastai_check() for why these matter.
+    lines.append('%s|%s|%sx %s|$%.3f/hr|%s|%s|%.4f|%s'
+                 % (mid, rented, num_gpus, gpu_name, cost_val, real_iid, rented_count, earn_day, end_date))
 print('\n'.join(lines))
 PYEOF
 )
@@ -1899,7 +1987,7 @@ PYEOF
         # Check each current machine for rental status changes
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid rented gpus cost real_iid rented_count <<< "$line"
+            IFS='|' read -r mid rented gpus cost real_iid rented_count _ end_epoch <<< "$line"
 
             # GPUs actually rented (e.g. "4x RTX 5090"), not the whole machine.
             # gpus is "8x RTX 5090"; strip the count and prepend the rented count.
@@ -1920,18 +2008,23 @@ PYEOF
                 log "VAST.AI: Machine $mid | $rented_gpus | $cost | Rented: $rented (first seen)"
             else
                 local old_rented old_cost old_rented_count
-                IFS='|' read -r _ old_rented _ old_cost _ old_rented_count <<< "$old_line"
+                IFS='|' read -r _ old_rented _ old_cost _ old_rented_count _ _ <<< "$old_line"
                 if [[ "$old_rented" != "$rented" ]]; then
                     if [[ "$rented" == "True" ]]; then
-                        local image workload_type expire_date
+                        local image workload_type expire_date expire_source
                         image=$(get_instance_image "$real_iid")
                         workload_type=$(classify_workload "$image")
-                        expire_date=$(estimated_expire_date)
-                        log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown}, est. end: $expire_date)"
+                        if expire_date=$(epoch_to_date "$end_epoch") && [[ -n "$expire_date" ]]; then
+                            expire_source="vast_api"
+                        else
+                            expire_date=$(estimated_expire_date)
+                            expire_source="estimated"
+                        fi
+                        log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown}, ${expire_source} end: $expire_date)"
                         tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
 Machine: <b>$mid</b> | GPUs rented: $rented_gpus
 Rate: <b>$cost</b>"
-                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\",\"expire_date\":\"$expire_date\"}"
+                        write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\",\"expire_date\":\"$expire_date\",\"expire_date_source\":\"$expire_source\"}"
                     else
                         # Rental just ended — current rented_count is 0, so report
                         # what WAS rented (from the prior state) for a consistent
@@ -1952,7 +2045,7 @@ Last rate: ${old_cost:-$cost}"
         # Check for machines that disappeared while rented
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid old_rented gpus cost _ old_rented_count <<< "$line"
+            IFS='|' read -r mid old_rented gpus cost _ old_rented_count _ _ <<< "$line"
             if ! echo "$current_state" | grep -q "^${mid}|"; then
                 if [[ "$old_rented" == "True" ]]; then
                     local gone_gpus="$gpus"
@@ -1971,7 +2064,7 @@ Last rate: ${old_cost:-$cost}"
             log "VAST.AI: Machine status (unchanged):"
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
-                IFS='|' read -r mid rented gpus cost _ rented_count <<< "$line"
+                IFS='|' read -r mid rented gpus cost _ rented_count _ _ <<< "$line"
                 local disp="$gpus"
                 [[ "$rented" == "True" && "${rented_count:-0}" -gt 0 ]] && disp="${rented_count}x ${gpus#*x } (of ${gpus%%x*})"
                 log "  Machine $mid | $disp | $cost | Rented: $rented"

@@ -95,18 +95,40 @@ compose with each other (whichever cap is lowest wins), reacts within one
 restart to pick up a conf edit — restart `gpu-monitor` after changing the
 tiers themselves.
 
-Rate source: it prefers ACTUAL EARNED revenue (the most recently completed
-day's `daily_earnings` total, same data the dashboard uses) over the live
-per-machine rate `vastai_check()` tracks each cycle. This matters on Zappa3
-specifically because its rental is a D-type background contract that isn't
-visible via Vast's `/instances/` API — when that happens, the live "rate"
-falls back to the LISTING price (what's advertised for the *next* rental),
-which can be wildly different from what the current one is actually paying
-(we hit this directly: state showed $2.50/hr — the next-rental listing — for
-a rental actually earning ~$0.14/hr). Earned revenue doesn't have that
-problem. The live rate is only used as a fallback when there's no earnings
-data yet (a rental in its first few hours) — see `profit-override status` to
-inspect both signals directly.
+Rate source (updated 2026-07-18): the primary signal is now `/machines/`'s own
+live **`earn_hour`/`earn_day`** fields — confirmed directly against the Vast.ai
+console (machine 143953, Zappa3) to match the account's real "Avg earnings"
+almost exactly (console: $0.19/hr, $3.92/day; our field: $0.1880/hr,
+$3.9189/day). This solved the actual root problem: Zappa3's rental is a
+D-type background contract, invisible to Vast's `/instances/` API entirely —
+the old live-rate signal (`vastai_check()`'s per-instance `dph_total` sum)
+simply had no data for it and fell back to the LISTING price (what's
+advertised for the *next* rental, e.g. $2.50/hr), wildly different from what
+the current one actually pays. `earn_hour`/`earn_day` have no such gap — they
+come from `/machines/` itself, which every rig already polls every cycle, so
+there's no dependency on `/instances/` visibility at all.
+
+Priority order now: **live `earn_day`** (`_profit_live_earn_rate()`, updates
+every cycle) → yesterday's completed `daily_earnings` total
+(`_profit_earned_daily_rate()`, ground truth but a day stale) → the old
+`/instances/`-based live rate (`_profit_live_daily_rate()`, weakest — blind to
+D-type contracts) as a last resort for a rental in its first few hours before
+either of the first two have data. See `profit-override status` to inspect
+all the signals directly.
+
+The same `/machines/` fields fixed two related things: `fix-active-rental.sh`
+and `vastai_init_state()`'s startup backfill both now fall back to
+`earn_hour` (rate) + `gpu_occupancy` (rented GPU count) when there's no
+`/instances/` match, instead of guessing from the listed price — this is what
+produced Zappa3's stale backfilled `$0.140/hr` in the first place. And
+`/machines/`'s own **`end_date`** field (confirmed to match the console's
+"Contract end" exactly) now replaces the `estimated_expire_date()` guess
+(`expire_date_source: "vast_api"` vs `"estimated"` on the `rental_start`
+event) whenever Vast actually reports one.
+
+If you ever want to check for other undocumented `/machines/` fields we
+aren't using yet, `sudo dump-machine-json` (see below) dumps the full raw
+response.
 
 To temporarily force a specific cap (e.g. a renter's workload needs full
 power despite a low listed rate, or you want to force savings on a
