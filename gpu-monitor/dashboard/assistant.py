@@ -1,4 +1,5 @@
-"""Read-only diagnostic tools + OpenAI chat backend for the GPU rig dashboard.
+"""Read-only diagnostic tools + a swappable LLM chat backend for the GPU rig
+dashboard.
 
 Everything here is read-only: no tool can modify rig state, restart services,
 change pricing, or change power limits — only report on them. Diagnostics run
@@ -9,24 +10,25 @@ command-injection surface even though /api/diag and /api/chat are reachable
 without auth (same posture as the existing /api/data and /api/peer endpoints
 on this server).
 
-The OpenAI API key lives only here, server-side, read from
-/etc/gpu_monitor.conf (root-only, 600) — it is never sent to the browser.
-
-Model defaults to gpt-4o-mini: it's the model with the largest complimentary
-daily token allowance (10M/day) under OpenAI's data-sharing free-tokens
-program (platform.openai.com/settings/organization/data-controls/sharing) —
-that program requires enabling data sharing (prompts/outputs may be used for
-training) and a positive account balance; it is an account-level toggle, not
-something this code configures.
+The active LLM provider is picked by LLM_PROVIDER (env or /etc/gpu_monitor.conf,
+default "openai"); its API key lives only here, server-side, read from the
+same conf file (root-only, 600) — it is never sent to the browser. To add a
+new provider (or switch back to one already here) later: implement
+LLMProvider.complete() for it, add it to PROVIDERS, and set LLM_PROVIDER +
+its own <PROVIDER>_API_KEY in the conf. Nothing else in this file, in
+server.py, or in the frontend needs to change — run_chat() and every tool
+are provider-agnostic.
 """
 import os, re, json, glob, subprocess, time, urllib.request, urllib.error, urllib.parse
+from abc import ABC, abstractmethod
 from collections import deque
+from dataclasses import dataclass, field
+from typing import Optional
 
 CONF_FILE = "/etc/gpu_monitor.conf"
 KAALIA_GLOB = "/var/lib/vastai_kaalia/kaalia.log*"
 PING_TARGET = "1.1.1.1"           # fixed — never derived from a request
 KAALIA_SCAN_LINES = 5000          # bounds worst-case regex work per request
-MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 MAX_TOOL_TURNS = 6
 
 
@@ -42,18 +44,188 @@ def _conf_value(key):
     return m.group(1) if m else ""
 
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or _conf_value("OPENAI_API_KEY")
-CHAT_ENABLED = bool(OPENAI_API_KEY)
+def _safe_json(s):
+    try:
+        return json.loads(s or "{}")
+    except json.JSONDecodeError:
+        return {}
 
-_client = None
+
+# ── LLM provider interface ──────────────────────────────────────────────
+#
+# run_chat() below drives the tool-use loop entirely in terms of this
+# provider-agnostic shape:
+#   - a "turn" is one of {"role":"user","text":...},
+#     {"role":"assistant","text":..., "tool_calls":[ToolCall,...]},
+#     {"role":"tool_result","tool_call_id":..., "content":...}
+#   - a provider's complete() takes the running list of turns + the tool
+#     schema and returns a single normalized AssistantTurn (either final text,
+#     or one or more tool calls to run before asking the provider again).
+# Each concrete provider is responsible for translating this shape to and
+# from its own wire format — the rest of the file never sees an OpenAI- or
+# Anthropic-shaped message.
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict
 
 
-def _get_client():
-    global _client
-    if _client is None:
+@dataclass
+class AssistantTurn:
+    text: Optional[str]
+    tool_calls: list = field(default_factory=list)
+
+
+class LLMProvider(ABC):
+    key_conf_name: str = ""      # e.g. "OPENAI_API_KEY"
+    model_conf_name: str = ""    # e.g. "OPENAI_MODEL"
+    default_model: str = ""
+
+    def __init__(self):
+        self.api_key = os.environ.get(self.key_conf_name) or _conf_value(self.key_conf_name)
+        self.model = os.environ.get(self.model_conf_name) or _conf_value(self.model_conf_name) or self.default_model
+        self._client = None
+
+    def is_available(self):
+        return bool(self.api_key)
+
+    @abstractmethod
+    def complete(self, system_prompt, turns, tools):
+        """Returns one AssistantTurn given the full conversation so far."""
+        ...
+
+
+def _wire_tools_openai(tools):
+    return [{"type": "function", "function": {
+        "name": t["name"], "description": t["description"], "parameters": t["parameters"]}}
+        for t in tools]
+
+
+def _to_openai_messages(system_prompt, turns):
+    messages = [{"role": "system", "content": system_prompt}]
+    for t in turns:
+        if t["role"] == "user":
+            messages.append({"role": "user", "content": t["text"]})
+        elif t["role"] == "assistant":
+            messages.append({
+                "role": "assistant",
+                "content": t.get("text"),
+                "tool_calls": [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
+                    for tc in t["tool_calls"]
+                ],
+            })
+        elif t["role"] == "tool_result":
+            messages.append({"role": "tool", "tool_call_id": t["tool_call_id"], "content": json.dumps(t["content"])})
+    return messages
+
+
+class OpenAIProvider(LLMProvider):
+    """Chat Completions API with function calling."""
+    key_conf_name = "OPENAI_API_KEY"
+    model_conf_name = "OPENAI_MODEL"
+    # gpt-4o-mini has the largest complimentary daily token allowance (10M/day)
+    # under OpenAI's data-sharing free-tokens program — a good default for a
+    # low-volume personal Q&A backend. See RIGS.md for how to enable it.
+    default_model = "gpt-4o-mini"
+
+    def complete(self, system_prompt, turns, tools):
         from openai import OpenAI
-        _client = OpenAI(api_key=OPENAI_API_KEY)
-    return _client
+        if self._client is None:
+            self._client = OpenAI(api_key=self.api_key)
+        messages = _to_openai_messages(system_prompt, turns)
+        resp = self._client.chat.completions.create(
+            model=self.model, max_tokens=700, tools=_wire_tools_openai(tools), messages=messages,
+        )
+        msg = resp.choices[0].message
+        if not msg.tool_calls:
+            return AssistantTurn(text=msg.content, tool_calls=[])
+        calls = [ToolCall(id=tc.id, name=tc.function.name, arguments=_safe_json(tc.function.arguments))
+                 for tc in msg.tool_calls]
+        return AssistantTurn(text=msg.content, tool_calls=calls)
+
+
+def _wire_tools_anthropic(tools):
+    return [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
+            for t in tools]
+
+
+def _to_anthropic_messages(turns):
+    """Anthropic requires all tool_results answering one assistant turn to be
+    combined into a single following user message (list of tool_result
+    blocks), so consecutive tool_result turns here get merged into one."""
+    messages = []
+    i = 0
+    while i < len(turns):
+        t = turns[i]
+        if t["role"] == "user":
+            messages.append({"role": "user", "content": t["text"]})
+            i += 1
+        elif t["role"] == "assistant":
+            content = []
+            if t.get("text"):
+                content.append({"type": "text", "text": t["text"]})
+            for tc in t["tool_calls"]:
+                content.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments})
+            messages.append({"role": "assistant", "content": content})
+            i += 1
+        else:  # tool_result — gather the run of consecutive results
+            group = []
+            while i < len(turns) and turns[i]["role"] == "tool_result":
+                tr = turns[i]
+                group.append({"type": "tool_result", "tool_use_id": tr["tool_call_id"],
+                              "content": json.dumps(tr["content"])})
+                i += 1
+            messages.append({"role": "user", "content": group})
+    return messages
+
+
+class AnthropicProvider(LLMProvider):
+    """Messages API with tool use."""
+    key_conf_name = "ANTHROPIC_API_KEY"
+    model_conf_name = "ANTHROPIC_MODEL"
+    default_model = "claude-haiku-4-5"  # cheapest/fastest tier — fits this low-volume Q&A use
+
+    def complete(self, system_prompt, turns, tools):
+        from anthropic import Anthropic
+        if self._client is None:
+            self._client = Anthropic(api_key=self.api_key)
+        messages = _to_anthropic_messages(turns)
+        resp = self._client.messages.create(
+            model=self.model, max_tokens=700, system=system_prompt,
+            tools=_wire_tools_anthropic(tools), messages=messages,
+        )
+        text = "".join(b.text for b in resp.content if b.type == "text").strip() or None
+        if resp.stop_reason != "tool_use":
+            return AssistantTurn(text=text, tool_calls=[])
+        calls = [ToolCall(id=b.id, name=b.name, arguments=b.input) for b in resp.content if b.type == "tool_use"]
+        return AssistantTurn(text=text, tool_calls=calls)
+
+
+PROVIDERS = {"openai": OpenAIProvider, "anthropic": AnthropicProvider}
+
+LLM_PROVIDER_NAME = (os.environ.get("LLM_PROVIDER") or _conf_value("LLM_PROVIDER") or "openai").strip().lower()
+
+_provider = None
+
+
+def _get_provider():
+    global _provider
+    if _provider is None:
+        cls = PROVIDERS.get(LLM_PROVIDER_NAME)
+        if not cls:
+            raise ValueError(f"unknown LLM_PROVIDER '{LLM_PROVIDER_NAME}' (known: {', '.join(PROVIDERS)})")
+        _provider = cls()
+    return _provider
+
+
+try:
+    CHAT_ENABLED = _get_provider().is_available()
+except ValueError:
+    CHAT_ENABLED = False
 
 
 # ── Local diagnostics (read-only, fixed argv, no shell) ─────────────────
@@ -177,31 +349,31 @@ def handle_diag_request(kind, query):
     return fn()
 
 
-# ── Tool-use loop (server-side only — the API key never reaches the browser) ──
+# ── Tools (provider-agnostic: name/description/JSON-schema parameters) ───
 
 TOOLS = [
-    {"type": "function", "function": {
+    {
         "name": "get_gpu_status",
         "description": "Read-only live GPU status (temp, power draw/limit, utilization, memory) for one named rig.",
         "parameters": {"type": "object", "properties": {
             "rig": {"type": "string", "description": "Rig name, e.g. Zappa1, Zappa2, Zappa3"}},
             "required": ["rig"]},
-    }},
-    {"type": "function", "function": {
+    },
+    {
         "name": "get_cpu_status",
         "description": "Read-only CPU load average, core count, and package temperature for one named rig.",
         "parameters": {"type": "object", "properties": {
             "rig": {"type": "string", "description": "Rig name"}},
             "required": ["rig"]},
-    }},
-    {"type": "function", "function": {
+    },
+    {
         "name": "get_network_status",
         "description": "Read-only network interface list and internet reachability for one named rig.",
         "parameters": {"type": "object", "properties": {
             "rig": {"type": "string", "description": "Rig name"}},
             "required": ["rig"]},
-    }},
-    {"type": "function", "function": {
+    },
+    {
         "name": "search_kaalia_log",
         "description": ("Read-only search of the Vast.ai kaalia daemon log on one named rig. "
                          "Pass a regex 'pattern' to filter (e.g. an error keyword or session id), "
@@ -211,7 +383,7 @@ TOOLS = [
             "pattern": {"type": "string", "description": "Optional regex filter"},
             "lines": {"type": "integer", "description": "Max lines to return (default 50, max 200)"}},
             "required": ["rig"]},
-    }},
+    },
 ]
 
 SYSTEM_PROMPT = (
@@ -272,37 +444,26 @@ def _run_tool(name, tool_input, self_name, peer_urls, peer_names):
 
 
 def run_chat(question, context, self_name, peer_urls, peer_names):
+    """Provider-agnostic tool-use loop — see the LLM provider interface
+    section above. Swapping providers never touches this function."""
     if not CHAT_ENABLED:
-        return "Chat isn't configured on this rig (no OPENAI_API_KEY in /etc/gpu_monitor.conf)."
-    client = _get_client()
+        return (f"Chat isn't configured on this rig — set {LLM_PROVIDER_NAME.upper()}_API_KEY "
+                f"in /etc/gpu_monitor.conf (or LLM_PROVIDER to a different configured backend).")
+    provider = _get_provider()
     user_text = f"Rig stats digest (JSON):\n{json.dumps(context)}\n\nQuestion: {question}"
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_text},
-    ]
+    turns = [{"role": "user", "text": user_text}]
     for _ in range(MAX_TOOL_TURNS):
-        resp = client.chat.completions.create(
-            model=MODEL, max_tokens=700, tools=TOOLS, messages=messages,
-        )
-        msg = resp.choices[0].message
-        if not msg.tool_calls:
-            return (msg.content or "").strip() or "(no answer)"
-        messages.append({
-            "role": "assistant",
-            "content": msg.content,
-            "tool_calls": [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                for tc in msg.tool_calls
-            ],
-        })
-        for tc in msg.tool_calls:
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            out = _run_tool(tc.function.name, args, self_name, peer_urls, peer_names)
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(out)})
+        try:
+            turn = provider.complete(SYSTEM_PROMPT, turns, TOOLS)
+        except ImportError as e:
+            return (f"LLM_PROVIDER is '{LLM_PROVIDER_NAME}' but its SDK isn't installed: {e}. "
+                    f"Run: pip3 install {LLM_PROVIDER_NAME}")
+        if not turn.tool_calls:
+            return (turn.text or "").strip() or "(no answer)"
+        turns.append({"role": "assistant", "text": turn.text, "tool_calls": turn.tool_calls})
+        for tc in turn.tool_calls:
+            out = _run_tool(tc.name, tc.arguments, self_name, peer_urls, peer_names)
+            turns.append({"role": "tool_result", "tool_call_id": tc.id, "content": out})
     return "That took too many steps to answer — try a more specific question."
 
 

@@ -91,13 +91,21 @@ cp "$DASH_SRC/index.html"     "$DASH_DEST/"
 cp "$DASH_SRC/combined.html"  "$DASH_DEST/"
 cp "$DASH_SRC/market.html"    "$DASH_DEST/"
 
-echo "[*] Ensuring the 'openai' Python package is installed (dashboard chat assistant)..."
+# Rig Assistant chat backend is swappable (see LLM_PROVIDER in RIGS.md) —
+# install whichever provider's SDK this rig's conf actually selects (defaults
+# to "openai" if LLM_PROVIDER isn't set, matching assistant.py's default).
+CHAT_PROVIDER="openai"
+if [[ -f /etc/gpu_monitor.conf ]]; then
+    conf_provider=$(grep -oP '^LLM_PROVIDER=["\x27]?\K[^"\x27]*' /etc/gpu_monitor.conf 2>/dev/null || true)
+    [[ -n "$conf_provider" ]] && CHAT_PROVIDER="$conf_provider"
+fi
+echo "[*] Ensuring the '$CHAT_PROVIDER' Python package is installed (dashboard chat assistant, LLM_PROVIDER=$CHAT_PROVIDER)..."
 if command -v pip3 >/dev/null 2>&1; then
-    pip3 install --quiet --break-system-packages openai 2>/dev/null \
-        || pip3 install --quiet openai 2>/dev/null \
-        || echo "  ⚠️  Could not auto-install 'openai' — chat assistant stays disabled until: pip3 install openai"
+    pip3 install --quiet --break-system-packages "$CHAT_PROVIDER" 2>/dev/null \
+        || pip3 install --quiet "$CHAT_PROVIDER" 2>/dev/null \
+        || echo "  ⚠️  Could not auto-install '$CHAT_PROVIDER' — chat assistant stays disabled until: pip3 install $CHAT_PROVIDER"
 else
-    echo "  ⚠️  pip3 not found — chat assistant stays disabled until 'openai' is installed for python3"
+    echo "  ⚠️  pip3 not found — chat assistant stays disabled until '$CHAT_PROVIDER' is installed for python3"
 fi
 
 echo "[*] Writing gpu-monitor systemd service..."
@@ -168,10 +176,11 @@ echo "     Purge:     purge-earnings (one-off: wipe daily_earnings for this host
 echo "     Profit ovr:profit-override <watts>|off|clear|status (force/inspect the profit power throttle; clears on rental end)"
 echo "     Earnings:  earnings-today (today's rentals, times, prices + revenue; pass YYYY-MM-DD for a past day)"
 echo "     PDU power: pdu-power (live rack watts + today/lifetime kWh & cost; hub rig only, needs PDU_HOSTS)"
-if [[ -f /etc/gpu_monitor.conf ]] && grep -q '^OPENAI_API_KEY=.\+' /etc/gpu_monitor.conf 2>/dev/null; then
-    echo "     Chat:      enabled (OPENAI_API_KEY set) — read-only Rig Assistant on the combined dashboard"
+CHAT_KEY_NAME=$(echo "$CHAT_PROVIDER" | tr '[:lower:]' '[:upper:]')_API_KEY
+if [[ -f /etc/gpu_monitor.conf ]] && grep -q "^${CHAT_KEY_NAME}=.\+" /etc/gpu_monitor.conf 2>/dev/null; then
+    echo "     Chat:      enabled ($CHAT_KEY_NAME set, LLM_PROVIDER=$CHAT_PROVIDER) — read-only Rig Assistant on the combined dashboard"
 else
-    echo "     Chat:      disabled — set OPENAI_API_KEY in /etc/gpu_monitor.conf on the hub to enable"
+    echo "     Chat:      disabled — set $CHAT_KEY_NAME in /etc/gpu_monitor.conf on the hub to enable (LLM_PROVIDER=$CHAT_PROVIDER selected)"
 fi
 
 # Without /etc/gpu_monitor.conf the VASTAI_API_KEY is empty and ALL Vast.ai
@@ -187,6 +196,7 @@ if [[ ! -f /etc/gpu_monitor.conf ]]; then
     echo "        sudo tee /etc/gpu_monitor.conf >/dev/null <<'CONF'"
     echo "        VASTAI_API_KEY=\"<your Vast.ai API key>\""
     echo "        TELEGRAM_CHAT_ID=\"<your Telegram chat id>\""
+    echo "        # LLM_PROVIDER=\"openai\"   # optional, this is the default — or \"anthropic\""
     echo "        OPENAI_API_KEY=\"<optional — enables the dashboard chat assistant, hub only>\""
     echo "        CONF"
     echo "        sudo chmod 600 /etc/gpu_monitor.conf"

@@ -158,6 +158,7 @@ WORKLOAD_THROTTLE_TYPES="cracking mining"
 ```bash
 VASTAI_API_KEY="<account-level Vast.ai API key>"
 TELEGRAM_CHAT_ID="<telegram chat id>"
+# LLM_PROVIDER="openai"     # optional — this is the default. Or "anthropic".
 OPENAI_API_KEY="<optional — enables the dashboard chat assistant, hub only>"
 # plus any per-rig GPU_POWER_OVERRIDE / GPU_FAN_FLOOR (see above)
 ```
@@ -166,17 +167,36 @@ Without this file, Vast.ai rental detection, revenue, pricing and Telegram
 alerts are all disabled and the rig shows "Free / $0" regardless of actual
 rentals.
 
-## Rig Assistant chat backend (OpenAI, hub only, read-only)
+## Rig Assistant chat backend (hub only, read-only, swappable LLM provider)
 
 The combined dashboard's chat panel ("Rig Assistant") can answer from the
 loaded stats digest alone (no API key — this is the default, fully local and
-private), or, if `OPENAI_API_KEY` is set in the **hub's** (Zappa1)
-`/etc/gpu_monitor.conf`, it's backed by OpenAI (`gpt-4o-mini` by default —
-cheap, fast, and the model with the largest complimentary daily token
-allowance under OpenAI's data-sharing free-tokens program; override with
-`OPENAI_MODEL` in the service environment for a different model) with
-**read-only** tool access to live GPU status, CPU load/temp, network status,
-and kaalia-log search on any named rig.
+private), or, if an LLM provider is configured in the **hub's** (Zappa1)
+`/etc/gpu_monitor.conf`, it's backed by that provider with **read-only** tool
+access to live GPU status, CPU load/temp, network status, and kaalia-log
+search on any named rig.
+
+**The provider is a config switch, not a code change.** `dashboard/assistant.py`
+defines an `LLMProvider` interface (`complete(system_prompt, turns, tools)`)
+that the tool-use loop (`run_chat()`) drives entirely in provider-agnostic
+terms — a small list of `{role, text?, tool_calls?}` turns. Each provider
+subclass is only responsible for translating that to and from its own wire
+format (message shape, tool-call schema, SDK client). Two are built in:
+
+| `LLM_PROVIDER` | Key needed | Default model | Notes |
+|---|---|---|---|
+| `openai` (default) | `OPENAI_API_KEY` | `gpt-4o-mini` (override: `OPENAI_MODEL`) | Largest complimentary daily token allowance (10M/day on gpt-4o-mini) under OpenAI's data-sharing free-tokens program — see below. |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` (override: `ANTHROPIC_MODEL`) | Cheapest/fastest Claude tier; ~$5 one-time trial credit for new accounts, no ongoing free tier. |
+
+To switch providers on the hub: set `LLM_PROVIDER="anthropic"` (or back to
+`"openai"`) plus that provider's own `<PROVIDER>_API_KEY` in
+`/etc/gpu_monitor.conf`, `pip3 install anthropic` (or `openai`) if not
+already present — `install.sh` does this automatically based on whatever
+`LLM_PROVIDER` your conf currently has — then `sudo systemctl restart
+gpu-dashboard`. No HTML/JS changes, no changes to the tool set. Adding a
+*third* provider later means implementing one `LLMProvider` subclass and
+adding it to `PROVIDERS` in `assistant.py` — `run_chat()`, the tools, and the
+frontend don't change.
 
 To use OpenAI's free daily tokens instead of paying per-token: enable data
 sharing at platform.openai.com/settings/organization/data-controls/sharing
@@ -189,24 +209,25 @@ something the code here configures.
 
 Architecture (why it's safe to run on a dashboard that has no login):
 
-- The API key is read server-side only, straight out of `/etc/gpu_monitor.conf`
-  (`dashboard/assistant.py`, `_conf_value()` — a plain regex read, the file is
-  never `source`d by Python). It never reaches the browser; the frontend only
-  ever calls this server's own `POST /api/chat`.
+- The active provider's API key is read server-side only, straight out of
+  `/etc/gpu_monitor.conf` (`dashboard/assistant.py`, `_conf_value()` — a plain
+  regex read, the file is never `source`d by Python). It never reaches the
+  browser; the frontend only ever calls this server's own `POST /api/chat`.
 - Every tool is a **fixed, dedicated read function** — `nvidia-smi` with a
   fixed argument list, `/proc/loadavg` + hwmon reads, `ip -brief addr` + a
   ping to a hardcoded target, and kaalia-log search done with Python's `re`
   module directly (never a shelled-out `grep`). There is no raw/bash tool
   exposed to the model, so there's no command-injection surface regardless of
-  what the model or a user types.
+  what the model or a user types — and this holds for any provider, since the
+  tool set is defined once, outside any provider class.
 - No tool can write, restart, reconfigure, or change price/power on any rig —
   everything is a query. The system prompt also tells the model to say so if
   asked to change something.
 - To answer about a rig other than the hub itself, the hub's `/api/chat`
   handler calls that peer's own `GET /api/diag/<gpu|cpu|network|kaalia>` —
   the same server-side proxy pattern `/api/peer` already uses for `/api/data`.
-  Every rig serves its own `/api/diag/*` for itself; only the hub needs
-  `OPENAI_API_KEY` since only the hub's dashboard has the chat panel.
+  Every rig serves its own `/api/diag/*` for itself; only the hub needs an LLM
+  API key since only the hub's dashboard has the chat panel.
 - `/api/chat` and `/api/diag/*` have no auth (matching every other endpoint
   on this dashboard), so `/api/chat` is rate-limited server-side (20
   requests/hour/IP, 100/hour total) since — unlike the other endpoints — it
@@ -214,7 +235,7 @@ Architecture (why it's safe to run on a dashboard that has no login):
 
 Nothing to do on the node rigs (Zappa2/Zappa3) besides the normal `install.sh`
 run — they automatically pick up `/api/diag/*` and will serve it if the hub's
-assistant asks about them. Only the hub needs the `OPENAI_API_KEY` line.
+assistant asks about them. Only the hub needs the provider key.
 
 ## APC PDU power metering (hub only)
 
