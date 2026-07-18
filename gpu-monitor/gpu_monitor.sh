@@ -291,6 +291,15 @@ epoch_to_date() {
 # market median by this factor (deduct 10%) to get the price we aim for.
 MARKET_PRICE_DISCOUNT=0.90
 
+# Which market-stat vastai_pricing() targets: "median" (default), "p75",
+# "mean", or "p25". A verified machine (Vast's own trust badge — check
+# `verification` via dump-machine-json) with a strong reliability score can
+# reasonably price above the middle of the pack — p75 targets the top
+# quartile instead of the median. Override per rig in /etc/gpu_monitor.conf,
+# e.g. Zappa1/Zappa2 (verified RTX 5090) at "p75", Zappa3 (unverified RTX
+# 5080) left at the "median" default. Falls back to "median" if unset/unknown.
+PRICE_TARGET_STAT="${PRICE_TARGET_STAT:-median}"
+
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
 EXPECTED_GPU_COUNT=0
@@ -2448,9 +2457,10 @@ PYEOF
         local floor
         floor=$(get_price_floor "$gpu_name")
 
-        # Fetch market stats; parse p25 + median in one Python call (avoids
-        # quoting fragility of separate inline python -c expressions)
-        local stats_json market_price market_median
+        # Fetch market stats; parse p25/median/p75/mean in one Python call
+        # (avoids quoting fragility of separate inline python -c expressions)
+        local stats_json market_price market_median market_p75 market_mean
+        local target_value="0" target_label="median"
         stats_json=$(vastai_market_stats "$gpu_name")
 
         if [[ -n "$stats_json" && "$stats_json" != "null" ]]; then
@@ -2460,19 +2470,39 @@ import json, sys
 d = json.loads(sys.argv[1])
 print(f"{d.get('p25', 0):.4f}")
 print(f"{d.get('median', 0):.4f}")
+print(f"{d.get('p75', 0):.4f}")
+print(f"{d.get('mean', 0):.4f}")
 PYEOF
 )
             market_price=$(printf '%s\n' "$mraw" | sed -n '1p')
             market_median=$(printf '%s\n' "$mraw" | sed -n '2p')
+            market_p75=$(printf '%s\n' "$mraw" | sed -n '3p')
+            market_mean=$(printf '%s\n' "$mraw" | sed -n '4p')
             [[ -z "$market_price"  ]] && market_price="0"
             [[ -z "$market_median" ]] && market_median="0"
+            [[ -z "$market_p75"    ]] && market_p75="0"
+            [[ -z "$market_mean"   ]] && market_mean="0"
 
             # Vast.ai displays prices with ~15% platform markup already baked in.
             # Discount our target so we compete at the real post-fee price.
             if [[ "${MARKET_PRICE_DISCOUNT:-1}" != "1" && "$market_price" != "0" ]]; then
                 market_price=$(printf "%.4f" "$(echo "scale=4; $market_price * $MARKET_PRICE_DISCOUNT" | bc)")
                 market_median=$(printf "%.4f" "$(echo "scale=4; $market_median * $MARKET_PRICE_DISCOUNT" | bc)")
-                log "  Machine $mid: market prices after ${MARKET_PRICE_DISCOUNT} discount → p25=\$$market_price median=\$$market_median"
+                [[ "$market_p75"  != "0" ]] && market_p75=$(printf "%.4f" "$(echo "scale=4; $market_p75 * $MARKET_PRICE_DISCOUNT" | bc)")
+                [[ "$market_mean" != "0" ]] && market_mean=$(printf "%.4f" "$(echo "scale=4; $market_mean * $MARKET_PRICE_DISCOUNT" | bc)")
+                log "  Machine $mid: market prices after ${MARKET_PRICE_DISCOUNT} discount → p25=\$$market_price median=\$$market_median p75=\$$market_p75 mean=\$$market_mean"
+            fi
+
+            # Pick the configured target stat, falling back to median if the
+            # chosen one is unset/unavailable/unrecognized.
+            case "$PRICE_TARGET_STAT" in
+                p75)    target_value="$market_p75";  target_label="p75" ;;
+                mean)   target_value="$market_mean"; target_label="mean" ;;
+                p25)    target_value="$market_price"; target_label="p25" ;;
+                *)      target_value="$market_median"; target_label="median" ;;
+            esac
+            if [[ "$target_value" == "0" ]]; then
+                target_value="$market_median"; target_label="median"
             fi
 
             # Write market_snapshot event — pass JSON via argv to avoid shell quoting issues
@@ -2496,9 +2526,12 @@ PYEOF
 )
             [[ -n "$snap_json" ]] && write_event "market_snapshot" "$snap_json"
 
-            # Below-median Telegram alert (throttled to once per 4 hours per machine)
-            if [[ -n "$market_median" && "$market_median" != "0" ]] && \
-               (( $(echo "$cur_bid < $market_median - 0.02" | bc -l) )); then
+            # Below-target Telegram alert (throttled to once per 4 hours per
+            # machine) — compares against whichever stat PRICE_TARGET_STAT
+            # picked (median by default, p75/mean for a verified rig priced
+            # at a premium), not always the raw median.
+            if [[ -n "$target_value" && "$target_value" != "0" ]] && \
+               (( $(echo "$cur_bid < $target_value - 0.02" | bc -l) )); then
                 local alert_file="/var/tmp/gpu_mkt_alert_${mid}"
                 local now_ts last_ts=0
                 now_ts=$(date +%s)
@@ -2509,12 +2542,12 @@ PYEOF
 <i>Fully rented — auto-pricing paused. Check market page for trends.</i>"
                     [[ "$rented" == "True" && "${free_count:-0}" -gt 0 ]] && rented_tag="
 <i>Partially rented — ${free_count} free GPU(s) still auto-pricing.</i>"
-                    tg_send "⚠️ <b>Price Below Market</b> — $(hostname)
+                    tg_send "⚠️ <b>Price Below Target</b> — $(hostname)
 Machine <b>$mid</b> | $gpu_name x${num_gpus}
 Your price: <b>\$$cur_bid/hr</b>
-Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
+Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median | p75: \$$market_p75 | mean: \$$market_mean$rented_tag"
                     echo "$now_ts" > "$alert_file"
-                    log "  BELOW-MARKET ALERT sent: \$$cur_bid < median \$$market_median"
+                    log "  BELOW-TARGET ALERT sent: \$$cur_bid < ${target_label} \$$target_value"
                 fi
             else
                 rm -f "/var/tmp/gpu_mkt_alert_${mid}" 2>/dev/null || true
@@ -2522,6 +2555,10 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
         else
             market_price="0"
             market_median="0"
+            market_p75="0"
+            market_mean="0"
+            target_value="0"
+            target_label="median"
             log "  Machine $mid: market data unavailable"
         fi
 
@@ -2540,17 +2577,18 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
             continue
         fi
         if [[ "$rented" == "True" ]]; then
-            log "  Machine $mid: partially rented — ${free_count} free GPU(s), pricing them toward median"
+            log "  Machine $mid: partially rented — ${free_count} free GPU(s), pricing them toward ${target_label}"
         fi
 
-        # Target the market MEDIAN (fall back to floor if median is unavailable).
-        local target="$market_median"
+        # Target the configured stat (PRICE_TARGET_STAT — median by default;
+        # fall back to floor if that stat is unavailable).
+        local target="$target_value"
         if [[ -z "$target" || "$target" == "0" ]]; then
             target="$floor"
-            log "  Machine $mid: market median unavailable, targeting floor \$$floor"
+            log "  Machine $mid: market ${target_label} unavailable, targeting floor \$$floor"
         fi
 
-        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | target=\$$target | floor=\$$floor | current=\$$cur_bid"
+        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid"
 
         # Asymmetric step: UP 2-3¢ when below the fee-adjusted median, DOWN 1¢
         # when above it.
@@ -2569,12 +2607,12 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
             direction="↑ (below floor \$$floor)"
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
-            direction="↓ ${down_cents}¢ (above median)"
+            direction="↓ ${down_cents}¢ (above ${target_label})"
         elif (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
-            direction="↑ ${up_cents}¢ (below median)"
+            direction="↑ ${up_cents}¢ (below ${target_label})"
         else
-            log "  Machine $mid: within 2¢ of median (\$$target) — no change"
+            log "  Machine $mid: within 2¢ of ${target_label} (\$$target) — no change"
             continue
         fi
 
@@ -2598,8 +2636,8 @@ Market median: <b>\$$market_median/hr</b> | P25: \$$market_price/hr$rented_tag"
             tg_send "💰 <b>Price Adjusted</b> — $(hostname)
 Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
 <b>\$$cur_bid → \$$new_price/hr</b> $direction
-Market p25: \$$market_price/hr | Median: \$$market_median/hr | Floor: \$$floor/hr"
-            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"market_median\":$market_median,\"floor\":$floor,\"expire_date\":\"$expire_date\"}"
+Target (${target_label}): \$$target/hr | p25: \$$market_price | median: \$$market_median | p75: \$$market_p75 | mean: \$$market_mean | Floor: \$$floor/hr"
+            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"market_median\":$market_median,\"market_p75\":$market_p75,\"market_mean\":$market_mean,\"target_stat\":\"$target_label\",\"target_value\":$target,\"floor\":$floor,\"expire_date\":\"$expire_date\"}"
         else
             log "  Machine $mid: price update FAILED"
         fi

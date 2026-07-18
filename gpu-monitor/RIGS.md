@@ -216,6 +216,35 @@ shown on the dashboard when Vast's real `end_date` isn't available yet (see
 "Rate source" above — `expire_date_source: "estimated"` vs `"vast_api"`).
 Override per rig in `/etc/gpu_monitor.conf` if you want a different window.
 
+## Pricing target: median vs. p75/mean (verified rigs)
+
+`vastai_pricing()` targets a configurable market stat, `PRICE_TARGET_STAT`
+(default **`median`**) — `vastai_market_stats()` already computes `p25`,
+`median`, `p75`, and `mean` from live comparable listings, so switching is
+just picking which one to converge toward (all four, plus whichever's
+active as `target`, are logged and written to `market_snapshot`/
+`price_change` events either way — nothing is lost by not targeting it).
+
+```bash
+PRICE_TARGET_STAT="p75"    # or "mean" — default is "median"
+```
+
+Rationale: a **verified** machine (Vast's own trust badge, check
+`verification` via `dump-machine-json`) with a strong reliability score
+(`reliability2`) is a legitimately higher-quality listing than the market's
+midpoint, so pricing at the median may leave money on the table. `p75`
+targets the top quartile instead — a reasonable premium for a verified,
+reliable RTX 5090. Falls back to `median` automatically if the configured
+stat comes back unavailable/zero, or if `PRICE_TARGET_STAT` is unset/unknown.
+
+Zappa1/Zappa2 (verified RTX 5090s) are the natural candidates for `p75`;
+Zappa3 (unverified RTX 5080, confirmed `verification: unverified` via
+`dump-machine-json`) is better left at the `median` default until/unless it
+gets verified too. The below-market Telegram alert and the "within 2¢ of
+target" no-op log line both track whichever stat is actually configured, not
+always the median, so the messaging stays consistent with what's actually
+being targeted.
+
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU
