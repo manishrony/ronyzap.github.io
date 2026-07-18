@@ -31,7 +31,7 @@ def classify_workload(image):
         return 'unknown'
     if 'self-test' in img:
         return 'selftest'
-    if any(k in img for k in ('srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer')):
+    if any(k in img for k in ('srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer', 'matador')):
         return 'mining'
     if any(k in img for k in ('hashcat', 'hcxdump', 'hcxtools', 'johntheripper', 'john-the-ripper')):
         return 'cracking'

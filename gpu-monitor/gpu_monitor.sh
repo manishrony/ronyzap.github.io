@@ -1360,7 +1360,7 @@ def classify_workload(image):
         return 'unknown'
     if 'self-test' in img:
         return 'selftest'
-    if any(k in img for k in ('srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer')):
+    if any(k in img for k in ('srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer', 'matador')):
         return 'mining'
     if any(k in img for k in ('hashcat', 'hcxdump', 'hcxtools', 'johntheripper', 'john-the-ripper')):
         return 'cracking'
@@ -1702,7 +1702,7 @@ classify_workload() {
     [[ -z "$image" ]] && { echo "unknown"; return; }
     case "$image" in
         *self-test*)                                                  echo "selftest" ;;
-        *srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*) echo "mining" ;;
+        *srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*|*matador*) echo "mining" ;;
         *hashcat*|*hcxdump*|*hcxtools*|*johntheripper*|*john-the-ripper*) echo "cracking" ;;
         *jupyter*|*linux-desktop*|*vscode*|*desktop*|*vnc*)            echo "desktop" ;;
         *llama*|*vllm*|*ollama*|*text-generation*|*tgi*|*triton*|*comfyui*|*stable-diffusion*|*automatic1111*) echo "inference" ;;
