@@ -153,6 +153,40 @@ WORKLOAD_THROTTLE_TYPES="cracking mining"
   cracking/mining rentals throttle to 250W — below the 5080's normal 300 / 275°C
   curve. Non-cracking/mining rentals run the normal curve.
 
+### Unnamed-miner heuristic fallback
+
+`classify_workload()` only recognizes a fixed list of known miner/cracker
+binary names (`srbminer`, `xmrig`, `nbminer`, `t-rex`, `phoenixminer`,
+`lolminer`, `gminer`, `teamredminer`, `matador`, `hashcat`, ...) — we missed
+`matador-miner` on Zappa1 until it was seen live and added (2026-07-18). Any
+future miner running under a name not on that list would bypass the throttle
+the same way, so there's now a behavioral fallback for exactly that case.
+
+If the running process classifies as `unknown` and, for **30 minutes
+straight**, every active GPU shows **≥95% compute utilization, ~0% NVENC/NVDEC
+use, and no VRAM growth** (miners settle into a fixed working set and never
+touch the video engines — a training/inference job doesn't typically hold
+that exact combination that long), it's treated the same as a named
+mining/cracking match: same `WORKLOAD_THROTTLE_WATTS` cap, same auto-lift the
+instant the workload or rental changes — plus a one-time Telegram alert,
+since (unlike a named match) this is an inference worth a human glance, not a
+certainty. **Any** disqualifying sample (utilization dips, encode/decode
+activity, VRAM growth) resets the 30-minute counter to zero — deliberately
+strict, to keep false positives on legitimate heavy-compute rentals rare.
+
+```bash
+MINING_HEURISTIC=1                       # default on; set 0 in a rig's conf to disable
+MINING_HEURISTIC_MIN_UTIL=95             # % GPU compute utilization
+MINING_HEURISTIC_MAX_ENCDEC=2            # % — ceiling on NVENC/NVDEC use
+MINING_HEURISTIC_MAX_MEM_GROWTH_MIB=256  # vs. the previous ~60s sample
+MINING_HEURISTIC_SUSTAIN_SECONDS=1800    # 30 min
+```
+
+This is a heuristic, not a certainty — a sustained, video-engine-idle,
+memory-flat 95%+ compute job is *usually* mining, but check `nvidia-smi` /
+the Telegram alert if you want to confirm, and use `profit-override` to force
+full power back if it's a false positive.
+
 ## Config each rig needs (`/etc/gpu_monitor.conf`, chmod 600)
 
 ```bash

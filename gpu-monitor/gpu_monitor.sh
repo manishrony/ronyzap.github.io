@@ -112,6 +112,29 @@ GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-400}"
 WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
 
+# --- Unnamed-miner heuristic fallback (runs every THERMAL_CHECK_INTERVAL) ------
+# classify_workload() only recognizes a fixed list of known miner/cracker binary
+# names (e.g. we missed "matador-miner" until it was seen on Zappa1 and added).
+# This is a behavioral fallback for names NOT on that list: if the running
+# process classifies as "unknown" AND, for MINING_HEURISTIC_SUSTAIN_SECONDS
+# straight, every GPU sample shows compute utilization >= MINING_HEURISTIC_MIN_UTIL
+# with ~no NVENC/NVDEC use and no VRAM growth (miners settle into a fixed
+# working set and never touch the video engines; a training/inference job
+# typically doesn't hold that exact combination for that long), treat it the
+# same as a named mining/cracking match — same WORKLOAD_THROTTLE_WATTS cap,
+# same auto-lift on workload/rental change — plus a one-time Telegram alert
+# since (unlike a named match) this is an inference, not a certainty, and
+# worth a human glance. ANY disqualifying sample (util dip, encoder/decoder
+# activity, VRAM growth) resets the streak — this is deliberately strict to
+# keep false positives on legitimate heavy-compute rentals rare.
+#
+# Override per-rig in /etc/gpu_monitor.conf: MINING_HEURISTIC=0 disables it.
+MINING_HEURISTIC="${MINING_HEURISTIC:-1}"
+MINING_HEURISTIC_MIN_UTIL="${MINING_HEURISTIC_MIN_UTIL:-95}"     # % GPU compute utilization
+MINING_HEURISTIC_MAX_ENCDEC="${MINING_HEURISTIC_MAX_ENCDEC:-2}"  # % — miners don't use NVENC/NVDEC
+MINING_HEURISTIC_MAX_MEM_GROWTH_MIB="${MINING_HEURISTIC_MAX_MEM_GROWTH_MIB:-256}"  # vs. previous sample
+MINING_HEURISTIC_SUSTAIN_SECONDS="${MINING_HEURISTIC_SUSTAIN_SECONDS:-1800}"  # 30 min
+
 # --- Profitability-based power throttle (opt-in, runs every THERMAL_CHECK_INTERVAL) ---
 # Ties the GPU power cap to what the CURRENT rental is actually EARNING, for
 # rigs where a low-end card can lose money on electricity at full power on a
@@ -431,6 +454,59 @@ workload_throttle_active() {
     return 1
 }
 
+# Behavioral fallback for an UNNAMED miner/cracker — see the MINING_HEURISTIC_*
+# comment block above. Only ever consulted when workload_throttle_active()
+# found no NAMED match (see thermal_adjust's elif), so it never overrides or
+# double-counts a confident classification. Tracks a consecutive-qualifying-
+# seconds streak across calls (this function runs every THERMAL_CHECK_INTERVAL
+# inside the same long-running process, so plain globals persist as state —
+# no state file needed); ANY disqualifying tick resets it to 0.
+_MINING_HEURISTIC_STREAK=0
+_MINING_HEURISTIC_PREV_MEM=""
+mining_heuristic_active() {
+    [[ "$MINING_HEURISTIC" == "1" ]] || return 1
+    _profit_currently_rented || { _MINING_HEURISTIC_STREAK=0; _MINING_HEURISTIC_PREV_MEM=""; return 1; }
+
+    local -A _procs; build_gpu_proc_map _procs
+    local gi cat any_unknown=0
+    for gi in "${!_procs[@]}"; do
+        cat=$(classify_workload "${_procs[$gi]}")
+        [[ "$cat" == "unknown" ]] && any_unknown=1
+    done
+    # Nothing unclassified running (idle, or already a named match) — this
+    # fallback has nothing to add.
+    (( any_unknown )) || { _MINING_HEURISTIC_STREAK=0; _MINING_HEURISTIC_PREV_MEM=""; return 1; }
+
+    local idx util enc dec mem qualifies=1 total_mem=0
+    while IFS=',' read -r idx util enc dec mem; do
+        idx=$(echo "$idx" | xargs)
+        [[ -n "${_procs[$idx]:-}" ]] || continue   # only judge GPUs with an active compute process
+        util=$(echo "$util" | xargs); enc=$(echo "$enc" | xargs)
+        dec=$(echo "$dec" | xargs); mem=$(echo "$mem" | xargs)
+        if [[ "$util" =~ ^[0-9]+$ ]]; then
+            (( util < MINING_HEURISTIC_MIN_UTIL )) && qualifies=0
+        else
+            qualifies=0
+        fi
+        [[ "$enc" =~ ^[0-9]+$ ]] && (( enc > MINING_HEURISTIC_MAX_ENCDEC )) && qualifies=0
+        [[ "$dec" =~ ^[0-9]+$ ]] && (( dec > MINING_HEURISTIC_MAX_ENCDEC )) && qualifies=0
+        [[ "$mem" =~ ^[0-9]+$ ]] && total_mem=$(( total_mem + mem ))
+    done < <(nvidia-smi --query-gpu=index,utilization.gpu,utilization.encoder,utilization.decoder,memory.used \
+                         --format=csv,noheader,nounits 2>/dev/null)
+
+    if [[ -n "$_MINING_HEURISTIC_PREV_MEM" ]]; then
+        (( total_mem - _MINING_HEURISTIC_PREV_MEM > MINING_HEURISTIC_MAX_MEM_GROWTH_MIB )) && qualifies=0
+    fi
+    _MINING_HEURISTIC_PREV_MEM="$total_mem"
+
+    if (( qualifies )); then
+        _MINING_HEURISTIC_STREAK=$(( _MINING_HEURISTIC_STREAK + THERMAL_CHECK_INTERVAL ))
+    else
+        _MINING_HEURISTIC_STREAK=0
+    fi
+    (( _MINING_HEURISTIC_STREAK >= MINING_HEURISTIC_SUSTAIN_SECONDS ))
+}
+
 # ── Profitability-based power throttle ────────────────────────────────────
 # True if THIS host has ANY machine currently rented, regardless of whether
 # its rate is trustworthy. Gates the throttle so it only ever acts while
@@ -577,12 +653,22 @@ profit_throttle_target() {
 # the workload/rental changes.
 thermal_adjust() {
     [[ -n "$GPU_POWER_LIMIT" ]] && return   # manual override owns power; don't fight it
-    local throttle_cap=0
-    if workload_throttle_active; then throttle_cap="$WORKLOAD_THROTTLE_WATTS"; fi
+    local throttle_cap=0 throttle_src=""
+    if workload_throttle_active; then
+        throttle_cap="$WORKLOAD_THROTTLE_WATTS"; throttle_src="named"
+    elif mining_heuristic_active; then
+        throttle_cap="$WORKLOAD_THROTTLE_WATTS"; throttle_src="heuristic"
+    fi
     if (( throttle_cap > 0 )) && (( _WORKLOAD_THROTTLE_STATE == 0 )); then
         _WORKLOAD_THROTTLE_STATE=1
-        log "  WORKLOAD THROTTLE: not-ideal workload (${WORKLOAD_THROTTLE_TYPES}) running → capping all GPUs to ${throttle_cap}W"
-        write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"types\":\"$WORKLOAD_THROTTLE_TYPES\"}"
+        if [[ "$throttle_src" == "heuristic" ]]; then
+            log "  WORKLOAD THROTTLE: unnamed process behaves like mining (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ util, ~0% encode/decode, stable VRAM for ${MINING_HEURISTIC_SUSTAIN_SECONDS}s) → capping all GPUs to ${throttle_cap}W"
+            write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"source\":\"heuristic\"}"
+            tg_send "⚠️ $(hostname): suspected UNNAMED miner (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ GPU util, ~0% encode/decode, stable VRAM) — auto-capped to ${throttle_cap}W. Check nvidia-smi / use profit-override if this is wrong."
+        else
+            log "  WORKLOAD THROTTLE: not-ideal workload (${WORKLOAD_THROTTLE_TYPES}) running → capping all GPUs to ${throttle_cap}W"
+            write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"types\":\"$WORKLOAD_THROTTLE_TYPES\"}"
+        fi
     elif (( throttle_cap == 0 )) && (( _WORKLOAD_THROTTLE_STATE == 1 )); then
         _WORKLOAD_THROTTLE_STATE=0
         log "  WORKLOAD THROTTLE: workload cleared → restoring the automatic power curve"
