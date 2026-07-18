@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """GPU Monitor dashboard server — serves UI + /api/data from JSONL log."""
-import http.server, json, os, socket, urllib.request, urllib.error
+import http.server, json, os, socket, urllib.request, urllib.error, urllib.parse
 from pathlib import Path
+import assistant
 
 DATA_FILE = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
 PORT      = int(os.environ.get("DASHBOARD_PORT", "8080"))
@@ -26,6 +27,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_config()
         elif self.path.startswith("/api/peer"):
             self._serve_peer()
+        elif self.path.startswith("/api/diag/"):
+            self._serve_diag()
         elif self.path in ("/", "/index.html"):
             # On the hub (peers configured) open straight on the all-rigs view so
             # dash.ronyzap.com lands on /combined; standalone rigs keep the single view.
@@ -42,6 +45,69 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_file(DASH_DIR / "market.html", "text/html; charset=utf-8")
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        if self.path.startswith("/api/chat"):
+            self._serve_chat()
+        else:
+            self.send_error(404)
+
+    def _serve_diag(self):
+        """Read-only host diagnostics (GPU/CPU/network/kaalia-log) for THIS
+        rig only — see assistant.py. Same no-auth posture as /api/data."""
+        path_only, _, qs = self.path.partition("?")
+        kind = path_only[len("/api/diag/"):].strip("/")
+        query = urllib.parse.parse_qs(qs)
+        try:
+            result = assistant.handle_diag_request(kind, query)
+        except Exception as e:
+            result = {"error": str(e)}
+        body = json.dumps(result).encode()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _serve_chat(self):
+        """Server-side Claude tool-use loop — the ANTHROPIC_API_KEY never
+        leaves this process (see assistant.py). Rate-limited since this
+        endpoint costs real money per call and, like the rest of this
+        dashboard, has no auth in front of it."""
+        client_ip = self.client_address[0]
+        status = 200
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 8192:
+                raise ValueError("bad request size")
+            payload = json.loads(self.rfile.read(length))
+            question = str(payload.get("question", "")).strip()[:500]
+            context = payload.get("context", [])
+            if not question:
+                raise ValueError("empty question")
+            if assistant.rate_limited(client_ip):
+                answer = "Chat is rate-limited right now — try again in a bit."
+            else:
+                answer = assistant.run_chat(question, context, SELF_NAME, PEER_URLS, PEER_NAMES)
+            body = json.dumps({"answer": answer}).encode()
+        except Exception as e:
+            status = 400
+            body = json.dumps({"error": str(e)}).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def _serve_peer(self):
         """Proxy /api/data from a peer rig (runs server-side, works over LAN and public).
@@ -78,7 +144,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             name = PEER_NAMES[i] if i < len(PEER_NAMES) else f"Rig {i+2}"
             url = "peer" if i == 0 else f"peer/{i}"
             rigs.append({"name": name, "url": url})
-        body = json.dumps({"rigs": rigs}).encode()
+        body = json.dumps({"rigs": rigs, "chatEnabled": assistant.CHAT_ENABLED}).encode()
         try:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

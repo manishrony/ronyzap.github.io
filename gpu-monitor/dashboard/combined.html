@@ -431,14 +431,34 @@ function saveConfig(cfg) { localStorage.setItem("rig_config", JSON.stringify(cfg
 // Ask this server how many rigs it knows about (self + configured peers).
 // This is what makes new rigs show up automatically: add PEER_URLS on the
 // host and restart the dashboard service — no HTML/JS edits needed here.
+let CHAT_ENABLED = false;
 async function loadRigsFromServer() {
   try {
     const r = await fetch("/api/config?" + Date.now(), { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return null;
     const cfg = await r.json();
+    CHAT_ENABLED = !!cfg.chatEnabled;
     if (!Array.isArray(cfg.rigs) || !cfg.rigs.length) return null;
     return cfg.rigs;
   } catch { return null; }
+}
+
+// Wired up only when the server reports an ANTHROPIC_API_KEY is configured
+// (see /etc/gpu_monitor.conf on the hub) — the key itself never reaches this
+// page; the browser only ever calls this server's own /api/chat.
+function wireAssistantBackend() {
+  if (!CHAT_ENABLED || typeof window.ASSISTANT_BACKEND === "function") return;
+  window.ASSISTANT_BACKEND = async (question, context) => {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, context }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    return d.answer;
+  };
 }
 
 // ── State ────────────────────────────────────────────────────────────
@@ -1770,10 +1790,13 @@ function renderRigYearDetail(events, year) {
 }
 
 // ── Rig Assistant ─────────────────────────────────────────────────────
-// Answers questions from the loaded event data. No LLM/API key — fully local
-// and private. To add a Claude backend later: set window.ASSISTANT_BACKEND to
-// an async (question, context) => string; if present it's used instead of the
-// local answerer, and buildAssistantContext() gives it a compact stats digest.
+// Answers questions from the loaded event data. Falls back to a fully local,
+// regex-routed answerer when no Claude backend is configured. When the hub
+// has ANTHROPIC_API_KEY set (see /etc/gpu_monitor.conf), wireAssistantBackend()
+// (called from boot()) sets window.ASSISTANT_BACKEND to an async
+// (question, context) => string that POSTs to this server's own /api/chat —
+// the API key stays server-side always. buildAssistantContext() supplies the
+// compact stats digest passed as `context`.
 const ASST_CHIPS = ["summary","revenue this week","is anything rented","what's running","hottest gpu","current price","any faults"];
 
 function toggleAssistant() {
@@ -1781,7 +1804,9 @@ function toggleAssistant() {
   p.classList.toggle("hidden");
   if (!p.classList.contains("hidden")) {
     if (!document.getElementById("asst-log").children.length) {
-      asstBot("Hi! I answer from your rig logs — revenue, rentals, what's running, temps, pricing, score, faults. Ask away, or tap a suggestion below.");
+      asstBot(CHAT_ENABLED
+        ? "Hi! I'm read-only — I can check revenue, rentals, live GPU/CPU/network status, and kaalia logs across your rigs. Ask away, or tap a suggestion below."
+        : "Hi! I answer from your rig logs — revenue, rentals, what's running, temps, pricing, score, faults. Ask away, or tap a suggestion below.");
       renderAsstChips();
     }
     document.getElementById("asst-input").focus();
@@ -1967,6 +1992,7 @@ setInterval(()=>{
     RIGS = DEFAULT_RIGS;
   } // else RIGS already holds the localStorage-loaded config from initial state
   DATA = RIGS.map(() => ({events:[]}));
+  wireAssistantBackend();
   rebuildRigDOM();
   fetchAll();
 })();

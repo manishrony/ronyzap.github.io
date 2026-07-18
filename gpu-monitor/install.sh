@@ -86,9 +86,19 @@ chmod +x "$PDUPOWER_DEST"
 echo "[*] Installing dashboard to $DASH_DEST ..."
 mkdir -p "$DASH_DEST"
 cp "$DASH_SRC/server.py"      "$DASH_DEST/"
+cp "$DASH_SRC/assistant.py"   "$DASH_DEST/"
 cp "$DASH_SRC/index.html"     "$DASH_DEST/"
 cp "$DASH_SRC/combined.html"  "$DASH_DEST/"
 cp "$DASH_SRC/market.html"    "$DASH_DEST/"
+
+echo "[*] Ensuring the 'anthropic' Python package is installed (dashboard chat assistant)..."
+if command -v pip3 >/dev/null 2>&1; then
+    pip3 install --quiet --break-system-packages anthropic 2>/dev/null \
+        || pip3 install --quiet anthropic 2>/dev/null \
+        || echo "  ⚠️  Could not auto-install 'anthropic' — chat assistant stays disabled until: pip3 install anthropic"
+else
+    echo "  ⚠️  pip3 not found — chat assistant stays disabled until 'anthropic' is installed for python3"
+fi
 
 echo "[*] Writing gpu-monitor systemd service..."
 cat > "$MONITOR_SVC" <<EOF
@@ -158,6 +168,11 @@ echo "     Purge:     purge-earnings (one-off: wipe daily_earnings for this host
 echo "     Profit ovr:profit-override <watts>|off|clear|status (force/inspect the profit power throttle; clears on rental end)"
 echo "     Earnings:  earnings-today (today's rentals, times, prices + revenue; pass YYYY-MM-DD for a past day)"
 echo "     PDU power: pdu-power (live rack watts + today/lifetime kWh & cost; hub rig only, needs PDU_HOSTS)"
+if [[ -f /etc/gpu_monitor.conf ]] && grep -q '^ANTHROPIC_API_KEY=.\+' /etc/gpu_monitor.conf 2>/dev/null; then
+    echo "     Chat:      enabled (ANTHROPIC_API_KEY set) — read-only Rig Assistant on the combined dashboard"
+else
+    echo "     Chat:      disabled — set ANTHROPIC_API_KEY in /etc/gpu_monitor.conf on the hub to enable"
+fi
 
 # Without /etc/gpu_monitor.conf the VASTAI_API_KEY is empty and ALL Vast.ai
 # integration silently no-ops (no rental detection, no revenue, no pricing, no
@@ -172,6 +187,7 @@ if [[ ! -f /etc/gpu_monitor.conf ]]; then
     echo "        sudo tee /etc/gpu_monitor.conf >/dev/null <<'CONF'"
     echo "        VASTAI_API_KEY=\"<your Vast.ai API key>\""
     echo "        TELEGRAM_CHAT_ID=\"<your Telegram chat id>\""
+    echo "        ANTHROPIC_API_KEY=\"<optional — enables the dashboard chat assistant, hub only>\""
     echo "        CONF"
     echo "        sudo chmod 600 /etc/gpu_monitor.conf"
     echo "        sudo systemctl restart gpu-monitor"

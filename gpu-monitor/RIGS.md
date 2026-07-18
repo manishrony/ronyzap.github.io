@@ -158,12 +158,53 @@ WORKLOAD_THROTTLE_TYPES="cracking mining"
 ```bash
 VASTAI_API_KEY="<account-level Vast.ai API key>"
 TELEGRAM_CHAT_ID="<telegram chat id>"
+ANTHROPIC_API_KEY="<optional — enables the dashboard chat assistant, hub only>"
 # plus any per-rig GPU_POWER_OVERRIDE / GPU_FAN_FLOOR (see above)
 ```
 
 Without this file, Vast.ai rental detection, revenue, pricing and Telegram
 alerts are all disabled and the rig shows "Free / $0" regardless of actual
 rentals.
+
+## Rig Assistant chat backend (Claude, hub only, read-only)
+
+The combined dashboard's chat panel ("Rig Assistant") can answer from the
+loaded stats digest alone (no API key — this is the default, fully local and
+private), or, if `ANTHROPIC_API_KEY` is set in the **hub's** (Zappa1)
+`/etc/gpu_monitor.conf`, it's backed by Claude (`claude-haiku-4-5` by
+default — cheap and fast, appropriate for this low-volume Q&A use; override
+with `ANTHROPIC_MODEL` in the service environment if you want a different
+model) with **read-only** tool access to live GPU status, CPU load/temp,
+network status, and kaalia-log search on any named rig.
+
+Architecture (why it's safe to run on a dashboard that has no login):
+
+- The API key is read server-side only, straight out of `/etc/gpu_monitor.conf`
+  (`dashboard/assistant.py`, `_conf_value()` — a plain regex read, the file is
+  never `source`d by Python). It never reaches the browser; the frontend only
+  ever calls this server's own `POST /api/chat`.
+- Every tool is a **fixed, dedicated read function** — `nvidia-smi` with a
+  fixed argument list, `/proc/loadavg` + hwmon reads, `ip -brief addr` + a
+  ping to a hardcoded target, and kaalia-log search done with Python's `re`
+  module directly (never a shelled-out `grep`). There is no raw/bash tool
+  exposed to the model, so there's no command-injection surface regardless of
+  what the model or a user types.
+- No tool can write, restart, reconfigure, or change price/power on any rig —
+  everything is a query. The system prompt also tells the model to say so if
+  asked to change something.
+- To answer about a rig other than the hub itself, the hub's `/api/chat`
+  handler calls that peer's own `GET /api/diag/<gpu|cpu|network|kaalia>` —
+  the same server-side proxy pattern `/api/peer` already uses for `/api/data`.
+  Every rig serves its own `/api/diag/*` for itself; only the hub needs
+  `ANTHROPIC_API_KEY` since only the hub's dashboard has the chat panel.
+- `/api/chat` and `/api/diag/*` have no auth (matching every other endpoint
+  on this dashboard), so `/api/chat` is rate-limited server-side (20
+  requests/hour/IP, 100/hour total) since — unlike the other endpoints — it
+  costs real money per call.
+
+Nothing to do on the node rigs (Zappa2/Zappa3) besides the normal `install.sh`
+run — they automatically pick up `/api/diag/*` and will serve it if the hub's
+assistant asks about them. Only the hub needs the `ANTHROPIC_API_KEY` line.
 
 ## APC PDU power metering (hub only)
 
