@@ -75,10 +75,9 @@ if not (changes or starts or ends):
     print(" continuously rented across the whole day)")
 
 if earn:
-    def money(k):
-        try: return float(earn.get(k, 0) or 0)
-        except Exception: return 0.0
-    print(f"\nRevenue (monitor estimate): today ${money('today'):.2f}   |   30d ${money('total'):.2f}")
+    try: total = float(earn.get('total', 0) or 0)
+    except Exception: total = 0.0
+    print(f"\nRevenue (monitor estimate) for {day}: ${total:.2f} (running total as of last sync, from Vast's own daily_earnings)")
 
 print("\nRates are the listing price at detection; D-type contract locked rates")
 print("aren't host-visible. Confirm exact figures on the Vast Earnings page.")
