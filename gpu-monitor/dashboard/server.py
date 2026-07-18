@@ -75,7 +75,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass
 
     def _serve_chat(self):
-        """Server-side Claude tool-use loop — the ANTHROPIC_API_KEY never
+        """Server-side OpenAI tool-use loop — the OPENAI_API_KEY never
         leaves this process (see assistant.py). Rate-limited since this
         endpoint costs real money per call and, like the rest of this
         dashboard, has no auth in front of it."""

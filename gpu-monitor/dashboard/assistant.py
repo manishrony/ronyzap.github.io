@@ -1,4 +1,4 @@
-"""Read-only diagnostic tools + Claude chat backend for the GPU rig dashboard.
+"""Read-only diagnostic tools + OpenAI chat backend for the GPU rig dashboard.
 
 Everything here is read-only: no tool can modify rig state, restart services,
 change pricing, or change power limits — only report on them. Diagnostics run
@@ -9,8 +9,15 @@ command-injection surface even though /api/diag and /api/chat are reachable
 without auth (same posture as the existing /api/data and /api/peer endpoints
 on this server).
 
-The Anthropic API key lives only here, server-side, read from
+The OpenAI API key lives only here, server-side, read from
 /etc/gpu_monitor.conf (root-only, 600) — it is never sent to the browser.
+
+Model defaults to gpt-4o-mini: it's the model with the largest complimentary
+daily token allowance (10M/day) under OpenAI's data-sharing free-tokens
+program (platform.openai.com/settings/organization/data-controls/sharing) —
+that program requires enabling data sharing (prompts/outputs may be used for
+training) and a positive account balance; it is an account-level toggle, not
+something this code configures.
 """
 import os, re, json, glob, subprocess, time, urllib.request, urllib.error, urllib.parse
 from collections import deque
@@ -19,7 +26,7 @@ CONF_FILE = "/etc/gpu_monitor.conf"
 KAALIA_GLOB = "/var/lib/vastai_kaalia/kaalia.log*"
 PING_TARGET = "1.1.1.1"           # fixed — never derived from a request
 KAALIA_SCAN_LINES = 5000          # bounds worst-case regex work per request
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5")
+MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 MAX_TOOL_TURNS = 6
 
 
@@ -35,8 +42,8 @@ def _conf_value(key):
     return m.group(1) if m else ""
 
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or _conf_value("ANTHROPIC_API_KEY")
-CHAT_ENABLED = bool(ANTHROPIC_API_KEY)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or _conf_value("OPENAI_API_KEY")
+CHAT_ENABLED = bool(OPENAI_API_KEY)
 
 _client = None
 
@@ -44,8 +51,8 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        from anthropic import Anthropic
-        _client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        from openai import OpenAI
+        _client = OpenAI(api_key=OPENAI_API_KEY)
     return _client
 
 
@@ -173,38 +180,38 @@ def handle_diag_request(kind, query):
 # ── Tool-use loop (server-side only — the API key never reaches the browser) ──
 
 TOOLS = [
-    {
+    {"type": "function", "function": {
         "name": "get_gpu_status",
         "description": "Read-only live GPU status (temp, power draw/limit, utilization, memory) for one named rig.",
-        "input_schema": {"type": "object", "properties": {
+        "parameters": {"type": "object", "properties": {
             "rig": {"type": "string", "description": "Rig name, e.g. Zappa1, Zappa2, Zappa3"}},
             "required": ["rig"]},
-    },
-    {
+    }},
+    {"type": "function", "function": {
         "name": "get_cpu_status",
         "description": "Read-only CPU load average, core count, and package temperature for one named rig.",
-        "input_schema": {"type": "object", "properties": {
+        "parameters": {"type": "object", "properties": {
             "rig": {"type": "string", "description": "Rig name"}},
             "required": ["rig"]},
-    },
-    {
+    }},
+    {"type": "function", "function": {
         "name": "get_network_status",
         "description": "Read-only network interface list and internet reachability for one named rig.",
-        "input_schema": {"type": "object", "properties": {
+        "parameters": {"type": "object", "properties": {
             "rig": {"type": "string", "description": "Rig name"}},
             "required": ["rig"]},
-    },
-    {
+    }},
+    {"type": "function", "function": {
         "name": "search_kaalia_log",
         "description": ("Read-only search of the Vast.ai kaalia daemon log on one named rig. "
                          "Pass a regex 'pattern' to filter (e.g. an error keyword or session id), "
                          "or omit it to get the most recent lines. Useful for rental/session issues."),
-        "input_schema": {"type": "object", "properties": {
+        "parameters": {"type": "object", "properties": {
             "rig": {"type": "string", "description": "Rig name"},
             "pattern": {"type": "string", "description": "Optional regex filter"},
             "lines": {"type": "integer", "description": "Max lines to return (default 50, max 200)"}},
             "required": ["rig"]},
-    },
+    }},
 ]
 
 SYSTEM_PROMPT = (
@@ -266,25 +273,36 @@ def _run_tool(name, tool_input, self_name, peer_urls, peer_names):
 
 def run_chat(question, context, self_name, peer_urls, peer_names):
     if not CHAT_ENABLED:
-        return "Chat isn't configured on this rig (no ANTHROPIC_API_KEY in /etc/gpu_monitor.conf)."
+        return "Chat isn't configured on this rig (no OPENAI_API_KEY in /etc/gpu_monitor.conf)."
     client = _get_client()
     user_text = f"Rig stats digest (JSON):\n{json.dumps(context)}\n\nQuestion: {question}"
-    messages = [{"role": "user", "content": user_text}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
     for _ in range(MAX_TOOL_TURNS):
-        resp = client.messages.create(
-            model=MODEL, max_tokens=700, system=SYSTEM_PROMPT,
-            tools=TOOLS, messages=messages,
+        resp = client.chat.completions.create(
+            model=MODEL, max_tokens=700, tools=TOOLS, messages=messages,
         )
-        if resp.stop_reason != "tool_use":
-            text = "".join(b.text for b in resp.content if b.type == "text").strip()
-            return text or "(no answer)"
-        messages.append({"role": "assistant", "content": resp.content})
-        results = []
-        for block in resp.content:
-            if block.type == "tool_use":
-                out = _run_tool(block.name, block.input, self_name, peer_urls, peer_names)
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(out)})
-        messages.append({"role": "user", "content": results})
+        msg = resp.choices[0].message
+        if not msg.tool_calls:
+            return (msg.content or "").strip() or "(no answer)"
+        messages.append({
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ],
+        })
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            out = _run_tool(tc.function.name, args, self_name, peer_urls, peer_names)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(out)})
     return "That took too many steps to answer — try a more specific question."
 
 

@@ -443,7 +443,7 @@ async function loadRigsFromServer() {
   } catch { return null; }
 }
 
-// Wired up only when the server reports an ANTHROPIC_API_KEY is configured
+// Wired up only when the server reports an OPENAI_API_KEY is configured
 // (see /etc/gpu_monitor.conf on the hub) — the key itself never reaches this
 // page; the browser only ever calls this server's own /api/chat.
 function wireAssistantBackend() {
@@ -1791,8 +1791,8 @@ function renderRigYearDetail(events, year) {
 
 // ── Rig Assistant ─────────────────────────────────────────────────────
 // Answers questions from the loaded event data. Falls back to a fully local,
-// regex-routed answerer when no Claude backend is configured. When the hub
-// has ANTHROPIC_API_KEY set (see /etc/gpu_monitor.conf), wireAssistantBackend()
+// regex-routed answerer when no OpenAI backend is configured. When the hub
+// has OPENAI_API_KEY set (see /etc/gpu_monitor.conf), wireAssistantBackend()
 // (called from boot()) sets window.ASSISTANT_BACKEND to an async
 // (question, context) => string that POSTs to this server's own /api/chat —
 // the API key stays server-side always. buildAssistantContext() supplies the
@@ -1832,7 +1832,7 @@ async function asstSend() {
   } catch (e) { asstBot("Sorry — I hit an error: " + escapeHtml(e.message)); }
 }
 
-// Compact per-rig stats digest — the context a future Claude backend receives.
+// Compact per-rig stats digest — the context the OpenAI backend receives.
 function buildAssistantContext() {
   return RIGS.map((r,i) => {
     const evs = DATA[i].events || [];

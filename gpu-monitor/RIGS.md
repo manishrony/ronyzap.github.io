@@ -158,7 +158,7 @@ WORKLOAD_THROTTLE_TYPES="cracking mining"
 ```bash
 VASTAI_API_KEY="<account-level Vast.ai API key>"
 TELEGRAM_CHAT_ID="<telegram chat id>"
-ANTHROPIC_API_KEY="<optional — enables the dashboard chat assistant, hub only>"
+OPENAI_API_KEY="<optional — enables the dashboard chat assistant, hub only>"
 # plus any per-rig GPU_POWER_OVERRIDE / GPU_FAN_FLOOR (see above)
 ```
 
@@ -166,16 +166,26 @@ Without this file, Vast.ai rental detection, revenue, pricing and Telegram
 alerts are all disabled and the rig shows "Free / $0" regardless of actual
 rentals.
 
-## Rig Assistant chat backend (Claude, hub only, read-only)
+## Rig Assistant chat backend (OpenAI, hub only, read-only)
 
 The combined dashboard's chat panel ("Rig Assistant") can answer from the
 loaded stats digest alone (no API key — this is the default, fully local and
-private), or, if `ANTHROPIC_API_KEY` is set in the **hub's** (Zappa1)
-`/etc/gpu_monitor.conf`, it's backed by Claude (`claude-haiku-4-5` by
-default — cheap and fast, appropriate for this low-volume Q&A use; override
-with `ANTHROPIC_MODEL` in the service environment if you want a different
-model) with **read-only** tool access to live GPU status, CPU load/temp,
-network status, and kaalia-log search on any named rig.
+private), or, if `OPENAI_API_KEY` is set in the **hub's** (Zappa1)
+`/etc/gpu_monitor.conf`, it's backed by OpenAI (`gpt-4o-mini` by default —
+cheap, fast, and the model with the largest complimentary daily token
+allowance under OpenAI's data-sharing free-tokens program; override with
+`OPENAI_MODEL` in the service environment for a different model) with
+**read-only** tool access to live GPU status, CPU load/temp, network status,
+and kaalia-log search on any named rig.
+
+To use OpenAI's free daily tokens instead of paying per-token: enable data
+sharing at platform.openai.com/settings/organization/data-controls/sharing
+(org owner only). That grants up to 10M tokens/day free on `gpt-4o-mini`,
+but means your prompts/tool outputs (rig stats, log lines) may be used for
+OpenAI's training — fine for this use case (no secrets in the digest or
+diagnostics) but worth knowing. You still need a positive account balance to
+use the API at all, sharing or not — this is an account-level toggle, not
+something the code here configures.
 
 Architecture (why it's safe to run on a dashboard that has no login):
 
@@ -196,15 +206,15 @@ Architecture (why it's safe to run on a dashboard that has no login):
   handler calls that peer's own `GET /api/diag/<gpu|cpu|network|kaalia>` —
   the same server-side proxy pattern `/api/peer` already uses for `/api/data`.
   Every rig serves its own `/api/diag/*` for itself; only the hub needs
-  `ANTHROPIC_API_KEY` since only the hub's dashboard has the chat panel.
+  `OPENAI_API_KEY` since only the hub's dashboard has the chat panel.
 - `/api/chat` and `/api/diag/*` have no auth (matching every other endpoint
   on this dashboard), so `/api/chat` is rate-limited server-side (20
   requests/hour/IP, 100/hour total) since — unlike the other endpoints — it
-  costs real money per call.
+  costs real money (or free-tier tokens) per call.
 
 Nothing to do on the node rigs (Zappa2/Zappa3) besides the normal `install.sh`
 run — they automatically pick up `/api/diag/*` and will serve it if the hub's
-assistant asks about them. Only the hub needs the `ANTHROPIC_API_KEY` line.
+assistant asks about them. Only the hub needs the `OPENAI_API_KEY` line.
 
 ## APC PDU power metering (hub only)
 
