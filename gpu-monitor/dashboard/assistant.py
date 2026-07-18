@@ -29,7 +29,9 @@ CONF_FILE = "/etc/gpu_monitor.conf"
 KAALIA_GLOB = "/var/lib/vastai_kaalia/kaalia.log*"
 PING_TARGET = "1.1.1.1"           # fixed — never derived from a request
 KAALIA_SCAN_LINES = 5000          # bounds worst-case regex work per request
+DATA_FILE = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
 MAX_TOOL_TURNS = 6
+LLM_REQUEST_TIMEOUT = 25          # seconds — so a stuck upstream call fails fast instead of hanging
 
 
 def _conf_value(key):
@@ -135,7 +137,7 @@ class OpenAIProvider(LLMProvider):
     def complete(self, system_prompt, turns, tools):
         from openai import OpenAI
         if self._client is None:
-            self._client = OpenAI(api_key=self.api_key)
+            self._client = OpenAI(api_key=self.api_key, timeout=LLM_REQUEST_TIMEOUT)
         messages = _to_openai_messages(system_prompt, turns)
         resp = self._client.chat.completions.create(
             model=self.model, max_tokens=700, tools=_wire_tools_openai(tools), messages=messages,
@@ -192,7 +194,7 @@ class AnthropicProvider(LLMProvider):
     def complete(self, system_prompt, turns, tools):
         from anthropic import Anthropic
         if self._client is None:
-            self._client = Anthropic(api_key=self.api_key)
+            self._client = Anthropic(api_key=self.api_key, timeout=LLM_REQUEST_TIMEOUT)
         messages = _to_anthropic_messages(turns)
         resp = self._client.messages.create(
             model=self.model, max_tokens=700, system=system_prompt,
@@ -307,6 +309,44 @@ def diag_network():
     return {"interfaces": interfaces, "internet_reachable": reachable, "ping_ms": rtt_ms, "ping_target": PING_TARGET}
 
 
+def diag_rental():
+    """Current rental state for THIS rig, from the same JSONL event log the
+    dashboard itself reads (/api/data) — so this tool answers correctly even
+    when called with no client-supplied stats digest (e.g. a bare API call)."""
+    try:
+        lines = open(DATA_FILE).read().splitlines()
+    except OSError:
+        return {"error": "no event log found on this rig"}
+    last_start = last_end = last_price = None
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        t = ev.get("type")
+        if t == "rental_start":
+            last_start = ev
+        elif t == "rental_end":
+            last_end = ev
+        elif t == "price_change":
+            last_price = ev
+    rented = bool(last_start) and (not last_end or last_end.get("ts", "") < last_start.get("ts", ""))
+    result = {"rented": rented}
+    if rented:
+        result.update({
+            "gpus": last_start.get("gpus"),
+            "rate": last_start.get("rate"),
+            "workload_type": last_start.get("workload_type"),
+            "expire_date": last_start.get("expire_date"),
+        })
+    if last_price:
+        result["ask_price"] = last_price.get("new_price")
+    return result
+
+
 def diag_kaalia(pattern=None, lines=50):
     try:
         lines = max(1, min(int(lines or 50), 200))
@@ -334,7 +374,7 @@ def diag_kaalia(pattern=None, lines=50):
     return {"matches": matches, "scanned_lines": scanned, "returned": len(matches)}
 
 
-_DIAG_FUNCS = {"gpu": diag_gpu, "cpu": diag_cpu, "network": diag_network}
+_DIAG_FUNCS = {"gpu": diag_gpu, "cpu": diag_cpu, "network": diag_network, "rental": diag_rental}
 
 
 def handle_diag_request(kind, query):
@@ -352,6 +392,16 @@ def handle_diag_request(kind, query):
 # ── Tools (provider-agnostic: name/description/JSON-schema parameters) ───
 
 TOOLS = [
+    {
+        "name": "get_rental_status",
+        "description": ("Read-only current rental status for one named rig, straight from its event "
+                         "log: whether it's rented right now, GPU count/rate/workload if so, and its "
+                         "current ask price. Use this (not the stats digest alone) whenever asked "
+                         "whether a rig is rented/free/busy/idle."),
+        "parameters": {"type": "object", "properties": {
+            "rig": {"type": "string", "description": "Rig name, e.g. Zappa1, Zappa2, Zappa3"}},
+            "required": ["rig"]},
+    },
     {
         "name": "get_gpu_status",
         "description": "Read-only live GPU status (temp, power draw/limit, utilization, memory) for one named rig.",
@@ -390,12 +440,15 @@ SYSTEM_PROMPT = (
     "You are a read-only diagnostic assistant for a small home GPU-rental rig fleet "
     "(Vast.ai hosts). You have two information sources: (1) a JSON stats digest in the "
     "user message — revenue, rental status, temps, GPU processes, ask price, per rig — "
-    "and (2) live read-only tools for GPU/CPU/network status and kaalia-log search on any "
-    "named rig. No tool can change, restart, or configure anything on any rig — every tool "
-    "only reports state. If asked to change a price, power limit, or anything else, say "
-    "you're read-only and can't. Answer concisely — a sentence or a short list — suitable "
-    "for a chat bubble; <b> and <br> tags are fine, nothing else. If a rig name in the "
-    "question doesn't match any known rig, say so instead of guessing."
+    "and (2) live read-only tools for rental status, GPU/CPU/network status, and kaalia-log "
+    "search on any named rig. The stats digest may be stale or absent (e.g. a direct API "
+    "call); always call get_rental_status for that rig before answering a rented/free/busy/ "
+    "idle question, rather than trusting the digest or guessing. No tool can change, restart, "
+    "or configure anything on any rig — every tool only reports state. If asked to change a "
+    "price, power limit, or anything else, say you're read-only and can't. Answer concisely — "
+    "a sentence or a short list — suitable for a chat bubble; <b> and <br> tags are fine, "
+    "nothing else. If a rig name in the question doesn't match any known rig, say so instead "
+    "of guessing."
 )
 
 
@@ -420,7 +473,7 @@ def _run_tool(name, tool_input, self_name, peer_urls, peer_names):
     if peer == "__unknown__":
         known = [self_name] + list(peer_names)
         return {"error": f"unknown rig '{rig}'. Known rigs: {', '.join(known)}"}
-    kind = {"get_gpu_status": "gpu", "get_cpu_status": "cpu",
+    kind = {"get_rental_status": "rental", "get_gpu_status": "gpu", "get_cpu_status": "cpu",
             "get_network_status": "network", "search_kaalia_log": "kaalia"}[name]
     if peer is None:
         if kind == "kaalia":
