@@ -2,11 +2,12 @@
 # GPU Power Management Monitor
 # - Sets all GPUs to 500W on startup and every cycle
 # - Checks GPU temps every hour; Telegram alert only if >75°C
-# - Monitors Vast.ai rental start/end every hour
+# - Monitors Vast.ai rental start/end + per-GPU occupancy every 5 min (also
+#   triggers an immediate re-price on any occupancy change, see vastai_pricing)
 # - Syncs earnings from Vast.ai API on startup and every hour
 # - Dynamic pricing every 30 min; Telegram only on price change
 # - Rental events (start/end) always alert on Telegram
-# - Max rental capped at 5 days per pricing update
+# - Max rental capped at 14 days (2 weeks) per pricing update
 
 # Intentionally no set -euo pipefail — this is a resilient daemon that
 # must survive API errors, transient network failures, and bad GPU readings.
@@ -257,7 +258,7 @@ PRICE_ADJUST_UP_MIN=1    # cents to RAISE per cycle when below target (min)
 PRICE_ADJUST_UP_MAX=2    # cents to RAISE per cycle when below target (max)
 PRICE_ADJUST_DOWN_MIN=1  # cents to LOWER per cycle when above target (min)
 PRICE_ADJUST_DOWN_MAX=2  # cents to LOWER per cycle when above target (max)
-MAX_RENTAL_DAYS=5    # max rental duration set on every pricing update
+MAX_RENTAL_DAYS=14   # max rental/listing duration set on every pricing update (2 weeks)
 
 # Best-effort "no later than" date for the CURRENT listing window (now +
 # MAX_RENTAL_DAYS), used to show a contract-end estimate on the dashboard.

@@ -22,7 +22,7 @@ set -euo pipefail
 JSONL_FILE="${GPU_DATA:-/var/log/gpu_monitor_data.jsonl}"
 CONF="/etc/gpu_monitor.conf"
 VASTAI_API="https://console.vast.ai/api/v1"
-MAX_RENTAL_DAYS="${MAX_RENTAL_DAYS:-5}"   # matches gpu_monitor.sh's default; overridden if the conf sets it
+MAX_RENTAL_DAYS="${MAX_RENTAL_DAYS:-14}"  # matches gpu_monitor.sh's default; overridden if the conf sets it
 
 # shellcheck disable=SC1090
 [[ -f "$CONF" ]] && source "$CONF"

@@ -202,6 +202,20 @@ top of that. This is safe to fire on either direction of change:
 `vastai_pricing()` already no-ops for any machine that's still fully rented,
 so an "up" (newly fully-rented) change just triggers a harmless no-op check.
 
+## Max listing/rental duration
+
+`MAX_RENTAL_DAYS` (default **14**, i.e. 2 weeks — raised 2026-07-18 from 5)
+sets how far out the on-demand listing's end date is set, refreshed on
+**every** `vastai_pricing()` price update (`vastai_set_price()`'s `end_ts`).
+A shorter value here caps how far in advance a renter can book — 5 days was
+likely discouraging longer, more stable D-type/background contracts. This is
+just the *advertised* max window, not a binding commitment: pricing keeps
+adjusting normally regardless, and a renter can still release early
+whenever they want. Also used as the fallback "estimated" contract-end date
+shown on the dashboard when Vast's real `end_date` isn't available yet (see
+"Rate source" above — `expire_date_source: "estimated"` vs `"vast_api"`).
+Override per rig in `/etc/gpu_monitor.conf` if you want a different window.
+
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU
