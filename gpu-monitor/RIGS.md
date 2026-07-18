@@ -191,6 +191,17 @@ silently degrading to hourly. Override `GPU_CHECK_INTERVAL` in a rig's
 `/etc/gpu_monitor.conf` if you want a different balance of responsiveness vs.
 `/machines/` call volume.
 
+On top of that 5-minute cadence, `check_gpu_rental_changes()` now sets a
+global flag (`_GPU_OCC_CHANGED`) whenever it sees an actual occupancy change
+(either direction), and the main loop checks it right after calling
+`vastai_check`: if set, `vastai_pricing()` runs **immediately**, bypassing
+the normal `PRICE_INTERVAL` cooldown (and resetting it, so the next regular
+sweep is timed from this point). So end-to-end, a freed GPU is detected and
+re-priced within the same ~5-minute tick — not up to another 30 minutes on
+top of that. This is safe to fire on either direction of change:
+`vastai_pricing()` already no-ops for any machine that's still fully rented,
+so an "up" (newly fully-rented) change just triggers a harmless no-op check.
+
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU

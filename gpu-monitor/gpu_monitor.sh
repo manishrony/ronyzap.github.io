@@ -2306,7 +2306,14 @@ print(json.dumps(obj))
 # Uses the /machines/ list vastai_check cached this cycle. Rate is the current
 # listing price (the exact locked rate for D-type contracts isn't host-visible).
 # First time it sees a machine it just seeds the count silently (no alert).
+#
+# Also sets the global _GPU_OCC_CHANGED=1 whenever any machine's rented count
+# actually moved (either direction) this cycle, so the caller (main's loop)
+# can trigger an immediate vastai_pricing() re-price of the newly-freed GPU
+# instead of waiting for the next PRICE_INTERVAL cooldown to expire.
+_GPU_OCC_CHANGED=0
 check_gpu_rental_changes() {
+    _GPU_OCC_CHANGED=0
     [[ -z "$VASTAI_API_KEY" ]] && return
     [[ -f "$MACHINES_CACHE_FILE" ]] && grep -q '"machines"' "$MACHINES_CACHE_FILE" 2>/dev/null || return
 
@@ -2330,6 +2337,7 @@ check_gpu_rental_changes() {
 Machine <b>$mid</b> | $gpu_name
 Now <b>${occ_rented}/${total}</b> rented (+${added})
 Listing rate: ~\$${price}/hr"
+            _GPU_OCC_CHANGED=1
         elif (( occ_rented < prev )); then
             local removed=$(( prev - occ_rented ))
             log "  GPU RENTAL: -${removed} GPU(s) freed on $mid → ${occ_rented}/${total} still rented"
@@ -2337,6 +2345,7 @@ Listing rate: ~\$${price}/hr"
             tg_send "🔴 <b>GPU Freed</b> — $(hostname)
 Machine <b>$mid</b> | $gpu_name
 Now <b>${occ_rented}/${total}</b> rented (-${removed})"
+            _GPU_OCC_CHANGED=1
         fi
         echo "$occ_rented" > "$statef"
     done < <(python3 - "$MACHINES_CACHE_FILE" <<'PYEOF' 2>>"$LOG_FILE"
@@ -2698,7 +2707,17 @@ main() {
                 vastai_check
                 check_gpu_rental_changes
                 local pnow; pnow=$(date +%s)
-                if (( pnow - last_price_check >= PRICE_INTERVAL )); then
+                if (( _GPU_OCC_CHANGED )); then
+                    # A GPU was just freed or newly rented on some machine —
+                    # re-price now instead of waiting out the normal
+                    # PRICE_INTERVAL cooldown (vastai_pricing() no-ops for any
+                    # machine that's still fully rented, so this is a no-op
+                    # for the "up"/now-fully-rented case and only actually
+                    # matters for a freed GPU).
+                    log ">>> GPU occupancy changed — re-pricing immediately"
+                    vastai_pricing
+                    last_price_check=$pnow
+                elif (( pnow - last_price_check >= PRICE_INTERVAL )); then
                     vastai_pricing
                     last_price_check=$pnow
                 else
