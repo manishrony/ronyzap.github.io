@@ -300,6 +300,16 @@ MARKET_PRICE_DISCOUNT=0.90
 # 5080) left at the "median" default. Falls back to "median" if unset/unknown.
 PRICE_TARGET_STAT="${PRICE_TARGET_STAT:-median}"
 
+# How long a listing (or a partially-rented machine's free GPU slot) can sit
+# UNRENTED before pricing stops climbing straight for the target stat. Chasing
+# p75/mean upward while nobody is renting is fighting the market's own
+# feedback — an empty listing means the price is already too rich, so once a
+# machine crosses this threshold pricing switches to a small randomized nudge
+# (mostly down, sometimes a small test bump up) instead of a deterministic
+# climb. Resets the moment the slot gets rented.
+IDLE_LISTING_THRESHOLD="${IDLE_LISTING_THRESHOLD:-7200}"  # 2 hours
+VACANCY_STATE_DIR="/var/tmp/gpu_monitor_vacancy"
+
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
 EXPECTED_GPU_COUNT=0
@@ -2457,6 +2467,21 @@ PYEOF
         local floor
         floor=$(get_price_floor "$gpu_name")
 
+        # Track how long this machine has had a free (unrented) GPU slot to
+        # sell, so we can tell "just freed up" apart from "been sitting empty
+        # for hours" — see the idle-mode branch below.
+        mkdir -p "$VACANCY_STATE_DIR" 2>/dev/null || true
+        local vacancy_file="$VACANCY_STATE_DIR/$mid" vacancy_secs=0 now_epoch
+        now_epoch=$(date +%s)
+        if [[ "${free_count:-0}" -gt 0 ]]; then
+            [[ -f "$vacancy_file" ]] || echo "$now_epoch" > "$vacancy_file"
+            local vacant_since
+            vacant_since=$(cat "$vacancy_file" 2>/dev/null || echo "$now_epoch")
+            vacancy_secs=$(( now_epoch - vacant_since ))
+        else
+            rm -f "$vacancy_file" 2>/dev/null || true
+        fi
+
         # Fetch market stats; parse p25/median/p75/mean in one Python call
         # (avoids quoting fragility of separate inline python -c expressions)
         local stats_json market_price market_median market_p75 market_mean
@@ -2588,7 +2613,11 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             log "  Machine $mid: market ${target_label} unavailable, targeting floor \$$floor"
         fi
 
-        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid"
+        local vacancy_hours=$(( vacancy_secs / 3600 ))
+        local idle_mode=0
+        [[ "${free_count:-0}" -gt 0 ]] && (( vacancy_secs >= IDLE_LISTING_THRESHOLD )) && idle_mode=1
+
+        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid | vacant=${vacancy_hours}h$([[ $idle_mode -eq 1 ]] && echo ' (idle mode)')"
 
         # Asymmetric step: UP 2-3¢ when below the fee-adjusted median, DOWN 1¢
         # when above it.
@@ -2605,6 +2634,24 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
             new_price="$floor"
             direction="↑ (below floor \$$floor)"
+        elif (( idle_mode )); then
+            # Listed but unrented for IDLE_LISTING_THRESHOLD+ — climbing
+            # toward p75/mean/median here is fighting the market's own
+            # signal that the price is already too rich. Stop chasing the
+            # target and nudge randomly instead: mostly down (to actually
+            # attract a renter), sometimes a small test bump up, sometimes
+            # hold — rather than a deterministic march toward target.
+            local roll=$(( RANDOM % 100 ))
+            if (( roll < 45 )); then
+                new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
+                direction="↓ ${down_cents}¢ (idle ${vacancy_hours}h+ unrented — probing lower, not chasing ${target_label})"
+            elif (( roll < 70 )); then
+                new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
+                direction="↑ ${up_cents}¢ (idle ${vacancy_hours}h+ unrented — small test bump, not chasing ${target_label})"
+            else
+                log "  Machine $mid: idle ${vacancy_hours}h+ unrented — holding price, not chasing ${target_label}"
+                continue
+            fi
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
             direction="↓ ${down_cents}¢ (above ${target_label})"
@@ -2637,7 +2684,7 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
 Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
 <b>\$$cur_bid → \$$new_price/hr</b> $direction
 Target (${target_label}): \$$target/hr | p25: \$$market_price | median: \$$market_median | p75: \$$market_p75 | mean: \$$market_mean | Floor: \$$floor/hr"
-            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"market_median\":$market_median,\"market_p75\":$market_p75,\"market_mean\":$market_mean,\"target_stat\":\"$target_label\",\"target_value\":$target,\"floor\":$floor,\"expire_date\":\"$expire_date\"}"
+            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"market_median\":$market_median,\"market_p75\":$market_p75,\"market_mean\":$market_mean,\"target_stat\":\"$target_label\",\"target_value\":$target,\"floor\":$floor,\"expire_date\":\"$expire_date\",\"idle_mode\":$([[ $idle_mode -eq 1 ]] && echo true || echo false),\"vacancy_hours\":$vacancy_hours}"
         else
             log "  Machine $mid: price update FAILED"
         fi

@@ -245,6 +245,33 @@ target" no-op log line both track whichever stat is actually configured, not
 always the median, so the messaging stays consistent with what's actually
 being targeted.
 
+### Idle-listing back-off (don't chase the target when nobody's renting)
+
+Climbing straight toward `p75`/`mean` every cycle assumes the higher price is
+still competitive. If a listing (or a partially-rented machine's free GPU
+slot) sits **unrented for `IDLE_LISTING_THRESHOLD` (default 2h, 7200s)**
+despite that climb, the empty listing itself is the market telling us the
+price is already too rich — continuing to raise it only makes that worse.
+Once a machine crosses that threshold, `vastai_pricing()` stops chasing the
+configured target and switches to a small randomized nudge instead:
+
+- 45% — down 1-2¢ (`PRICE_ADJUST_DOWN_MIN/MAX`), probing for a price that
+  actually attracts a renter
+- 25% — up 1-2¢ (`PRICE_ADJUST_UP_MIN/MAX`), a small test bump in case the
+  market moved
+- 30% — hold, no change this cycle
+
+```bash
+IDLE_LISTING_THRESHOLD=7200   # seconds unrented before pricing stops chasing the target
+```
+
+Vacancy is tracked per-machine in `/var/tmp/gpu_monitor_vacancy/<machine_id>`
+(just a timestamp of when the slot first went free) and reset the instant it
+gets rented — so a machine that fills, empties, and sits idle again starts a
+fresh 2h countdown rather than carrying over the old one. `price_change`
+events carry `idle_mode` and `vacancy_hours` so the dashboard/history can tell
+a target-chase adjustment apart from an idle-mode probe.
+
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU
