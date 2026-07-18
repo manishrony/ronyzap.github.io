@@ -2623,6 +2623,13 @@ main() {
     touch "$JSONL_FILE" && chmod 644 "$JSONL_FILE"
     enable_persistence_mode
     set_power_limits
+    # set_power_limits() resets every GPU to its raw per-model default (e.g.
+    # 500W on a 5090), with no awareness of the workload/mining/profit
+    # throttle — only thermal_adjust() re-applies those. Call it immediately
+    # so a rig that starts up mid-rental (e.g. a hashcat/mining workload
+    # already running, or an already-low-paying rental) doesn't sit at full
+    # power for up to THERMAL_CHECK_INTERVAL before being reclamped.
+    thermal_adjust
     # Report the power cap actually applied (read back from nvidia-smi), so the
     # dashboard shows 300 on an RTX 5080 rig rather than the 500 fallback.
     local effective_power_limit
@@ -2648,6 +2655,15 @@ main() {
         check_gpu_rental_changes
         vastai_sync_earnings
         set_power_limits
+        # Same reason as the startup call: set_power_limits() just reset every
+        # GPU to its raw per-model default, undoing any active workload/
+        # mining/profit throttle cap. Re-apply it now instead of leaving a
+        # window of up to THERMAL_CHECK_INTERVAL at full power every single
+        # hourly cycle — this was silently happening on every rig, not just
+        # after a redeploy (confirmed on Zappa2, 2026-07-18: briefly 500W ->
+        # 400W right after `set_power_limits` logged, well before the next
+        # scheduled thermal_adjust tick).
+        thermal_adjust
         check_gpus
         check_gpu_faults
         check_kaalia_faults

@@ -185,6 +185,22 @@ WORKLOAD_THROTTLE_TYPES="cracking mining"
 - **Zappa3 (RTX 5080)** carries `WORKLOAD_THROTTLE_WATTS=250` in its conf, so its
   cracking/mining rentals throttle to 250W — below the 5080's normal 300 / 275°C
   curve. Non-cracking/mining rentals run the normal curve.
+- **`hashcat.bin` is already recognized** (it's in the original `cracking` list) —
+  confirmed live on Zappa2, 2026-07-18: `nvidia-smi --query-compute-apps` /
+  `pmon` both show it clearly (99% sm, 0% enc/dec, one process across all 8
+  GPUs), and it throttles to 400W correctly once running.
+- **Fixed 2026-07-18**: `set_power_limits()` (resets every GPU to its raw
+  per-model default — 500W on a 5090) runs unconditionally both at startup
+  and at the top of **every hourly cycle** (`CHECK_INTERVAL`), with no
+  awareness of the workload/mining/profit throttle — only `thermal_adjust()`
+  re-applies those, and it didn't used to run until up to
+  `THERMAL_CHECK_INTERVAL` (60s) later. So a throttled rental would briefly
+  spike back to full power **every single hour**, not just after a redeploy —
+  caught live on Zappa2 (500W → 400W within seconds of `set_power_limits`
+  logging, well before the next scheduled `thermal_adjust` tick). Fixed by
+  calling `thermal_adjust` immediately after every `set_power_limits` call
+  (both at startup and in the main loop), so the cap is re-applied within the
+  same cycle instead of leaving a window at full power.
 
 ### Unnamed-miner heuristic fallback
 
