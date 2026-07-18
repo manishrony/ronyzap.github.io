@@ -165,6 +165,32 @@ slow unacceptably at 250W, raise the low tier to 300W in the conf; if the
 break-even point moves (electricity rate or actual wall power changes),
 adjust the thresholds accordingly.
 
+## Rental/occupancy refresh cadence
+
+**Fixed 2026-07-18**: `vastai_check()` (rental start/end + per-GPU
+`gpu_occupancy`), `check_gpu_rental_changes()` (partial GPU rented/freed
+detection — an incremental rental or partial release on an already-open
+multi-GPU machine), and `vastai_pricing()` (re-pricing a newly-freed GPU
+toward market median) all used to run only once per hour, nested inside the
+`CHECK_INTERVAL` cycle — despite `PRICE_INTERVAL` being 30 minutes, the outer
+loop itself never came back around faster than an hour, so that 30-minute
+gate could never actually fire twice within an hour. Caught live on Zappa1,
+2026-07-18: one GPU on a 2-GPU Dedicated contract was released (`gpu_occupancy`
+went from `D D` to `x D`), but the dashboard's per-GPU "Rented" badges, the
+Telegram alert, and the freed GPU's ask price all stayed stale for over an
+hour, because none of the three depend on anything faster than that hourly
+`/machines/` refresh.
+
+Fixed by pulling `vastai_check()` + `check_gpu_rental_changes()` + the
+`PRICE_INTERVAL` gate for `vastai_pricing()` into the fast inner loop, on
+their own **`GPU_CHECK_INTERVAL` (default 300s / 5 min)** cadence — much
+tighter than the hourly `CHECK_INTERVAL`, which stays hourly for the more
+rate-limit-sensitive `vastai_sync_earnings()` and the fault/selftest checks.
+`PRICE_INTERVAL` (30 min) now actually behaves as documented instead of
+silently degrading to hourly. Override `GPU_CHECK_INTERVAL` in a rig's
+`/etc/gpu_monitor.conf` if you want a different balance of responsiveness vs.
+`/machines/` call volume.
+
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU

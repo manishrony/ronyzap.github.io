@@ -14,7 +14,19 @@
 LOG_FILE="/var/log/gpu_monitor.log"
 JSONL_FILE="/var/log/gpu_monitor_data.jsonl"
 TEMP_THRESHOLD=75        # °C — GPU Telegram alert if exceeded
-CHECK_INTERVAL=3600      # 1 hour in seconds (GPU + rental check)
+CHECK_INTERVAL=3600      # 1 hour in seconds (earnings sync, power-limit re-apply,
+                         # fault/selftest checks — the rate-limit-sensitive stuff)
+# How often to refresh /machines/ and react to it: vastai_check() (rental
+# start/end + per-GPU occupancy), check_gpu_rental_changes() (partial GPU
+# rented/freed detection), and the PRICE_INTERVAL gate for vastai_pricing()
+# (dynamic re-pricing of a newly-freed GPU). These all used to be nested
+# inside the CHECK_INTERVAL (hourly) cycle, so a partial GPU-occupancy change
+# (confirmed live on Zappa1, 2026-07-18 — one GPU released mid-rental) took up
+# to ~1-2h to be detected, re-priced, or reflected on the dashboard's per-GPU
+# badges. /machines/ is a cheap GET with no evidence of aggressive rate
+# limiting (unlike the earnings endpoint, which explicitly needs 2-3s
+# spacing) — 5 minutes balances responsiveness against call volume.
+GPU_CHECK_INTERVAL=300
 
 # --- CPU thermal monitoring ---
 CPU_TEMP_THRESHOLD=90    # °C — CPU Telegram alert if exceeded (Ryzen/EPYC Tjmax ~95°C)
@@ -2610,7 +2622,8 @@ main() {
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[1-9] ]] && log "Workload throttle   : ${WORKLOAD_THROTTLE_TYPES:-<none>} → ${WORKLOAD_THROTTLE_WATTS}W (auto, lifts when rental flips)"
     [[ -n "$PROFIT_THROTTLE_TIERS" ]] && log "Profit throttle     : ${PROFIT_THROTTLE_TIERS} (auto, lifts when rental ends or rate improves)"
     [[ -n "$PDU_HOSTS" ]] && log "PDU metering        : ${PDU_HOSTS} @ ${PDU_VOLTAGE}V, \$${PDU_ENERGY_RATE}/kWh (every ${PDU_POLL_INTERVAL}s)"
-    log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour)"
+    log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour, earnings sync/fault checks)"
+    log "Rental/occupancy    : ${GPU_CHECK_INTERVAL}s (rentals, per-GPU occupancy, partial re-pricing)"
     log "Pricing interval    : ${PRICE_INTERVAL}s (30 min)"
     log "Telegram : $([ -n "$TELEGRAM_CHAT_ID" ] && echo 'configured' || echo 'NOT configured — run setup.sh')"
     log "Vast.ai  : $([ -n "$VASTAI_API_KEY"   ] && echo 'configured' || echo 'NOT configured')"
@@ -2647,12 +2660,7 @@ main() {
     local last_price_check=0
 
     while true; do
-        local now
-        now=$(date +%s)
-
         log ">>> Cycle start"
-        vastai_check
-        check_gpu_rental_changes
         vastai_sync_earnings
         set_power_limits
         # Same reason as the startup call: set_power_limits() just reset every
@@ -2669,18 +2677,16 @@ main() {
         check_kaalia_faults
         check_selftest_log
 
-        if (( now - last_price_check >= PRICE_INTERVAL )); then
-            vastai_pricing
-            last_price_check=$now
-        else
-            local next_price=$(( PRICE_INTERVAL - (now - last_price_check) ))
-            log ">>> Next pricing check in ${next_price}s"
-        fi
-
         # Sleep out the main interval in short slices, running the fast
         # thermal-reactive power check between slices so it reacts within
-        # ~${THERMAL_CHECK_INTERVAL}s instead of waiting for the hourly cycle.
-        log ">>> Sleeping ${CHECK_INTERVAL}s (thermal check every ${THERMAL_CHECK_INTERVAL}s)"
+        # ~${THERMAL_CHECK_INTERVAL}s instead of waiting for the hourly cycle,
+        # and refreshing /machines/ (vastai_check: rentals + per-GPU occupancy,
+        # check_gpu_rental_changes: partial GPU rented/freed detection, plus
+        # the PRICE_INTERVAL-gated vastai_pricing re-pricing of a freed GPU)
+        # every ${GPU_CHECK_INTERVAL}s instead of waiting for the hourly cycle
+        # — see GPU_CHECK_INTERVAL's definition for why that used to lag by
+        # up to ~1-2h on exactly this kind of partial-occupancy change.
+        log ">>> Sleeping ${CHECK_INTERVAL}s (thermal check every ${THERMAL_CHECK_INTERVAL}s, rental/pricing refresh every ${GPU_CHECK_INTERVAL}s)"
         local slept=0
         while (( slept < CHECK_INTERVAL )); do
             sleep "$THERMAL_CHECK_INTERVAL"
@@ -2688,10 +2694,21 @@ main() {
             thermal_adjust
             fan_floor_adjust
             cpu_freq_adjust
-            # Refresh the dashboard's power/temp snapshot every ~5 min so it
-            # doesn't lag the hourly cycle.
-            (( slept % 300 == 0 )) && snapshot_gpu_status
-            # Sample the PDU on the same cadence (no-ops unless PDU_HOSTS is set).
+            if (( slept % GPU_CHECK_INTERVAL == 0 )); then
+                vastai_check
+                check_gpu_rental_changes
+                local pnow; pnow=$(date +%s)
+                if (( pnow - last_price_check >= PRICE_INTERVAL )); then
+                    vastai_pricing
+                    last_price_check=$pnow
+                else
+                    log ">>> Next pricing check in $(( PRICE_INTERVAL - (pnow - last_price_check) ))s"
+                fi
+                # Refresh the dashboard's power/temp snapshot on the same
+                # cadence so it doesn't lag the hourly cycle either.
+                snapshot_gpu_status
+            fi
+            # Sample the PDU on its own cadence (no-ops unless PDU_HOSTS is set).
             (( slept % PDU_POLL_INTERVAL == 0 )) && pdu_poll
         done
     done
