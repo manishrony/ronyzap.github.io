@@ -432,6 +432,26 @@ minute. At 60 it caps once and holds ~67°C for the whole workload, lifting only
 when the job actually ends. If Zappa3 ever flaps between capped/restored in
 `/var/log/gpu_monitor.log`, this is the knob — lower it, don't raise it.
 
+**This isn't a one-rig, one-time tuning fix — it's inherently workload-dependent
+and recurred on Zappa1 (2026-07-19)**, whose Ryzen 9 9900X under a heavier/more
+variable workload (a GPU miner + a large concurrent rental job) cooled all the
+way to 60°C within a single throttle cycle at the 4500MHz cap — legitimately,
+not misconfigured — triggering an immediate restore, which then climbed back
+past 85°C the very next cycle. Same flap pattern as Zappa3's, different chip,
+different workload, same root cause: the temp gap between hot/cool thresholds
+only prevents flapping if you already know what temp *this* workload settles
+at while capped, which isn't knowable in advance and can shift whenever the
+workload changes. Retuning `CPU_FREQ_COOL_TEMP` per rig per workload doesn't
+scale.
+
+The actual fix (added 2026-07-19): **`CPU_FREQ_MIN_THROTTLE_SECS`** (default
+300) — once capped, stay capped for at least this long regardless of a single
+cool reading, so a transient post-cap dip can't undo the cap immediately. This
+is workload-independent and needs no per-rig tuning; `CPU_FREQ_COOL_TEMP`
+still matters (it's still the threshold checked once the dwell time has
+elapsed) but no longer has to be hand-tuned below every possible workload's
+capped-temp floor to avoid flapping.
+
 **Zappa3** also carries the profitability power throttle — its RTX 5080s at
 full power (360W curve, ~800W wall) can run break-even or at a loss against a
 cheap rental once electricity ($0.25/kWh) is counted. Its conf carries:

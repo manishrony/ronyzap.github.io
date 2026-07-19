@@ -49,9 +49,18 @@ CPU_FREQ_THROTTLE="${CPU_FREQ_THROTTLE:-1}"
 CPU_FREQ_HOT_TEMP=85     # °C — cap max CPU frequency at/above this
 # Kept well below the temp a capped CPU runs at under load, so a sustained heavy
 # workload STAYS capped instead of flapping; the cap lifts only when the CPU is
-# genuinely idle-cool (workload lightened).
+# genuinely idle-cool (workload lightened). That assumption doesn't hold for
+# every workload, though — confirmed live on Zappa1 (2026-07-19): under a
+# heavy dual-process load, capping to CPU_FREQ_CAP_MHZ dropped Tctl all the
+# way to 60°C within a single ~60s cycle, triggering an immediate restore to
+# full boost, which then climbed straight back past 85°C the very next
+# cycle — a ~1-2min throttle/restore flap loop that never let the chip
+# settle. CPU_FREQ_MIN_THROTTLE_SECS below is the actual fix: once
+# throttled, stay throttled for at least that long regardless of a single
+# cool reading, so a transient post-cap dip can't undo the cap immediately.
 CPU_FREQ_COOL_TEMP=60    # °C — restore full CPU frequency at/below this
 CPU_FREQ_CAP_MHZ=4500    # capped max CPU frequency (MHz) while hot
+CPU_FREQ_MIN_THROTTLE_SECS="${CPU_FREQ_MIN_THROTTLE_SECS:-300}"  # min time to stay capped before a cool reading can restore full boost
 
 # Per-GPU-model power curve (Watts) as "pattern:base[:TEMP@WATTS...]". Matched
 # by substring against the GPU name from nvidia-smi (case-insensitive), first
@@ -995,14 +1004,32 @@ cpu_freq_adjust() {
     cur_max=$(cat "$cpu0/scaling_max_freq" 2>/dev/null)
     [[ "$hw_max" =~ ^[0-9]+$ && "$cur_max" =~ ^[0-9]+$ ]] || return
     cap_khz=$(( CPU_FREQ_CAP_MHZ * 1000 ))
+    local throttle_since_file="/var/tmp/gpu_monitor_cpu_throttle_since"
     if (( ct >= CPU_FREQ_HOT_TEMP && cur_max > cap_khz )); then
         _set_cpu_max_freq "$cap_khz"
+        [[ -f "$throttle_since_file" ]] || date +%s > "$throttle_since_file" 2>/dev/null
         log "  CPU THROTTLE: ${ct}°C ≥ ${CPU_FREQ_HOT_TEMP}°C → CPU max freq capped to ${CPU_FREQ_CAP_MHZ}MHz"
         write_event "cpu_freq_throttle" "{\"cpu_temp\":$ct,\"cap_mhz\":$CPU_FREQ_CAP_MHZ}"
     elif (( ct <= CPU_FREQ_COOL_TEMP && cur_max < hw_max )); then
-        _set_cpu_max_freq "$hw_max"
-        log "  CPU THROTTLE: cooled to ${ct}°C → CPU max freq restored to $(( hw_max / 1000 ))MHz"
-        write_event "cpu_freq_restore" "{\"cpu_temp\":$ct,\"max_mhz\":$(( hw_max / 1000 ))}"
+        # Don't act on a single cool reading right after capping — the chip
+        # cools fast once clocked down, so an instant restore here would
+        # immediately climb back past CPU_FREQ_HOT_TEMP under a sustained
+        # heavy workload and flap every cycle (confirmed live, see comment
+        # above CPU_FREQ_MIN_THROTTLE_SECS). Require sustained cool instead.
+        local throttled_secs
+        if [[ -f "$throttle_since_file" ]]; then
+            throttled_secs=$(( $(date +%s) - $(cat "$throttle_since_file" 2>/dev/null || echo 0) ))
+        else
+            throttled_secs=$CPU_FREQ_MIN_THROTTLE_SECS   # no record of when it started — don't block the restore
+        fi
+        if (( throttled_secs >= CPU_FREQ_MIN_THROTTLE_SECS )); then
+            _set_cpu_max_freq "$hw_max"
+            rm -f "$throttle_since_file" 2>/dev/null
+            log "  CPU THROTTLE: cooled to ${ct}°C → CPU max freq restored to $(( hw_max / 1000 ))MHz"
+            write_event "cpu_freq_restore" "{\"cpu_temp\":$ct,\"max_mhz\":$(( hw_max / 1000 ))}"
+        else
+            log "  CPU THROTTLE: cooled to ${ct}°C but only throttled ${throttled_secs}s (< ${CPU_FREQ_MIN_THROTTLE_SECS}s) — staying capped"
+        fi
     fi
 }
 
