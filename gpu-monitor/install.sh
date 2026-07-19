@@ -6,6 +6,9 @@
 #                 proxy (works over LAN and from the internet). Only set this on the
 #                 ONE rig that serves the combined view (typically zappa1).
 #                 e.g. sudo bash install.sh 8080 "http://192.168.1.196:8081,http://192.168.1.150:8082"
+#                 Setting this ALSO installs+configures a central Prometheus on THIS
+#                 rig (scraping this rig's own /metrics plus every peer's, 10y
+#                 retention) — see RIGS.md's "Prometheus" section.
 #   peer_names  : optional comma-separated display names matching peer_urls order
 #                 e.g. "Zappa2,Zappa3" — defaults to "Rig 2","Rig 3",... if omitted
 #   self_name   : optional display name for THIS rig (defaults to hostname)
@@ -40,6 +43,8 @@ EARNINGS_SRC="$(dirname "$0")/earnings-today.sh"
 EARNINGS_DEST="/usr/local/bin/earnings-today"
 PDUPOWER_SRC="$(dirname "$0")/pdu-power.sh"
 PDUPOWER_DEST="/usr/local/bin/pdu-power"
+BACKFILLPROM_SRC="$(dirname "$0")/backfill-prometheus.py"
+BACKFILLPROM_DEST="/usr/local/bin/backfill-prometheus"
 DASH_SRC="$(dirname "$0")/dashboard"
 DASH_DEST="/opt/gpu-monitor/dashboard"
 MONITOR_SVC="/etc/systemd/system/gpu-monitor.service"
@@ -89,13 +94,20 @@ echo "[*] Installing pdu-power helper..."
 cp "$PDUPOWER_SRC" "$PDUPOWER_DEST"
 chmod +x "$PDUPOWER_DEST"
 
+echo "[*] Installing backfill-prometheus helper (run manually, one-off per rig)..."
+cp "$BACKFILLPROM_SRC" "$BACKFILLPROM_DEST"
+chmod +x "$BACKFILLPROM_DEST"
+
 echo "[*] Installing dashboard to $DASH_DEST ..."
 mkdir -p "$DASH_DEST"
-cp "$DASH_SRC/server.py"      "$DASH_DEST/"
-cp "$DASH_SRC/assistant.py"   "$DASH_DEST/"
-cp "$DASH_SRC/index.html"     "$DASH_DEST/"
-cp "$DASH_SRC/combined.html"  "$DASH_DEST/"
-cp "$DASH_SRC/market.html"    "$DASH_DEST/"
+cp "$DASH_SRC/server.py"        "$DASH_DEST/"
+cp "$DASH_SRC/assistant.py"     "$DASH_DEST/"
+cp "$DASH_SRC/prom_exporter.py" "$DASH_DEST/"
+cp "$DASH_SRC/history_api.py"   "$DASH_DEST/"
+cp "$DASH_SRC/index.html"       "$DASH_DEST/"
+cp "$DASH_SRC/combined.html"    "$DASH_DEST/"
+cp "$DASH_SRC/market.html"      "$DASH_DEST/"
+cp "$DASH_SRC/history.html"     "$DASH_DEST/"
 
 # Rig Assistant chat backend is swappable (see LLM_PROVIDER in RIGS.md) —
 # install whichever provider's SDK this rig's conf actually selects (defaults
@@ -145,10 +157,12 @@ After=network.target
 Type=simple
 ExecStart=/usr/bin/python3 $DASH_DEST/server.py
 Environment=GPU_DATA=/var/log/gpu_monitor_data.jsonl
+Environment=GPU_STATE_FILE=/var/tmp/gpu_monitor_vastai_state
 Environment=DASHBOARD_PORT=$DASHBOARD_PORT
 Environment=PEER_URLS=$PEER_URLS
 Environment=PEER_NAMES=$PEER_NAMES
 Environment=SELF_NAME=$SELF_NAME
+Environment=PROMETHEUS_URL=http://localhost:9090
 Restart=always
 RestartSec=10
 User=root
@@ -162,13 +176,62 @@ systemctl daemon-reload
 systemctl enable gpu-monitor gpu-dashboard
 systemctl restart gpu-monitor gpu-dashboard
 
+# Central Prometheus — hub only (peer_urls set means this is the rig serving
+# the combined dashboard). Scrapes this rig's own /metrics plus every peer's,
+# so there's one place with all three rigs' history instead of three. See
+# RIGS.md's "Prometheus" section for the historical-backfill runbook
+# (backfill-prometheus, installed above) and the pagination-vs-single-file
+# rationale this replaces.
+PROM_TARGETS=""
+if [[ -n "$PEER_URLS" ]]; then
+    echo "[*] Peer URLs set — this is the hub. Installing Prometheus..."
+    if ! command -v prometheus >/dev/null 2>&1; then
+        apt-get update -qq
+        apt-get install -y prometheus
+    fi
+
+    PROM_TARGETS="\"localhost:$DASHBOARD_PORT\""
+    IFS=',' read -ra _peer_list <<< "$PEER_URLS"
+    for _peer in "${_peer_list[@]}"; do
+        _hostport="${_peer#http://}"; _hostport="${_hostport#https://}"; _hostport="${_hostport%/}"
+        [[ -n "$_hostport" ]] && PROM_TARGETS+=", \"$_hostport\""
+    done
+
+    mkdir -p /etc/prometheus
+    cat > /etc/prometheus/prometheus.yml <<EOF
+global:
+  scrape_interval: 30s
+scrape_configs:
+  - job_name: gpu_monitor
+    static_configs:
+      - targets: [$PROM_TARGETS]
+EOF
+
+    # Keep everything — disk on these rigs is abundant (hundreds of GB) and a
+    # handful of metrics scraped every 30s across 3 rigs is a trivial amount
+    # of data even over years. The whole point of this is to never lose
+    # history to log rotation/rotation-driven pruning again.
+    if [[ -f /etc/default/prometheus ]] && grep -q '^ARGS=' /etc/default/prometheus; then
+        sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=10y"|' /etc/default/prometheus
+    else
+        echo 'ARGS="--storage.tsdb.retention.time=10y"' >> /etc/default/prometheus
+    fi
+
+    systemctl enable prometheus
+    systemctl restart prometheus
+fi
+
 echo ""
 echo "[OK] Services running."
 echo "     Monitor:   tail -f $LOG_FILE"
 echo "     Dashboard: http://localhost:$DASHBOARD_PORT"
 echo "     Combined:  http://localhost:$DASHBOARD_PORT/combined"
 echo "     Market:    http://localhost:$DASHBOARD_PORT/market"
+echo "     History:   http://localhost:$DASHBOARD_PORT/history (paginated, DB-backed — hub only)"
 [[ -n "$PEER_URLS" ]] && echo "     Peers:     $PEER_URLS (proxied via /api/peer, /api/peer/1, ...)"
+if [[ -n "$PEER_URLS" ]]; then
+    echo "     Prometheus:http://localhost:9090  (scraping: $PROM_TARGETS, retention 10y)"
+fi
 if [[ -n "$GPU_POWER_LIMIT" ]]; then
     echo "     Power cap: ${GPU_POWER_LIMIT}W per GPU (manual override, re-applied hourly)"
 else
@@ -183,6 +246,7 @@ echo "     Profit ovr:profit-override <watts>|off|clear|status (force/inspect th
 echo "     Machine dump:dump-machine-json [outfile] (one-off: dump this rig's full raw Vast /machines/ JSON, for finding undocumented fields)"
 echo "     Earnings:  earnings-today (today's rentals, times, prices + revenue; pass YYYY-MM-DD for a past day)"
 echo "     PDU power: pdu-power (live rack watts + today/lifetime kWh & cost; hub rig only, needs PDU_HOSTS)"
+echo "     Backfill:  backfill-prometheus --rig <name> --out <file>.om (one-off per rig: JSONL+log -> OpenMetrics for historical import, see RIGS.md)"
 CHAT_KEY_NAME=$(echo "$CHAT_PROVIDER" | tr '[:lower:]' '[:upper:]')_API_KEY
 if [[ -f /etc/gpu_monitor.conf ]] && grep -q "^${CHAT_KEY_NAME}=.\+" /etc/gpu_monitor.conf 2>/dev/null; then
     echo "     Chat:      enabled ($CHAT_KEY_NAME set, LLM_PROVIDER=$CHAT_PROVIDER) — read-only Rig Assistant on the combined dashboard"

@@ -3,10 +3,15 @@
 import http.server, json, os, socket, urllib.request, urllib.error, urllib.parse
 from pathlib import Path
 import assistant
+import prom_exporter
+import history_api
+import time
 
-DATA_FILE = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
+DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
+STATE_FILE = os.environ.get("GPU_STATE_FILE", "/var/tmp/gpu_monitor_vastai_state")
 PORT      = int(os.environ.get("DASHBOARD_PORT", "8080"))
 DASH_DIR  = Path(__file__).parent
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9090")
 
 # Peers this server proxies for the combined dashboard (LAN and public).
 # PEER_URLS: comma-separated base URLs, e.g. "http://192.168.1.196:8081,http://192.168.1.150:8082"
@@ -21,7 +26,9 @@ SELF_NAME  = os.environ.get("SELF_NAME", "").strip() or socket.gethostname()
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith("/api/data"):
+        if self.path.startswith("/metrics"):
+            self._serve_metrics()
+        elif self.path.startswith("/api/data"):
             self._serve_data()
         elif self.path.startswith("/api/config"):
             self._serve_config()
@@ -29,6 +36,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_peer()
         elif self.path.startswith("/api/diag/"):
             self._serve_diag()
+        elif self.path.startswith("/api/history"):
+            self._serve_history()
+        elif self.path in ("/history", "/history.html"):
+            self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
         elif self.path in ("/", "/index.html"):
             # On the hub (peers configured) open straight on the all-rigs view so
             # dash.ronyzap.com lands on /combined; standalone rigs keep the single view.
@@ -51,6 +62,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_chat()
         else:
             self.send_error(404)
+
+    def _serve_metrics(self):
+        """Prometheus scrape target — current per-GPU/per-machine state, no
+        auth (same posture as /api/data; this is a private LAN endpoint)."""
+        try:
+            body = prom_exporter.render_metrics(DATA_FILE, STATE_FILE, SELF_NAME).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+        except Exception as e:
+            try: self.send_error(500, str(e))
+            except BrokenPipeError: pass
+
+    def _serve_history(self):
+        """Paginated historical query against the central Prometheus (hub
+        only — see history_api.py). Query params: metric (required, from an
+        allow-list), rig, machine_id, gpu_idx, hours (window size, default
+        24), page (0 = most recent window, 1 = one window further back...),
+        points (target sample count, default 200)."""
+        path_only, _, qs = self.path.partition("?")
+        query = urllib.parse.parse_qs(qs)
+        try:
+            result = history_api.handle_history_request(PROMETHEUS_URL, query, time.time())
+            status = 200 if "error" not in result else 400
+        except Exception as e:
+            result = {"error": str(e)}
+            status = 400
+        body = json.dumps(result).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def _serve_diag(self):
         """Read-only host diagnostics (GPU/CPU/network/kaalia-log) for THIS

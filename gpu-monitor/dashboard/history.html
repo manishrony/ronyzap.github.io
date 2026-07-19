@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPU History</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  body { background:#060d1a; font-family:system-ui,sans-serif; }
+  .card  { background:#0d1f35; border:1px solid #1a3a5c; border-radius:12px; }
+  select, input { background:#060d1a; border:1px solid #1e3a5f; color:#e2e8f0; border-radius:8px; padding:6px 10px; font-size:13px; }
+  select:focus, input:focus { outline:none; border-color:#3b82f6; }
+  .badge-blue { background:#03142b; color:#60a5fa; border:1px solid #1e3a5f; }
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:#060d1a; }
+  ::-webkit-scrollbar-thumb { background:#1a3a5c; border-radius:3px; }
+  th { font-weight:500; }
+  td, th { white-space:nowrap; }
+  canvas { max-height:340px; }
+</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+
+<!-- Header -->
+<div class="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <a href="/combined" class="text-slate-500 hover:text-slate-300 text-sm">← Combined</a>
+    <span class="text-slate-700">|</span>
+    <span class="text-xl">📜</span>
+    <div>
+      <h1 class="text-lg font-bold text-white">History</h1>
+      <p class="text-xs text-slate-500" id="status-line">Loading…</p>
+    </div>
+  </div>
+</div>
+
+<!-- Primary navigation -->
+<nav class="px-6 py-2.5 border-b border-slate-700 flex items-center gap-2 text-sm bg-slate-900/40">
+  <a href="/combined" class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">🏠 Dashboard</a>
+  <a href="/market"   class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">📈 Market</a>
+  <a href="/history"  class="px-3.5 py-1.5 rounded-md bg-blue-600 text-white font-semibold">📜 History</a>
+  <a href="/combined#c-power-row" class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">⚡ Power &amp; Energy</a>
+</nav>
+
+<div class="p-6 space-y-4">
+
+  <div id="prom-warning" class="hidden card p-3 text-xs text-amber-300 border-amber-800"></div>
+
+  <!-- Controls -->
+  <div class="card p-4 flex flex-wrap items-end gap-4">
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Metric</label>
+      <select id="f-metric" class="w-64">
+        <option value="gpu_temp_celsius">GPU Temp (°C)</option>
+        <option value="gpu_power_draw_watts">GPU Power Draw (W)</option>
+        <option value="gpu_power_limit_watts">GPU Power Cap (W)</option>
+        <option value="gpu_fan_percent">GPU Fan (%)</option>
+        <option value="gpu_util_percent">GPU Utilization (%)</option>
+        <option value="machine_rental_rate_dollars_per_hour">Machine Rate ($/hr)</option>
+        <option value="machine_earn_day_dollars">Earn Day ($)</option>
+        <option value="market_price_dollars_per_hour">Market Price ($/hr)</option>
+        <option value="listing_price_dollars_per_hour">Listing Price ($/hr)</option>
+        <option value="listing_target_dollars_per_hour">Listing Target ($/hr)</option>
+        <option value="rig_daily_earnings_dollars">Daily Earnings ($)</option>
+        <option value="machine_rented">Machine Rented (0/1)</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Rig</label>
+      <select id="f-rig" class="w-36"><option value="">All rigs</option></select>
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Machine ID</label>
+      <input id="f-machine" type="text" placeholder="optional" class="w-32">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">GPU idx</label>
+      <input id="f-gpu" type="text" placeholder="optional" class="w-24">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Window</label>
+      <select id="f-hours" class="w-32">
+        <option value="1">1 hour</option>
+        <option value="6">6 hours</option>
+        <option value="24" selected>1 day</option>
+        <option value="168">1 week</option>
+        <option value="720">30 days</option>
+      </select>
+    </div>
+    <button onclick="resetAndLoad()" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 px-4 rounded">Query</button>
+  </div>
+
+  <!-- Pagination -->
+  <div class="card p-3 flex items-center justify-between text-sm">
+    <button id="btn-older" onclick="page++; load()" class="badge-blue px-3 py-1.5 rounded font-medium">&larr; Older</button>
+    <div class="text-slate-400 text-xs" id="page-range">—</div>
+    <button id="btn-newer" onclick="page=Math.max(0,page-1); load()" class="badge-blue px-3 py-1.5 rounded font-medium">Newer &rarr;</button>
+  </div>
+
+  <!-- Chart -->
+  <div class="card p-4">
+    <canvas id="chart"></canvas>
+  </div>
+
+  <!-- Paginated table -->
+  <div class="card p-4 overflow-x-auto">
+    <table class="w-full text-xs text-left">
+      <thead class="text-slate-500 border-b border-slate-700">
+        <tr><th class="py-2 pr-4">Timestamp (UTC)</th><th class="py-2 pr-4">Series</th><th class="py-2 pr-4">Value</th></tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+    <p id="table-empty" class="hidden text-slate-500 text-sm py-6 text-center">No data in this window.</p>
+  </div>
+
+</div>
+
+<script>
+let page = 0;
+let chart = null;
+
+async function loadRigs() {
+  try {
+    const cfg = await (await fetch('/api/config')).json();
+    const sel = document.getElementById('f-rig');
+    (cfg.rigs || []).forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.name; opt.textContent = r.name;
+      sel.appendChild(opt);
+    });
+  } catch (e) { /* non-fatal — "All rigs" still works */ }
+}
+
+function resetAndLoad() { page = 0; load(); }
+
+function fmtTs(epochSec) {
+  return new Date(epochSec * 1000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+}
+
+async function load() {
+  const metric = document.getElementById('f-metric').value;
+  const rig = document.getElementById('f-rig').value;
+  const machine = document.getElementById('f-machine').value.trim();
+  const gpu = document.getElementById('f-gpu').value.trim();
+  const hours = document.getElementById('f-hours').value;
+
+  const params = new URLSearchParams({ metric, hours, page, points: 300 });
+  if (rig) params.set('rig', rig);
+  if (machine) params.set('machine_id', machine);
+  if (gpu) params.set('gpu_idx', gpu);
+
+  document.getElementById('status-line').textContent = 'Loading…';
+  const warn = document.getElementById('prom-warning');
+
+  let data;
+  try {
+    const resp = await fetch('/api/history?' + params.toString());
+    data = await resp.json();
+  } catch (e) {
+    warn.textContent = '⚠ Could not reach /api/history: ' + e;
+    warn.classList.remove('hidden');
+    return;
+  }
+
+  if (data.error) {
+    warn.textContent = '⚠ ' + data.error + ' — Prometheus may not be reachable from this rig (history is only served from the hub).';
+    warn.classList.remove('hidden');
+    document.getElementById('status-line').textContent = 'Error';
+    return;
+  }
+  warn.classList.add('hidden');
+
+  document.getElementById('page-range').textContent =
+    fmtTs(data.start) + '  →  ' + fmtTs(data.end) + '  (page ' + data.page + ')';
+  document.getElementById('btn-newer').disabled = data.page === 0;
+  document.getElementById('btn-newer').style.opacity = data.page === 0 ? '0.4' : '1';
+
+  const series = (data.result && data.result.result) || [];
+  document.getElementById('status-line').textContent =
+    series.length + ' series, window ' + hours + 'h';
+
+  try {
+    renderChart(metric, series);
+  } catch (e) {
+    console.error('chart render failed (table below still works):', e);
+  }
+  renderTable(series);
+}
+
+function seriesLabel(metric) {
+  return function (m) {
+    const parts = [];
+    if (m.rig) parts.push(m.rig);
+    if (m.gpu_idx !== undefined) parts.push('gpu' + m.gpu_idx);
+    if (m.machine_id) parts.push('m' + m.machine_id);
+    if (m.stat) parts.push(m.stat);
+    if (m.target_stat) parts.push(m.target_stat);
+    return parts.join(' / ') || metric;
+  };
+}
+
+function renderChart(metric, series) {
+  const labelFn = seriesLabel(metric);
+  const colors = ['#60a5fa', '#4ade80', '#fbbf24', '#f87171', '#c084fc', '#22d3ee', '#f472b6'];
+
+  // Range-vector responses can have gaps per series, so build one shared,
+  // sorted timestamp axis (the union across series) and align each dataset
+  // to it with nulls for missing points — Chart.js gaps a line dataset on
+  // null rather than interpolating across it.
+  const allTs = new Set();
+  series.forEach(s => s.values.forEach(v => allTs.add(v[0])));
+  const sortedTs = Array.from(allTs).sort((a, b) => a - b);
+  const labels = sortedTs.map(fmtTs);
+
+  const datasets = series.map((s, i) => {
+    const byTs = new Map(s.values.map(v => [v[0], parseFloat(v[1])]));
+    return {
+      label: labelFn(s.metric),
+      data: sortedTs.map(t => (byTs.has(t) ? byTs.get(t) : null)),
+      borderColor: colors[i % colors.length],
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 0,
+      spanGaps: false,
+      tension: 0.15,
+    };
+  });
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('chart'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      animation: false,
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 12, autoSkip: true }, grid: { color: '#1a3a5c' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#1a3a5c' } },
+      },
+      plugins: { legend: { labels: { color: '#cbd5e1', font: { size: 11 } } } },
+    },
+  });
+}
+
+function renderTable(series) {
+  const labelFn = seriesLabel(document.getElementById('f-metric').value);
+  const tbody = document.getElementById('table-body');
+  tbody.innerHTML = '';
+  let rows = [];
+  series.forEach(s => {
+    const label = labelFn(s.metric);
+    s.values.forEach(v => rows.push({ ts: v[0], label, value: v[1] }));
+  });
+  rows.sort((a, b) => b.ts - a.ts);
+  rows = rows.slice(0, 500); // keep the table itself light even if the chart holds more
+  document.getElementById('table-empty').classList.toggle('hidden', rows.length > 0);
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-slate-800/60';
+    tr.innerHTML = `<td class="py-1.5 pr-4 text-slate-400">${fmtTs(r.ts)}</td>
+                    <td class="py-1.5 pr-4 text-slate-300">${r.label}</td>
+                    <td class="py-1.5 pr-4 font-mono text-slate-200">${parseFloat(r.value).toFixed(3)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+loadRigs().then(resetAndLoad);
+</script>
+</body>
+</html>
