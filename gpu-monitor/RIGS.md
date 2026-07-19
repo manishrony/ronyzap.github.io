@@ -43,12 +43,26 @@ per-GPU temp/power/fan/util, per-machine rental rate/rented-count, market
 stats, listing price/target, daily earnings). Running `install.sh` **with
 peer URLs set** (i.e. on the hub) also installs and configures a central
 Prometheus on that rig, scraping itself plus every peer every 30s, retained
-for **10 years** (`--storage.tsdb.retention.time=10y` — disk is abundant on
-these rigs and this data volume is trivial even over years; the JSONL log
-was always one `purge-earnings`/log-rotation away from losing history,
-Prometheus isn't). Nodes (non-hub) don't run Prometheus themselves — the
-whole point of the central design is one place to query all three rigs'
-history, matching how the combined dashboard already proxies peer data.
+for **14 days** (`--storage.tsdb.retention.time=14d` — matches what the
+dashboard itself actually needs: the History page, Occupancy's 24h/7d/14d
+windows, Daily Summary's "yesterday", and month-to-date profit, which caps
+its own window to this same 2-week retention rather than silently
+undercounting once a query reaches further back than Prometheus still has
+— see `profit_api.py`'s `RETENTION_LOOKBACK_DAYS`). Nodes (non-hub) don't
+run Prometheus themselves — the whole point of the central design is one
+place to query all three rigs' history, matching how the combined
+dashboard already proxies peer data.
+
+Retention was originally 10 years (kept "everything, forever" as an
+explicit design goal); changed to 14 days on 2026-07-19 since nothing in
+the dashboard reaches back further than that. **This means data older than
+14 days — including the historical backfill described below — gets pruned
+away on Prometheus's own compaction schedule regardless of how it got
+there.** The raw JSONL event log (and its own daily gzip backup,
+`gpu-backup.timer`, also 14-day retention) remains the longer-lived record
+if you ever need to go back further than Prometheus now does; re-running
+the backfill procedure below would only re-populate the same 14-day window
+Prometheus is about to prune again.
 
 - Prometheus UI: `http://<hub-ip>:9090` (its own query browser/graphing, if
   you want raw PromQL access beyond the dashboard's History page)
@@ -152,6 +166,11 @@ estimated today/month-to-date profit, fleet-wide. Built entirely on gauges
   `gpu_power_draw_watts` (has real backfilled depth, unlike the newer
   `rig_electricity_cost_dollars_per_hour`) against each rig's own
   `rig_energy_rate_dollars_per_kwh`, not the same short-lived derived gauge.
+  Since Prometheus's retention is 14 days, "month to date" also caps its own
+  query window to that (`RETENTION_LOOKBACK_DAYS`) and relabels itself "Last
+  Nd Profit" once a month runs past day ~13 — the alternative (querying past
+  what Prometheus still has) would silently drop the early days of the
+  month out of the sum with no visible sign the number was now wrong.
 
 The whole panel hides itself (rather than showing a wall of "—") if
 `/api/profit` errors — expected on a standalone node, since Prometheus
@@ -161,7 +180,8 @@ only runs on the hub.
 
 The combined dashboard's "Occupancy" row (`/api/occupancy`,
 `occupancy_api.py`) — how much of the fleet's GPU-time is actually rented
-vs. idle, per GPU slot, over a selectable window (24h/7d/30d), plus an
+vs. idle, per GPU slot, over a selectable window (24h/7d/14d — capped at
+14d to match Prometheus's own retention), plus an
 estimated dollar cost of the idle time. Built on `gpu_slot_rented` and
 `listing_price_dollars_per_hour`, both of which `prom_exporter.py` already
 scrapes every cycle:
@@ -189,21 +209,31 @@ Prometheus never deletes a label value just because the exporter stops
 writing it — the old series (e.g. a leftover `rig="Zappa1"` from before the
 2026-07-19 hostname-labeling fix) stays queryable for as long as any
 `avg_over_time(...[window])` still reaches back to touch its last samples.
-It ages out of a 24h view within a day, but pollutes 7d/30d views for up to
-a month unless removed directly. To purge it (run on the hub, zappa1, as
-root):
+Since retention is now 14 days, it ages out on its own within 2 weeks either
+way — but to purge it immediately rather than wait (run on the hub, zappa1,
+as root):
 
 ```bash
-# 1. Temporarily enable the TSDB admin API
-sudo sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=10y --web.enable-admin-api"|' /etc/default/prometheus
+# 1. Enable the TSDB admin API (keep the retention flag as-is — only add
+#    --web.enable-admin-api, don't reset retention.time back to a stale value)
+sudo sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=14d --web.enable-admin-api"|' /etc/default/prometheus
 sudo systemctl restart prometheus
 
-# 2. Delete the stale series (adjust the label match to whatever's stale)
-curl -X POST 'http://localhost:9090/api/v1/admin/tsdb/delete_series?match[]={rig="Zappa1"}'
+# restart returns before Prometheus is actually listening — wait for it,
+# don't fire the curls immediately after (bit us the first time around)
+until curl -s -o /dev/null http://localhost:9090/-/ready; do sleep 1; done
+
+# 2. Delete the stale series — use --data-urlencode, not a raw query string;
+#    appending {rig="Zappa1"} directly to the URL loses the "{" in transit
+#    and Prometheus rejects it with a parse error (bit us too)
+curl -X POST -g 'http://localhost:9090/api/v1/admin/tsdb/delete_series' --data-urlencode 'match[]={rig="Zappa1"}'
 curl -X POST 'http://localhost:9090/api/v1/admin/tsdb/clean_tombstones'
 
-# 3. Turn the admin API back off
-sudo sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=10y"|' /etc/default/prometheus
+# 3. Verify it's gone before moving on
+curl -s 'http://localhost:9090/api/v1/label/rig/values'
+
+# 4. Turn the admin API back off
+sudo sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=14d"|' /etc/default/prometheus
 sudo systemctl restart prometheus
 ```
 

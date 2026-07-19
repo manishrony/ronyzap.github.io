@@ -14,7 +14,12 @@ so integrating it over a multi-week "month to date" window would silently
 average the last few hours of real samples and then multiply that average
 across weeks it was never actually measured for — a large, confirmed
 overestimate. rig_daily_earnings_dollars has real depth back to ~June 8
-(the historical backfill), so summing actual per-day totals is correct.
+(the historical backfill), so summing actual per-day totals is correct —
+though since Prometheus itself only retains 14 days (see install.sh), that
+backfilled depth only matters within the retention window; the
+RETENTION_LOOKBACK_DAYS cap below keeps "month to date" honest about that
+instead of silently undercounting once a query window reaches past what
+Prometheus still has.
 
 Daily/monthly ELECTRICITY has no ground-truth equivalent (it's our own
 estimate either way), so it's estimated by integrating gpu_power_draw_watts
@@ -28,6 +33,15 @@ has no auth in front of it.
 """
 import datetime
 import prom_client
+
+# Prometheus itself only retains 14 days (see install.sh) — a calendar
+# "month to date" window reaching further back than that would silently
+# drop the earlier days out of the sum rather than erroring, understating
+# revenue for the back half of any month with no visible sign anything was
+# wrong. Capping the query window here (with a 1-day safety margin) and
+# reporting whether it got capped lets the caller show an honest label
+# ("last 13d" rather than "since day 1") instead of a wrong-looking number.
+RETENTION_LOOKBACK_DAYS = 13
 
 _INSTANT_METRICS = [
     "rig_revenue_dollars_per_hour",
@@ -146,15 +160,18 @@ def get_period_profit(prom_url, now_ts=None):
     now = now.replace(tzinfo=datetime.timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = day_start.replace(day=1)
+    lookback_start = now - datetime.timedelta(days=RETENTION_LOOKBACK_DAYS)
+    window_start = max(month_start, lookback_start)
+    window_capped = window_start > month_start
     now_epoch = now.timestamp()
     today_str = now.strftime("%Y-%m-%d")
 
-    earnings = _earnings_by_rig_date(prom_url, month_start.timestamp(), now_epoch)
+    earnings = _earnings_by_rig_date(prom_url, window_start.timestamp(), now_epoch)
     month_revenue = sum(earnings.values())
     day_revenue = sum(v for (rig, date), v in earnings.items() if date == today_str)
 
     day_elec = _estimate_electricity_cost(prom_url, day_start.timestamp(), now_epoch)
-    month_elec = _estimate_electricity_cost(prom_url, month_start.timestamp(), now_epoch)
+    month_elec = _estimate_electricity_cost(prom_url, window_start.timestamp(), now_epoch)
 
     return {
         "today": {
@@ -167,7 +184,8 @@ def get_period_profit(prom_url, now_ts=None):
             "revenue": round(month_revenue, 2),
             "electricity": round(month_elec, 2),
             "profit": round(month_revenue - month_elec, 2),
-            "days_elapsed": round((now_epoch - month_start.timestamp()) / 86400.0, 1),
+            "days_elapsed": round((now_epoch - window_start.timestamp()) / 86400.0, 1),
+            "window_capped": window_capped,
         },
     }
 
