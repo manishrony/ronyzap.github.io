@@ -1005,6 +1005,18 @@ cpu_freq_adjust() {
     [[ "$hw_max" =~ ^[0-9]+$ && "$cur_max" =~ ^[0-9]+$ ]] || return
     cap_khz=$(( CPU_FREQ_CAP_MHZ * 1000 ))
     local throttle_since_file="/var/tmp/gpu_monitor_cpu_throttle_since"
+
+    # Make sure the dwell clock is running whenever the CPU is CURRENTLY
+    # capped-or-lower — not just on the exact cycle we cap it ourselves.
+    # Without this, a gpu-monitor restart (deploy, crash, manual restart)
+    # that happens to land while the CPU is already capped from before
+    # inherits that state with no recorded start time, so the very next
+    # cool reading gets a free pass to restore immediately — confirmed
+    # live 2026-07-19: restarted mid-flap, immediately restored once, then
+    # self-corrected on the next real cap transition. This closes that gap
+    # so it can't happen even once.
+    (( cur_max <= cap_khz )) && { [[ -f "$throttle_since_file" ]] || date +%s > "$throttle_since_file" 2>/dev/null; }
+
     if (( ct >= CPU_FREQ_HOT_TEMP && cur_max > cap_khz )); then
         _set_cpu_max_freq "$cap_khz"
         [[ -f "$throttle_since_file" ]] || date +%s > "$throttle_since_file" 2>/dev/null
@@ -1020,7 +1032,7 @@ cpu_freq_adjust() {
         if [[ -f "$throttle_since_file" ]]; then
             throttled_secs=$(( $(date +%s) - $(cat "$throttle_since_file" 2>/dev/null || echo 0) ))
         else
-            throttled_secs=$CPU_FREQ_MIN_THROTTLE_SECS   # no record of when it started — don't block the restore
+            throttled_secs=$CPU_FREQ_MIN_THROTTLE_SECS   # not currently capped at all — nothing to wait on
         fi
         if (( throttled_secs >= CPU_FREQ_MIN_THROTTLE_SECS )); then
             _set_cpu_max_freq "$hw_max"
