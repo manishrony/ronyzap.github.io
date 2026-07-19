@@ -36,6 +36,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_peer()
         elif self.path.startswith("/api/diag/"):
             self._serve_diag()
+        elif self.path.startswith("/api/history/rigs"):
+            self._serve_history_rigs()
         elif self.path.startswith("/api/history"):
             self._serve_history()
         elif self.path in ("/history", "/history.html"):
@@ -67,7 +69,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Prometheus scrape target — current per-GPU/per-machine state, no
         auth (same posture as /api/data; this is a private LAN endpoint)."""
         try:
-            body = prom_exporter.render_metrics(DATA_FILE, STATE_FILE, SELF_NAME).encode()
+            body = prom_exporter.render_metrics(DATA_FILE, STATE_FILE).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -79,6 +81,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             try: self.send_error(500, str(e))
             except BrokenPipeError: pass
+
+    def _serve_history_rigs(self):
+        """Real `rig` label values from Prometheus, for the History page's
+        filter dropdown — NOT the display names from /api/config (see
+        history_api.list_rigs's docstring for why those can diverge)."""
+        try:
+            rigs = history_api.list_rigs(PROMETHEUS_URL)
+            body = json.dumps({"rigs": rigs}).encode()
+            status = 200
+        except Exception as e:
+            body = json.dumps({"error": str(e), "rigs": []}).encode()
+            status = 400
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def _serve_history(self):
         """Paginated historical query against the central Prometheus (hub

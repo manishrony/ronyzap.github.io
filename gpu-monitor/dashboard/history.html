@@ -121,12 +121,15 @@ let page = 0;
 let chart = null;
 
 async function loadRigs() {
+  // Pulled from Prometheus's actual `rig` label values, not /api/config's
+  // display names — those can diverge from what the exporter labels metrics
+  // with (see history_api.list_rigs / prom_exporter.render_metrics).
   try {
-    const cfg = await (await fetch('/api/config')).json();
+    const data = await (await fetch('/api/history/rigs')).json();
     const sel = document.getElementById('f-rig');
-    (cfg.rigs || []).forEach(r => {
+    (data.rigs || []).forEach(name => {
       const opt = document.createElement('option');
-      opt.value = r.name; opt.textContent = r.name;
+      opt.value = name; opt.textContent = name;
       sel.appendChild(opt);
     });
   } catch (e) { /* non-fatal — "All rigs" still works */ }

@@ -100,8 +100,16 @@ def _parse_state_file(path):
     return out
 
 
-def render_metrics(data_file, state_file, rig_name=None):
-    rig = rig_name or socket.gethostname()
+def render_metrics(data_file, state_file):
+    # Always label by hostname, never by a display name (SELF_NAME) — the
+    # hub's install.sh call passes a capitalized SELF_NAME ("Zappa1") for UI
+    # display, but backfill-prometheus.py labels by whatever --rig string the
+    # operator typed (conventionally the lowercase hostname). Labeling by
+    # SELF_NAME here would split one rig's live and backfilled history into
+    # two different `rig` values in Prometheus — confirmed happening on
+    # Zappa1 (2026-07-19): "Zappa1" (live) vs. "zappa1" (backfilled) as
+    # separate, non-matching series.
+    rig = socket.gethostname()
     m = MetricSet()
 
     # --- Latest gpu_status snapshot (per-GPU temp/power/fan/util/proc) ---

@@ -72,6 +72,19 @@ def query_range(prom_url, query, start, end, step):
         return json.loads(resp.read())
 
 
+def list_rigs(prom_url):
+    """Actual `rig` label values Prometheus has seen — NOT the display names
+    from /api/config. Those come from SELF_NAME/PEER_NAMES, which an operator
+    can set to anything ("Zappa1") independent of the hostname the exporter
+    actually labels metrics with; using the config names for the History
+    dropdown would let a rig's display name silently stop matching its own
+    data (confirmed happening: Zappa1's SELF_NAME vs. its hostname label)."""
+    url = f"{prom_url.rstrip('/')}/api/v1/label/rig/values"
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        data = json.loads(resp.read())
+    return sorted(data.get("data", []))
+
+
 def handle_history_request(prom_url, query_params, now_ts):
     """query_params: dict of str -> list[str] (as from urllib.parse.parse_qs).
     now_ts: current unix time (injected so this stays testable without mocking time.time())."""
