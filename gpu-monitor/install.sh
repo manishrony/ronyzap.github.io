@@ -45,6 +45,10 @@ PDUPOWER_SRC="$(dirname "$0")/pdu-power.sh"
 PDUPOWER_DEST="/usr/local/bin/pdu-power"
 BACKFILLPROM_SRC="$(dirname "$0")/backfill-prometheus.py"
 BACKFILLPROM_DEST="/usr/local/bin/backfill-prometheus"
+BACKUP_SRC="$(dirname "$0")/backup-jsonl.sh"
+BACKUP_DEST="/usr/local/bin/backup-jsonl"
+BACKUP_SVC="/etc/systemd/system/gpu-backup.service"
+BACKUP_TIMER="/etc/systemd/system/gpu-backup.timer"
 DASH_SRC="$(dirname "$0")/dashboard"
 DASH_DEST="/opt/gpu-monitor/dashboard"
 MONITOR_SVC="/etc/systemd/system/gpu-monitor.service"
@@ -97,6 +101,32 @@ chmod +x "$PDUPOWER_DEST"
 echo "[*] Installing backfill-prometheus helper (run manually, one-off per rig)..."
 cp "$BACKFILLPROM_SRC" "$BACKFILLPROM_DEST"
 chmod +x "$BACKFILLPROM_DEST"
+
+echo "[*] Installing backup-jsonl helper + daily backup timer (14-day retention)..."
+cp "$BACKUP_SRC" "$BACKUP_DEST"
+chmod +x "$BACKUP_DEST"
+cat > "$BACKUP_SVC" <<EOF
+[Unit]
+Description=GPU Monitor daily JSONL backup
+
+[Service]
+Type=oneshot
+ExecStart=$BACKUP_DEST
+User=root
+EOF
+cat > "$BACKUP_TIMER" <<EOF
+[Unit]
+Description=Run gpu-backup daily (14-day retention)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now gpu-backup.timer
 
 echo "[*] Installing dashboard to $DASH_DEST ..."
 mkdir -p "$DASH_DEST"
@@ -247,6 +277,7 @@ echo "     Machine dump:dump-machine-json [outfile] (one-off: dump this rig's fu
 echo "     Earnings:  earnings-today (today's rentals, times, prices + revenue; pass YYYY-MM-DD for a past day)"
 echo "     PDU power: pdu-power (live rack watts + today/lifetime kWh & cost; hub rig only, needs PDU_HOSTS)"
 echo "     Backfill:  backfill-prometheus --rig <name> --out <file>.om (one-off per rig: JSONL+log -> OpenMetrics for historical import, see RIGS.md)"
+echo "     Backup:    daily JSONL backup -> /var/backups/gpu-monitor, 14-day retention (gpu-backup.timer; run backup-jsonl manually to test)"
 CHAT_KEY_NAME=$(echo "$CHAT_PROVIDER" | tr '[:lower:]' '[:upper:]')_API_KEY
 if [[ -f /etc/gpu_monitor.conf ]] && grep -q "^${CHAT_KEY_NAME}=.\+" /etc/gpu_monitor.conf 2>/dev/null; then
     echo "     Chat:      enabled ($CHAT_KEY_NAME set, LLM_PROVIDER=$CHAT_PROVIDER) — read-only Rig Assistant on the combined dashboard"
