@@ -552,25 +552,26 @@ higher steady-state price than `median` did. That higher ceiling is offset
 by a low **entry anchor** (below) so a machine doesn't sit priced at the
 full mean while empty — it starts cheap and climbs.
 
-### Entry anchor: start at mean − 20%, climb back up 1-2¢ at a time
+### Entry anchor: start at median − 20%, climb up 1-2¢ at a time toward mean
 
 A **never-priced machine** (just listed, current price is $0) no longer
-jumps straight to the hard floor — it's anchored to `market_mean x
-(1 - START_PRICE_DISCOUNT)` (default **20%** below the fee-adjusted mean),
-a deliberately low, attractive opening price. Falls back to the hard floor
-if market mean isn't available that cycle, or if the anchor itself computes
-below the floor.
+jumps straight to the hard floor — it's anchored to `market_median x
+(1 - START_PRICE_DISCOUNT)` (default **20%** below the fee-adjusted
+**median** — deliberately the lower stat, not the mean it's climbing
+toward, for an aggressive opening price), a deliberately low, attractive
+opening price. Falls back to the hard floor if market median isn't
+available that cycle, or if the anchor itself computes below the floor.
 
 ```bash
-START_PRICE_DISCOUNT=0.20   # 20% below fee-adjusted mean = the entry price
+START_PRICE_DISCOUNT=0.20   # 20% below fee-adjusted median = the entry price
 ```
 
 From the very next pricing cycle on, that machine is indistinguishable from
 any other machine sitting more than 2¢ below its target — it climbs back
-toward `PRICE_TARGET_STAT` via the same random 1-2¢ up-step every cycle
-that any below-target machine gets (see `PRICE_ADJUST_UP_MIN/MAX` below).
-Net effect: **start ~20% under mean, then slowly walk up toward mean** —
-not a one-time discount that sticks around.
+toward `PRICE_TARGET_STAT` (mean) via the same random 1-2¢ up-step every
+cycle that any below-target machine gets (see `PRICE_ADJUST_UP_MIN/MAX`
+below). Net effect: **start ~20% under median, then slowly walk up toward
+mean** — not a one-time discount that sticks around.
 
 ### Idle-listing re-anchor (don't chase the target when nobody's renting)
 
@@ -579,7 +580,7 @@ If a listing (or a partially-rented machine's free GPU slot) sits
 listing itself is the market telling us the price is already too rich —
 continuing to climb toward the target only makes that worse. Once a
 machine crosses that threshold, `vastai_pricing()` re-anchors it to the
-same low entry price a fresh listing gets (`market_mean x (1 -
+same low entry price a fresh listing gets (`market_median x (1 -
 START_PRICE_DISCOUNT)`) **once** per vacancy — tracked via a per-machine
 `<machine_id>.idle_reset` marker file alongside the vacancy timestamp, so
 the re-anchor fires on the cycle vacancy first crosses the threshold, not

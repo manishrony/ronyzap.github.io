@@ -321,14 +321,15 @@ MARKET_PRICE_DISCOUNT=0.90
 PRICE_TARGET_STAT="${PRICE_TARGET_STAT:-mean}"
 
 # A never-priced machine (just listed) or one that just crossed
-# IDLE_LISTING_THRESHOLD unrented gets anchored to (fee-adjusted mean) x
-# (1 - START_PRICE_DISCOUNT) — a deliberately low, attractive opening price —
-# rather than jumping straight to PRICE_TARGET_STAT or the hard floor. From
-# the next pricing cycle on, it's indistinguishable from any other
-# below-target machine and climbs back toward PRICE_TARGET_STAT via the
-# normal 1-2¢ random step (see vastai_pricing()) — so the net effect is
-# "start ~20% under mean, then slowly walk up toward mean," not a permanent
-# discount. Falls back to the hard floor if market mean isn't available yet.
+# IDLE_LISTING_THRESHOLD unrented gets anchored to (fee-adjusted median) x
+# (1 - START_PRICE_DISCOUNT) — a deliberately low, attractive opening price,
+# lower than the PRICE_TARGET_STAT (mean) it'll climb toward — rather than
+# jumping straight to the target or the hard floor. From the next pricing
+# cycle on, it's indistinguishable from any other below-target machine and
+# climbs back toward PRICE_TARGET_STAT via the normal 1-2¢ random step (see
+# vastai_pricing()) — so the net effect is "start ~20% under median, then
+# slowly walk up toward mean," not a permanent discount. Falls back to the
+# hard floor if market median isn't available yet.
 START_PRICE_DISCOUNT="${START_PRICE_DISCOUNT:-0.20}"
 
 # How long a listing (or a partially-rented machine's free GPU slot) can sit
@@ -2733,18 +2734,20 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
         adjust_down=$(printf "%.4f" "$(echo "scale=4; $down_cents / 100" | bc)")
 
         # Low, attractive opening anchor for a never-priced machine or one
-        # that just crossed the idle threshold: fee-adjusted mean x
-        # (1 - START_PRICE_DISCOUNT). Falls back to the hard floor if market
-        # mean isn't available this cycle.
+        # that just crossed the idle threshold: fee-adjusted median x
+        # (1 - START_PRICE_DISCOUNT) — deliberately based on median, not the
+        # (higher) mean target, so the opening price is aggressive relative
+        # to where it's climbing toward. Falls back to the hard floor if
+        # market median isn't available this cycle.
         local start_price="$floor"
-        if [[ -n "$market_mean" && "$market_mean" != "0" ]]; then
-            start_price=$(printf "%.4f" "$(echo "scale=4; $market_mean * (1 - $START_PRICE_DISCOUNT)" | bc)")
+        if [[ -n "$market_median" && "$market_median" != "0" ]]; then
+            start_price=$(printf "%.4f" "$(echo "scale=4; $market_median * (1 - $START_PRICE_DISCOUNT)" | bc)")
         fi
 
         local new_price direction
         if (( $(echo "${cur_bid:-0} < 0.01" | bc -l) )); then
             new_price="$start_price"
-            direction="↑ (was \$0 — anchored to mean-${START_PRICE_DISCOUNT} \$$start_price)"
+            direction="↑ (was \$0 — anchored to median-${START_PRICE_DISCOUNT} \$$start_price)"
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
             new_price="$floor"
             direction="↑ (below floor \$$floor)"
@@ -2758,7 +2761,7 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             # the same way any other below-target machine does.
             touch "$idle_reset_file" 2>/dev/null || true
             new_price="$start_price"
-            direction="↓/↑ (idle ${vacancy_hours}h+ unrented — re-anchored to mean-${START_PRICE_DISCOUNT} \$$start_price to re-attract)"
+            direction="↓/↑ (idle ${vacancy_hours}h+ unrented — re-anchored to median-${START_PRICE_DISCOUNT} \$$start_price to re-attract)"
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
             direction="↓ ${down_cents}¢ (above ${target_label})"
