@@ -72,3 +72,29 @@ def group_by_labels(results, labels):
         except (KeyError, ValueError, TypeError, IndexError):
             pass
     return out
+
+
+def range_by_series(prom_url, query, start_ts, end_ts, step_s, label_keys):
+    """query_range wrapper for callers that walk a metric's actual value
+    history point-by-point (edge/threshold detection, time-weighted
+    integrals) rather than just reading the matrix shape. Returns
+    {label-tuple: [(ts, float value), ...]} for every series touched by the
+    range, sorted by timestamp (query_range already returns them that way,
+    but sort defensively). Used by events_api.py and health_api.py so the
+    walk-the-samples logic exists in one place, not two."""
+    data = query_range(prom_url, query, start_ts, end_ts, step_s)
+    out = {}
+    for series in data.get("result", []):
+        metric = series.get("metric", {})
+        key = tuple(metric.get(k) for k in label_keys)
+        if None in key:
+            continue
+        pts = []
+        for ts, v in series.get("values") or []:
+            try:
+                pts.append((float(ts), float(v)))
+            except (ValueError, TypeError):
+                continue
+        pts.sort(key=lambda p: p[0])
+        out[key] = pts
+    return out

@@ -33,28 +33,6 @@ def _iso(ts):
     return datetime.datetime.utcfromtimestamp(ts).isoformat() + "Z"
 
 
-def _range_by_series(prom_url, query, start_ts, end_ts, step_s, label_keys):
-    """{label-tuple: [(ts, float value), ...]} for every series touched by
-    the range, sorted by timestamp (query_range already returns them that
-    way, but sort defensively)."""
-    data = prom_client.query_range(prom_url, query, start_ts, end_ts, step_s)
-    out = {}
-    for series in data.get("result", []):
-        metric = series.get("metric", {})
-        key = tuple(metric.get(k) for k in label_keys)
-        if None in key:
-            continue
-        pts = []
-        for ts, v in series.get("values") or []:
-            try:
-                pts.append((float(ts), float(v)))
-            except (ValueError, TypeError):
-                continue
-        pts.sort(key=lambda p: p[0])
-        out[key] = pts
-    return out
-
-
 def _temp_alerts(series_by_key, label_keys, rise_at, fall_at, event_type, badge):
     """Hysteresis crossing detection: an "alert" event when a series rises
     through `rise_at`, a "recovered" event when it later falls back through
@@ -134,25 +112,25 @@ def _collect_events(prom_url, window_hours, now_ts=None):
     events = []
 
     try:
-        gpu_temp = _range_by_series(prom_url, "gpu_temp_celsius", start_ts, end_ts, step_s, ("rig", "gpu_idx"))
+        gpu_temp = prom_client.range_by_series(prom_url, "gpu_temp_celsius", start_ts, end_ts, step_s, ("rig", "gpu_idx"))
         events += _temp_alerts(gpu_temp, ("rig", "gpu_idx"), GPU_TEMP_RISE_C, GPU_TEMP_FALL_C, "gpu_temp_alert", "\U0001f321️ GPU TEMP")
     except Exception:
         pass
 
     try:
-        cpu_temp = _range_by_series(prom_url, "rig_cpu_temp_celsius", start_ts, end_ts, step_s, ("rig",))
+        cpu_temp = prom_client.range_by_series(prom_url, "rig_cpu_temp_celsius", start_ts, end_ts, step_s, ("rig",))
         events += _temp_alerts(cpu_temp, ("rig",), CPU_TEMP_RISE_C, CPU_TEMP_FALL_C, "cpu_temp_alert", "\U0001f525 CPU TEMP")
     except Exception:
         pass
 
     try:
-        rented = _range_by_series(prom_url, "gpu_slot_rented", start_ts, end_ts, step_s, ("rig", "machine_id", "gpu_idx"))
+        rented = prom_client.range_by_series(prom_url, "gpu_slot_rented", start_ts, end_ts, step_s, ("rig", "machine_id", "gpu_idx"))
         events += _rental_changes(rented, ("rig", "machine_id", "gpu_idx"))
     except Exception:
         pass
 
     try:
-        price = _range_by_series(prom_url, "listing_price_dollars_per_hour", start_ts, end_ts, step_s, ("rig", "machine_id"))
+        price = prom_client.range_by_series(prom_url, "listing_price_dollars_per_hour", start_ts, end_ts, step_s, ("rig", "machine_id"))
         events += _price_changes(price, ("rig", "machine_id"))
     except Exception:
         pass

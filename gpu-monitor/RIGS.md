@@ -295,6 +295,39 @@ formatting logic duplicated in JS. Query params: `hours` (window, default
 matches Prometheus's own `rig` label, e.g. `zappa1`, not the display name
 `Zappa1`).
 
+## Fleet Health Score + Active Alerts (hub only)
+
+The combined dashboard's "Fleet Health Score" panel and the red "Active
+Alerts" banner at the top of the page (`/api/health`, `health_api.py`) —
+deliberately narrow in scope, two different questions answered from the
+same thresholds:
+
+- **Health Score** (0-100, per rig + fleet, `?hours=` window default 24h):
+  the percentage of the window every GPU and the CPU stayed OUT of the same
+  amber-zone thresholds `events_api.py` already alerts on (80°C rise / 75°C
+  fall hysteresis, imported from there — one source of truth, "Health Score
+  dropped" and "a temp alert fired" always agree). 100 = never crossed into
+  the amber zone in the window. Computed as time-weighted (integrating the
+  actual duration spent over threshold), not a sample-count average, and
+  aggregated per rig by summing GPU-hours across that rig's GPUs before
+  turning it into a percentage — not by averaging each GPU's own percentage
+  (which would let one always-hot GPU get diluted or overrepresented
+  depending on how many GPUs happen to exist).
+- **Active Alerts** — an INSTANT check (not historical): is any GPU or CPU
+  over threshold *right now*. Answers "what needs attention this second,"
+  as opposed to the Health Score's rearview window or the Recent Events
+  feed's history of things that already happened and resolved.
+
+Deliberately does **not** fold in rental uptime or dashboard reachability —
+that's already answered correctly today by each rig's own client-side
+`/api/data` fetch succeeding or not (the pill badges on the combined
+dashboard). Re-deriving it through Prometheus's `up` metric was considered
+and rejected: `up` is labeled by scrape `instance` (host:port), not by the
+`rig` label every other metric here carries, and stitching one to the
+other would need a static instance-to-rig map — exactly the kind of thing
+that quietly drifts out of sync, the same class of bug as the
+Zappa1/zappa1 mismatch earlier this session.
+
 ## Per-node install (no peers)
 
 ```bash
