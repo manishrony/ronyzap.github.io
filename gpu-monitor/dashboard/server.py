@@ -5,6 +5,7 @@ from pathlib import Path
 import assistant
 import prom_exporter
 import history_api
+import profit_api
 import time
 
 DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
@@ -44,6 +45,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_history_rigs()
         elif self.path.startswith("/api/history"):
             self._serve_history()
+        elif self.path.startswith("/api/profit"):
+            self._serve_profit()
         elif path_only in ("/history", "/history.html"):
             self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
         elif path_only in ("/", "/index.html"):
@@ -85,6 +88,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             try: self.send_error(500, str(e))
             except BrokenPipeError: pass
+
+    def _serve_profit(self):
+        """Live + today/month-to-date profit metrics (hub only — see
+        profit_api.py). No query params; always covers every rig Prometheus
+        has data for."""
+        try:
+            result = profit_api.handle_profit_request(PROMETHEUS_URL, time.time())
+            body = json.dumps(result).encode()
+            status = 200
+        except Exception as e:
+            body = json.dumps({"error": str(e)}).encode()
+            status = 400
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def _serve_history_rigs(self):
         """Real `rig` label values from Prometheus, for the History page's

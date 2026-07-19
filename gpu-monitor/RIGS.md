@@ -120,6 +120,35 @@ just creates additional blocks; duplicate/overlapping samples are harmless
 (Prometheus dedupes identical points, and re-importing doesn't erase
 anything already scraped live).
 
+## Live Profit Metrics (hub only)
+
+The combined dashboard's "Live Profit" row (`/api/profit`, `profit_api.py`) —
+revenue/hr, electricity/hr, profit/hr, revenue per GPU/watt/kWh, and
+estimated today/month-to-date profit, fleet-wide. Built entirely on gauges
+`prom_exporter.py` already computes every scrape:
+
+- **Revenue/hr** — sum of each rig's live rental rate (same `earn_hour`/
+  instance-rate data the pricing engine and profit throttle already use).
+- **Electricity/hr** — GPU power draw only (not full system draw — CPU/
+  fans/PSU losses aren't metered per-rig anywhere; the APC PDU meters the
+  whole rack collectively, hub-only, so it can't attribute cost to one rig
+  either) x `PDU_ENERGY_RATE` from that rig's own conf. A conservative
+  (slight under-) estimate of true cost, but the only per-rig-decomposable
+  signal actually available on every rig, not just the hub.
+- **Revenue per GPU** — revenue/hr ÷ total GPU count (rented + free), a
+  fleet-monetization-efficiency figure, not just the rented rate.
+- **Today / month-to-date profit** — estimated by integrating the live
+  rate gauges over the elapsed calendar period (avg rate × hours/days so
+  far via PromQL `avg_over_time`), continuously updating. This is
+  deliberately NOT Vast's own `daily_earnings` ground truth (which only
+  syncs once a day and lags "right now") — that figure is still exposed
+  separately (`rig_daily_earnings_dollars`) for cross-checking against
+  this estimate.
+
+The whole panel hides itself (rather than showing a wall of "—") if
+`/api/profit` errors — expected on a standalone node, since Prometheus
+only runs on the hub.
+
 ## Per-node install (no peers)
 
 ```bash

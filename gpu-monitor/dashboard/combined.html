@@ -127,6 +127,52 @@
     </div>
   </div>
 
+  <!-- Live Profit Metrics (Prometheus-backed: revenue vs. estimated GPU
+       electricity cost, works on every rig with no PDU required — hub only,
+       since Prometheus itself only runs there). -->
+  <div id="c-profit-row" class="px-6 pb-2 hidden">
+    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Live Profit — GPU power estimate (fleet-wide)</p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Revenue/hr</p>
+        <p class="text-2xl font-bold text-emerald-400" id="cp-revenue-hr">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Electricity/hr</p>
+        <p class="text-2xl font-bold text-orange-400" id="cp-elec-hr">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Profit/hr</p>
+        <p class="text-2xl font-bold" id="cp-profit-hr">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Today's Profit (est.)</p>
+        <p class="text-2xl font-bold" id="cp-profit-today">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="cp-profit-today-sub"></p>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Month-to-Date Profit (est.)</p>
+        <p class="text-2xl font-bold" id="cp-profit-month">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="cp-profit-month-sub"></p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Revenue / GPU</p>
+        <p class="text-lg font-bold text-blue-300" id="cp-per-gpu">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Revenue / Watt</p>
+        <p class="text-lg font-bold text-blue-300" id="cp-per-watt">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Revenue / kWh</p>
+        <p class="text-lg font-bold text-blue-300" id="cp-per-kwh">—</p>
+      </div>
+    </div>
+    <p class="text-xs text-slate-600 mt-2">Electricity cost is estimated from GPU power draw only (not full system draw — CPU/fans/PSU losses aren't metered per-rig). Today/month figures are a live estimate from integrating the hourly rate, not Vast's own end-of-day sync.</p>
+  </div>
+
   <!-- Power / net-profit row (only shown when a PDU is reporting) -->
   <div id="c-power-row" class="px-6 pb-2 hidden">
     <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rack power (APC PDU) &amp; net profit</p>
@@ -582,6 +628,55 @@ async function fetchAll() {
   await Promise.all(RIGS.map((_,i) => fetchRig(i)));
   document.getElementById("last-updated").textContent = "Last updated: " + new Date().toLocaleTimeString();
   render();
+  fetchProfit();
+}
+
+function fmtMoney(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return "$" + Number(v).toFixed(2);
+}
+function profitColorClass(v) {
+  return v >= 0 ? "text-emerald-400" : "text-red-400";
+}
+
+async function fetchProfit() {
+  // Only meaningful on the hub (Prometheus lives there) — silently hide the
+  // section instead of showing a wall of "—" if it errors (e.g. a standalone
+  // node's dashboard, or Prometheus not reachable).
+  let data;
+  try {
+    const resp = await fetch("/api/profit");
+    data = await resp.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    document.getElementById("c-profit-row").classList.add("hidden");
+    return;
+  }
+  document.getElementById("c-profit-row").classList.remove("hidden");
+
+  const fleet = data.live.fleet;
+  document.getElementById("cp-revenue-hr").textContent = fmtMoney(fleet.revenue_per_hour) + "/hr";
+  document.getElementById("cp-elec-hr").textContent = fmtMoney(fleet.electricity_per_hour) + "/hr";
+  const profitHrEl = document.getElementById("cp-profit-hr");
+  profitHrEl.textContent = fmtMoney(fleet.profit_per_hour) + "/hr";
+  profitHrEl.className = "text-2xl font-bold " + profitColorClass(fleet.profit_per_hour);
+
+  const today = data.periods.today, month = data.periods.month_to_date;
+  const todayEl = document.getElementById("cp-profit-today");
+  todayEl.textContent = fmtMoney(today.profit);
+  todayEl.className = "text-2xl font-bold " + profitColorClass(today.profit);
+  document.getElementById("cp-profit-today-sub").textContent =
+    fmtMoney(today.revenue) + " revenue − " + fmtMoney(today.electricity) + " elec, " + today.hours_elapsed + "h so far";
+
+  const monthEl = document.getElementById("cp-profit-month");
+  monthEl.textContent = fmtMoney(month.profit);
+  monthEl.className = "text-2xl font-bold " + profitColorClass(month.profit);
+  document.getElementById("cp-profit-month-sub").textContent =
+    fmtMoney(month.revenue) + " revenue − " + fmtMoney(month.electricity) + " elec, " + month.days_elapsed + "d so far";
+
+  document.getElementById("cp-per-gpu").textContent = fleet.revenue_per_gpu_per_hour != null ? fmtMoney(fleet.revenue_per_gpu_per_hour) + "/hr" : "—";
+  document.getElementById("cp-per-watt").textContent = fleet.revenue_per_watt_per_hour != null ? "$" + fleet.revenue_per_watt_per_hour.toFixed(5) + "/hr" : "—";
+  document.getElementById("cp-per-kwh").textContent = fleet.revenue_per_kwh != null ? fmtMoney(fleet.revenue_per_kwh) + "/hr" : "—";
 }
 
 function updatePill(idx) {

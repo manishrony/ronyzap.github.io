@@ -15,6 +15,18 @@ import socket
 from pathlib import Path
 
 _RATE_RE = re.compile(r'[-+]?\d*\.?\d+')
+_CONF_FILE = "/etc/gpu_monitor.conf"
+
+
+def _read_energy_rate():
+    """PDU_ENERGY_RATE ($/kWh) from /etc/gpu_monitor.conf — same default
+    (0.25) as gpu_monitor.sh itself uses when the conf doesn't set one."""
+    try:
+        content = Path(_CONF_FILE).read_text(errors="replace")
+    except FileNotFoundError:
+        return 0.25
+    m = re.search(r'^PDU_ENERGY_RATE=["\']?([\d.]+)', content, re.MULTILINE)
+    return float(m.group(1)) if m else 0.25
 
 
 def _to_float(s, default=0.0):
@@ -197,5 +209,30 @@ def render_metrics(data_file, state_file):
 
     if latest_earnings:
         m.add("rig_daily_earnings_dollars", "gauge", "Vast's own daily_earnings total for the most recently synced date.", {"rig": rig, "date": latest_earnings.get("date", "")}, _to_float(latest_earnings.get("total")))
+
+    # --- Live profit gauges: revenue vs. estimated electricity cost ---
+    # GPU power draw only (not full system draw — CPU/fans/PSU losses aren't
+    # metered per-rig anywhere; the PDU meters the whole rack collectively,
+    # hub-only, so it can't attribute cost to one rig either) — a
+    # conservative estimate of true cost, but the only per-rig-decomposable
+    # signal actually available on every rig, not just the hub.
+    if latest_gpu_status:
+        gpus = latest_gpu_status.get("gpus", [])
+        num_gpus = len(gpus)
+        total_power_w = sum(_to_float(g.get("power_draw")) for g in gpus)
+        total_revenue_hr = sum(s["cost"] for s in state.values())
+        energy_rate = _read_energy_rate()
+        elec_cost_hr = total_power_w / 1000.0 * energy_rate
+        profit_hr = total_revenue_hr - elec_cost_hr
+        labels = {"rig": rig}
+        m.add("rig_power_draw_total_watts", "gauge", "Total GPU power draw across this rig (not full system draw).", labels, total_power_w)
+        m.add("rig_revenue_dollars_per_hour", "gauge", "Sum of this rig's machine(s) live rental rate.", labels, total_revenue_hr)
+        m.add("rig_electricity_cost_dollars_per_hour", "gauge", f"Estimated electricity cost/hr from GPU power draw only, at ${energy_rate}/kWh (PDU_ENERGY_RATE).", labels, elec_cost_hr)
+        m.add("rig_profit_dollars_per_hour", "gauge", "rig_revenue_dollars_per_hour minus rig_electricity_cost_dollars_per_hour.", labels, profit_hr)
+        if num_gpus > 0:
+            m.add("rig_revenue_per_gpu_dollars_per_hour", "gauge", "Revenue/hr divided by total GPU count (rented + free) — fleet monetization efficiency, not just the rented rate.", labels, total_revenue_hr / num_gpus)
+        if total_power_w > 0:
+            m.add("rig_revenue_per_watt_dollars_per_hour", "gauge", "Revenue/hr per watt of GPU power draw.", labels, total_revenue_hr / total_power_w)
+            m.add("rig_revenue_per_kwh_dollars", "gauge", "Revenue/hr per kW of GPU power draw.", labels, total_revenue_hr / (total_power_w / 1000.0))
 
     return m.render()
