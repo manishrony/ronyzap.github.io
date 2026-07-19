@@ -76,19 +76,29 @@ def _occupancy_by_machine(prom_url, window_hours, at=None):
 
 
 def _current_idle_hours(prom_url, window_hours, now_ts=None):
-    """Hours since each machine last had ANY GPU slot rented — i.e. how long
-    its current idle stretch (if any) has run. 0 (or close to it) if
-    currently rented. None if it's been vacant for the entire lookback
-    window — long enough that we can't tell exactly how much longer, only
-    that it's at least window_hours. This is what actually answers "has GPU
-    N been idle for hours and does it need a nudge" without re-deriving it
-    by hand each time."""
+    """Hours since each machine last had EVERY GPU slot rented — i.e. how
+    long it's had at least one slot free to sell, mirroring
+    gpu_monitor.sh's own vacancy_file semantics exactly (that clock starts
+    the instant free_count > 0 and only clears once free_count == 0 again;
+    see vastai_pricing()). Deliberately MIN across a machine's slots, not
+    MAX: a 2-GPU machine with one slot rented and one sitting empty is
+    still "idle" for pricing purposes (that's the whole reason idle mode
+    exists — to re-attract renters for the free slot) — using MAX here
+    would report it as fully occupied and hide the free slot entirely.
+    Confirmed wrong the other way live on zappa1 (2026-07-19): machine
+    138419's second RTX 5090 had been unrented for hours per Vast's own
+    dashboard while this function's MAX-based first version reported
+    idle_hours ~0 because slot 0 was rented.
+
+    0 (or close to it) if every slot is currently rented. None if it's had
+    a free slot for the entire lookback window — long enough that we can't
+    tell exactly how much longer, only that it's at least window_hours."""
     now = now_ts if now_ts is not None else time.time()
     window_s = int(window_hours * 3600)
     step = max(300, window_s // 500)
     try:
         series = prom_client.range_by_series(
-            prom_url, "max by(rig, machine_id)(gpu_slot_rented)",
+            prom_url, "min by(rig, machine_id)(gpu_slot_rented)",
             now - window_s, now, step, ("rig", "machine_id"))
     except Exception:
         return {}
