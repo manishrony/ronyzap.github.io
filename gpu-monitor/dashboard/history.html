@@ -132,6 +132,15 @@ async function loadRigs() {
       opt.value = name; opt.textContent = name;
       sel.appendChild(opt);
     });
+    // Deep-link support (?rig=Zappa2 from the rig drilldown "Full History"
+    // link) — match case-insensitively since the linking page may only know
+    // a display name ("Zappa2") while Prometheus's real label is the
+    // hostname ("zappa2").
+    const wanted = new URLSearchParams(location.search).get('rig');
+    if (wanted) {
+      const match = Array.from(sel.options).find(o => o.value.toLowerCase() === wanted.toLowerCase());
+      if (match) sel.value = match.value;
+    }
   } catch (e) { /* non-fatal — "All rigs" still works */ }
 }
 

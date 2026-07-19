@@ -16,8 +16,6 @@ import re
 import urllib.request
 import urllib.parse
 
-PROM_URL = None  # set by server.py from PROMETHEUS_URL env var
-
 # Metric name -> whether it's an aggregatable numeric series worth averaging
 # over the step window (avg_over_time) vs. a 0/1 state flag worth taking the
 # max of over the window (so a brief "rented" blip doesn't get averaged away
@@ -39,6 +37,13 @@ _METRICS = {
 }
 
 _LABEL_RE = re.compile(r'^[A-Za-z0-9_.:-]+$')
+
+
+def metric_names():
+    """Public accessor for the allow-listed metric names — so other modules
+    (assistant.py's tool schema) don't reach into the "private" _METRICS
+    dict directly."""
+    return list(_METRICS)
 
 
 def _safe_label(v):

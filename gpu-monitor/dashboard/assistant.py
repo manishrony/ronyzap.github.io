@@ -24,12 +24,14 @@ from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
+import history_api
 
 CONF_FILE = "/etc/gpu_monitor.conf"
 KAALIA_GLOB = "/var/lib/vastai_kaalia/kaalia.log*"
 PING_TARGET = "1.1.1.1"           # fixed — never derived from a request
 KAALIA_SCAN_LINES = 5000          # bounds worst-case regex work per request
 DATA_FILE = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9090")
 MAX_TOOL_TURNS = 6
 LLM_REQUEST_TIMEOUT = 25          # seconds — so a stuck upstream call fails fast instead of hanging
 
@@ -374,6 +376,52 @@ def diag_kaalia(pattern=None, lines=50):
     return {"matches": matches, "scanned_lines": scanned, "returned": len(matches)}
 
 
+def get_history(metric, rig=None, hours=24):
+    """Historical trend summary from the central Prometheus (hub only — see
+    history_api.py). Returns min/max/avg/first/latest per series rather than
+    the raw time series, since the LLM only needs a compact numeric summary
+    to reason about a trend question, not thousands of samples. Prometheus
+    is central regardless of which rig's dashboard process the chat is
+    actually running in, so — unlike the other diag tools — this never
+    proxies to a peer; it always queries THIS process's PROMETHEUS_URL.
+    Rig names are lowercased to match the `rig` label's convention (the
+    actual hostname; see prom_exporter.py's docstring for why display names
+    like "Zappa1" must never be used as the label value)."""
+    try:
+        hours = max(1, min(24 * 90, int(hours or 24)))
+    except (TypeError, ValueError):
+        hours = 24
+    rig_norm = (rig or "").strip().lower() or None
+    window_s = hours * 3600
+    end = int(time.time())
+    start = end - window_s
+    step = max(60, window_s // 200)
+    try:
+        query = history_api.build_query(metric, rig=rig_norm, window_s=step)
+        result = history_api.query_range(PROMETHEUS_URL, query, start, end, step)
+    except Exception as e:
+        return {"error": str(e)}
+    series = result.get("data", {}).get("result", [])
+    if not series:
+        return {"metric": metric, "rig": rig_norm, "hours": hours, "summary": [],
+                "note": "no data in this window (check the rig name, or Prometheus may not be reachable)"}
+    summary = []
+    for s in series:
+        vals = [float(v[1]) for v in s["values"]]
+        if not vals:
+            continue
+        summary.append({
+            "labels": s["metric"],
+            "count": len(vals),
+            "min": round(min(vals), 4),
+            "max": round(max(vals), 4),
+            "avg": round(sum(vals) / len(vals), 4),
+            "first": round(vals[0], 4),
+            "latest": round(vals[-1], 4),
+        })
+    return {"metric": metric, "rig": rig_norm, "hours": hours, "summary": summary}
+
+
 _DIAG_FUNCS = {"gpu": diag_gpu, "cpu": diag_cpu, "network": diag_network, "rental": diag_rental}
 
 
@@ -434,14 +482,34 @@ TOOLS = [
             "lines": {"type": "integer", "description": "Max lines to return (default 50, max 200)"}},
             "required": ["rig"]},
     },
+    {
+        "name": "get_history",
+        "description": ("Read-only historical trend for one metric, from the fleet's Prometheus "
+                         "history (live scraping plus best-effort backfill back to ~June 8). Use this "
+                         "for ANY question about change OVER TIME — trends, averages, min/max, "
+                         "'how has X been', 'last week', 'this month' — rather than the get_*_status "
+                         "tools, which only report the CURRENT instant. Returns a compact min/max/avg/"
+                         "first/latest summary per matching series, not raw samples."),
+        "parameters": {"type": "object", "properties": {
+            "metric": {"type": "string", "enum": sorted(history_api.metric_names()),
+                       "description": "Which metric to summarize"},
+            "rig": {"type": "string", "description": "Optional rig name filter; omit to cover all rigs"},
+            "hours": {"type": "integer",
+                      "description": "Lookback window in hours, ending now (default 24, max 2160 = 90 days)"}},
+            "required": ["metric"]},
+    },
 ]
 
 SYSTEM_PROMPT = (
     "You are a read-only diagnostic assistant for a small home GPU-rental rig fleet "
-    "(Vast.ai hosts). You have two information sources: (1) a JSON stats digest in the "
+    "(Vast.ai hosts). You have three information sources: (1) a JSON stats digest in the "
     "user message — revenue, rental status, temps, GPU processes, ask price, per rig — "
-    "and (2) live read-only tools for rental status, GPU/CPU/network status, and kaalia-log "
-    "search on any named rig. The stats digest may be stale or absent (e.g. a direct API "
+    "(2) live read-only tools for rental status, GPU/CPU/network status, and kaalia-log "
+    "search on any named rig, for the CURRENT instant, and (3) get_history, for trends over "
+    "time (temps, prices, rates, revenue) — back to live scraping start, plus best-effort "
+    "backfilled data to ~June 8. Use get_history whenever the question is about change over "
+    "time ('trending', 'this week', 'last month', 'average', 'has it gone up') rather than "
+    "the current status tools. The stats digest may be stale or absent (e.g. a direct API "
     "call); always call get_rental_status for that rig before answering a rented/free/busy/ "
     "idle question, rather than trusting the digest or guessing. No tool can change, restart, "
     "or configure anything on any rig — every tool only reports state. If asked to change a "
@@ -468,6 +536,11 @@ def _resolve_rig(name, self_name, peer_urls, peer_names):
 
 
 def _run_tool(name, tool_input, self_name, peer_urls, peer_names):
+    if name == "get_history":
+        # Prometheus is central (hub only) regardless of which rig's process
+        # this chat happens to be running in — never proxy this one to a
+        # peer like the other tools do.
+        return get_history(tool_input.get("metric"), tool_input.get("rig"), tool_input.get("hours", 24))
     rig = tool_input.get("rig", "")
     peer = _resolve_rig(rig, self_name, peer_urls, peer_names)
     if peer == "__unknown__":

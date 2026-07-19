@@ -213,6 +213,7 @@
     <button onclick="backToCombined()" class="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-1">← All Rigs</button>
     <h2 class="text-base font-bold text-white" id="rig-detail-title">Zappa1</h2>
     <span id="rig-detail-status" class="text-xs px-2 py-0.5 rounded-full badge-green"></span>
+    <a id="rig-detail-history-link" href="/history" class="ml-auto text-xs px-3 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">📜 Full History →</a>
   </div>
 
   <!-- Per-rig tabs -->
@@ -598,6 +599,8 @@ function drilldown(idx) {
   document.getElementById("view-combined").classList.add("hidden");
   document.getElementById("view-rig").classList.remove("hidden");
   document.getElementById("rig-detail-title").textContent = rigName(idx);
+  document.getElementById("rig-detail-history-link").href =
+    "/history?rig=" + encodeURIComponent(rigName(idx));
   showRigTab("overview");
 }
 function backToCombined() {

@@ -26,6 +26,10 @@ SELF_NAME  = os.environ.get("SELF_NAME", "").strip() or socket.gethostname()
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        # Exact-match routes below must ignore any query string (e.g.
+        # /history?rig=Zappa2 from the rig-drilldown deep link) — matching on
+        # self.path directly 404s the instant a query string is present.
+        path_only = self.path.split("?", 1)[0]
         if self.path.startswith("/metrics"):
             self._serve_metrics()
         elif self.path.startswith("/api/data"):
@@ -40,9 +44,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_history_rigs()
         elif self.path.startswith("/api/history"):
             self._serve_history()
-        elif self.path in ("/history", "/history.html"):
+        elif path_only in ("/history", "/history.html"):
             self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
-        elif self.path in ("/", "/index.html"):
+        elif path_only in ("/", "/index.html"):
             # On the hub (peers configured) open straight on the all-rigs view so
             # dash.ronyzap.com lands on /combined; standalone rigs keep the single view.
             if PEER_URLS:
@@ -52,9 +56,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
             else:
                 self._serve_file(DASH_DIR / "index.html", "text/html; charset=utf-8")
-        elif self.path in ("/combined", "/combined.html"):
+        elif path_only in ("/combined", "/combined.html"):
             self._serve_file(DASH_DIR / "combined.html", "text/html; charset=utf-8")
-        elif self.path in ("/market", "/market.html"):
+        elif path_only in ("/market", "/market.html"):
             self._serve_file(DASH_DIR / "market.html", "text/html; charset=utf-8")
         else:
             self.send_error(404)
