@@ -339,6 +339,28 @@
     </div>
   </div>
 
+  <!-- Pricing Advisor (hub only — Prometheus-backed, read-only, never
+       writes back to Vast) -->
+  <div id="c-pricing-row" class="px-6 pb-4 hidden">
+    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Pricing Advisor — current price vs. market, last 7d occupancy</p>
+    <div class="card p-4 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+          <th class="text-left py-2 pr-4">Rig</th>
+          <th class="text-left py-2 pr-4">Machine</th>
+          <th class="text-right py-2 pr-4">Current Price</th>
+          <th class="text-right py-2 pr-4">Market (p25 / median / p75)</th>
+          <th class="text-right py-2 pr-4">Occupancy (7d)</th>
+          <th class="text-center py-2 pr-4">Recommendation</th>
+          <th class="text-right py-2 pr-4">Suggested Price</th>
+          <th class="text-left py-2">Why</th>
+        </tr></thead>
+        <tbody id="pricing-table"></tbody>
+      </table>
+      <p id="pricing-empty" class="hidden text-slate-600 text-sm py-4 text-center">No machines with both a listing price and market comparables right now.</p>
+    </div>
+  </div>
+
   <!-- Rig cards (clickable) -->
   <div class="px-6 pb-4">
     <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rigs — click to drill down</p>
@@ -757,6 +779,7 @@ async function fetchAll() {
   fetchOccupancy();
   fetchDailySummary();
   fetchHealth();
+  fetchPricingAdvisor();
   fetchMajorEvents();
   if (activeRig !== -1) fetchRigMajorEvents(activeRig);
 }
@@ -980,6 +1003,48 @@ async function fetchHealth() {
       ${alerts.map(a => `<span class="text-xs px-2 py-1 rounded border border-red-700/50 bg-red-900/40 text-red-200">${a.rig}: ${a.detail}</span>`).join("")}
     </div>
   </div>`;
+}
+
+function pricingBadgeClass(rec) {
+  if (rec === "RAISE") return "text-xs px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-900/30 text-emerald-300 font-medium";
+  if (rec === "LOWER") return "text-xs px-2 py-0.5 rounded border border-amber-700/50 bg-amber-900/30 text-amber-300 font-medium";
+  if (rec === "UNKNOWN") return "text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 text-slate-400";
+  return "text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 text-slate-300";
+}
+
+// Pricing Advisor: read-only comparison of each machine's current listing
+// price against market comparables + its own recent occupancy — see
+// pricing_advisor_api.py. Never writes anything back to Vast; the
+// suggested_price is advisory only, for a human to act on manually.
+async function fetchPricingAdvisor() {
+  let data;
+  try {
+    const resp = await fetch("/api/pricing-advisor?hours=168");
+    data = await resp.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    document.getElementById("c-pricing-row").classList.add("hidden");
+    return;
+  }
+  const machines = data.machines || [];
+  document.getElementById("c-pricing-row").classList.remove("hidden");
+
+  const tbody = document.getElementById("pricing-table");
+  document.getElementById("pricing-empty").classList.toggle("hidden", machines.length > 0);
+  tbody.innerHTML = machines.map(m => {
+    const market = m.market || {};
+    const marketStr = ["p25", "median", "p75"].map(s => market[s] != null ? fmtMoney(market[s]) : "—").join(" / ");
+    return `<tr class="border-b border-slate-800/60">
+      <td class="py-1.5 pr-4 text-slate-300">${m.rig}</td>
+      <td class="py-1.5 pr-4 text-slate-400">${m.machine_id}</td>
+      <td class="py-1.5 pr-4 text-right font-mono text-slate-200">${fmtMoney(m.current_price)}/hr</td>
+      <td class="py-1.5 pr-4 text-right font-mono text-slate-400">${marketStr}</td>
+      <td class="py-1.5 pr-4 text-right font-mono ${m.occupancy_pct_7d != null ? occupancyColorClass(m.occupancy_pct_7d) : ''}">${m.occupancy_pct_7d != null ? m.occupancy_pct_7d + '%' : '—'}</td>
+      <td class="py-1.5 pr-4 text-center"><span class="${pricingBadgeClass(m.recommendation)}">${m.recommendation}</span></td>
+      <td class="py-1.5 pr-4 text-right font-mono text-blue-300">${m.suggested_price != null ? fmtMoney(m.suggested_price) + "/hr" : "—"}</td>
+      <td class="py-1.5 text-xs text-slate-500">${m.reason}</td>
+    </tr>`;
+  }).join("");
 }
 
 function updatePill(idx) {

@@ -315,6 +315,43 @@ other would need a static instance-to-rig map — exactly the kind of thing
 that quietly drifts out of sync, the same class of bug as the
 Zappa1/zappa1 mismatch earlier this session.
 
+## Pricing Advisor (hub only)
+
+The combined dashboard's "Pricing Advisor" table (`/api/pricing-advisor`,
+`pricing_advisor_api.py`) — per machine, compares the current listing
+price against live market comparables (`market_price_dollars_per_hour`'s
+p25/median/p75/mean, already scraped every cycle) and that machine's own
+occupancy over the last 7 days (`gpu_slot_rented`, averaged per machine
+rather than per rig — a listing price is set per machine, not per GPU).
+
+This is **not** a second pricing engine — `gpu_monitor.sh`'s
+`vastai_pricing()` already auto-prices every machine toward a configurable
+market stat (`PRICE_TARGET_STAT`, default `median`) on its own schedule,
+see "Pricing target" below. The advisor answers a different question:
+given the occupancy actually observed at the price the automation
+converged on, does that number look right, or does demand disagree with
+it?
+
+- **RAISE** — occupancy ≥90% over 7d at a price already at/below market
+  median: demand supports charging more, revenue is being left on the
+  table.
+- **LOWER** — occupancy <50% over 7d at a price >5% above median: demand
+  looks price-sensitive, the price itself may be the problem.
+- **HOLD** (not a pricing problem) — occupancy <50% but price is already
+  at/below median: something other than price is keeping this machine
+  empty (machine health, listing visibility, market saturation) — raising
+  or lowering price further isn't the fix.
+- **HOLD** (reasonable) — anything else: current price already looks
+  sensible given the occupancy signal.
+
+`suggested_price` is a concrete number (halfway from current price toward
+the relevant market band edge, floor-respecting on the LOWER side) for a
+human to act on manually — **this dashboard never writes anything back to
+Vast**, same posture as every other endpoint here (no auth in front of
+it, so nothing it serves ever has a side effect). Rule-based and
+transparent on purpose: every recommendation ships with the plain-English
+`reason` that produced it, not a black-box score.
+
 ## Per-node install (no peers)
 
 ```bash

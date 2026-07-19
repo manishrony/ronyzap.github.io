@@ -10,6 +10,7 @@ import occupancy_api
 import daily_summary_api
 import events_api
 import health_api
+import pricing_advisor_api
 import time
 
 DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
@@ -59,6 +60,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_events()
         elif self.path.startswith("/api/health"):
             self._serve_health()
+        elif self.path.startswith("/api/pricing-advisor"):
+            self._serve_pricing_advisor()
         elif path_only in ("/history", "/history.html"):
             self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
         elif path_only in ("/", "/index.html"):
@@ -200,6 +203,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(qs)
         try:
             result = health_api.handle_health_request(PROMETHEUS_URL, query, time.time())
+            body = json.dumps(result).encode()
+            status = 200
+        except Exception as e:
+            body = json.dumps({"error": str(e)}).encode()
+            status = 400
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _serve_pricing_advisor(self):
+        """Per-machine pricing recommendations (hub only — see
+        pricing_advisor_api.py). Query param: hours (occupancy window,
+        default 168 = 7d). Read-only — never writes back to Vast."""
+        _, _, qs = self.path.partition("?")
+        query = urllib.parse.parse_qs(qs)
+        try:
+            result = pricing_advisor_api.handle_pricing_advisor_request(PROMETHEUS_URL, query, time.time())
             body = json.dumps(result).encode()
             status = 200
         except Exception as e:
