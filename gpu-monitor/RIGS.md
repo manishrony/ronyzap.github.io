@@ -532,61 +532,85 @@ shown on the dashboard when Vast's real `end_date` isn't available yet (see
 "Rate source" above — `expire_date_source: "estimated"` vs `"vast_api"`).
 Override per rig in `/etc/gpu_monitor.conf` if you want a different window.
 
-## Pricing target: median vs. p75/mean (verified rigs)
+## Pricing target: mean (default) vs. p75/median/p25, with a low entry anchor
 
 `vastai_pricing()` targets a configurable market stat, `PRICE_TARGET_STAT`
-(default **`median`**) — `vastai_market_stats()` already computes `p25`,
-`median`, `p75`, and `mean` from live comparable listings, so switching is
-just picking which one to converge toward (all four, plus whichever's
-active as `target`, are logged and written to `market_snapshot`/
-`price_change` events either way — nothing is lost by not targeting it).
+(default **`mean`**, changed from `median` on 2026-07-19) —
+`vastai_market_stats()` already computes `p25`, `median`, `p75`, and `mean`
+from live comparable listings, so switching is just picking which one to
+converge toward (all four, plus whichever's active as `target`, are logged
+and written to `market_snapshot`/`price_change` events either way — nothing
+is lost by not targeting it).
 
 ```bash
-PRICE_TARGET_STAT="p75"    # or "mean" — default is "median"
+PRICE_TARGET_STAT="p75"    # or "median"/"p25" — default is "mean"
 ```
 
-Rationale: a **verified** machine (Vast's own trust badge, check
-`verification` via `dump-machine-json`) with a strong reliability score
-(`reliability2`) is a legitimately higher-quality listing than the market's
-midpoint, so pricing at the median may leave money on the table. `p75`
-targets the top quartile instead — a reasonable premium for a verified,
-reliable RTX 5090. Falls back to `median` automatically if the configured
-stat comes back unavailable/zero, or if `PRICE_TARGET_STAT` is unset/unknown.
+`mean` sits above `median` in a right-skewed market (a handful of premium
+listings pull the average up), so targeting it converges to a modestly
+higher steady-state price than `median` did. That higher ceiling is offset
+by a low **entry anchor** (below) so a machine doesn't sit priced at the
+full mean while empty — it starts cheap and climbs.
 
-Zappa1/Zappa2 (verified RTX 5090s) are the natural candidates for `p75`;
-Zappa3 (unverified RTX 5080, confirmed `verification: unverified` via
-`dump-machine-json`) is better left at the `median` default until/unless it
-gets verified too. The below-market Telegram alert and the "within 2¢ of
-target" no-op log line both track whichever stat is actually configured, not
-always the median, so the messaging stays consistent with what's actually
-being targeted.
+### Entry anchor: start at mean − 20%, climb back up 1-2¢ at a time
 
-### Idle-listing back-off (don't chase the target when nobody's renting)
-
-Climbing straight toward `p75`/`mean` every cycle assumes the higher price is
-still competitive. If a listing (or a partially-rented machine's free GPU
-slot) sits **unrented for `IDLE_LISTING_THRESHOLD` (default 2h, 7200s)**
-despite that climb, the empty listing itself is the market telling us the
-price is already too rich — continuing to raise it only makes that worse.
-Once a machine crosses that threshold, `vastai_pricing()` stops chasing the
-configured target and switches to a small randomized nudge instead:
-
-- 45% — down 1-2¢ (`PRICE_ADJUST_DOWN_MIN/MAX`), probing for a price that
-  actually attracts a renter
-- 25% — up 1-2¢ (`PRICE_ADJUST_UP_MIN/MAX`), a small test bump in case the
-  market moved
-- 30% — hold, no change this cycle
+A **never-priced machine** (just listed, current price is $0) no longer
+jumps straight to the hard floor — it's anchored to `market_mean x
+(1 - START_PRICE_DISCOUNT)` (default **20%** below the fee-adjusted mean),
+a deliberately low, attractive opening price. Falls back to the hard floor
+if market mean isn't available that cycle, or if the anchor itself computes
+below the floor.
 
 ```bash
-IDLE_LISTING_THRESHOLD=7200   # seconds unrented before pricing stops chasing the target
+START_PRICE_DISCOUNT=0.20   # 20% below fee-adjusted mean = the entry price
+```
+
+From the very next pricing cycle on, that machine is indistinguishable from
+any other machine sitting more than 2¢ below its target — it climbs back
+toward `PRICE_TARGET_STAT` via the same random 1-2¢ up-step every cycle
+that any below-target machine gets (see `PRICE_ADJUST_UP_MIN/MAX` below).
+Net effect: **start ~20% under mean, then slowly walk up toward mean** —
+not a one-time discount that sticks around.
+
+### Idle-listing re-anchor (don't chase the target when nobody's renting)
+
+If a listing (or a partially-rented machine's free GPU slot) sits
+**unrented for `IDLE_LISTING_THRESHOLD` (default 2h, 7200s)**, the empty
+listing itself is the market telling us the price is already too rich —
+continuing to climb toward the target only makes that worse. Once a
+machine crosses that threshold, `vastai_pricing()` re-anchors it to the
+same low entry price a fresh listing gets (`market_mean x (1 -
+START_PRICE_DISCOUNT)`) **once** per vacancy — tracked via a per-machine
+`<machine_id>.idle_reset` marker file alongside the vacancy timestamp, so
+the re-anchor fires on the cycle vacancy first crosses the threshold, not
+on every cycle after (which would just pin the price at the anchor forever
+instead of climbing back up). From the next cycle on, it's the same
+below-target climb described above.
+
+```bash
+IDLE_LISTING_THRESHOLD=7200   # seconds unrented before pricing re-anchors to the entry point
 ```
 
 Vacancy is tracked per-machine in `/var/tmp/gpu_monitor_vacancy/<machine_id>`
-(just a timestamp of when the slot first went free) and reset the instant it
-gets rented — so a machine that fills, empties, and sits idle again starts a
-fresh 2h countdown rather than carrying over the old one. `price_change`
-events carry `idle_mode` and `vacancy_hours` so the dashboard/history can tell
-a target-chase adjustment apart from an idle-mode probe.
+(a timestamp of when the slot first went free) plus a same-directory
+`<machine_id>.idle_reset` marker (created on re-anchor), both cleared the
+instant the slot gets rented — so a machine that fills, empties, and sits
+idle again starts a fresh 2h countdown and can re-anchor again, rather than
+carrying over the old state. `price_change` events carry `idle_mode` and
+`vacancy_hours` so the dashboard/history can tell a normal target-chase
+adjustment apart from an idle re-anchor.
+
+Rationale for a **verified** machine (Vast's own trust badge, check
+`verification` via `dump-machine-json`) with a strong reliability score
+(`reliability2`): it's a legitimately higher-quality listing than the
+market's midpoint, so `p75` (top quartile) may still be worth targeting
+over `mean` for Zappa1/Zappa2 (verified RTX 5090s); Zappa3 (unverified RTX
+5080) is fine at the `mean` default. Falls back to `median` automatically
+if the configured stat comes back unavailable/zero, or if
+`PRICE_TARGET_STAT` is unset/unknown. The below-market Telegram alert and
+the "within 2¢ of target" no-op log line both track whichever stat is
+actually configured, so the messaging stays consistent with what's
+actually being targeted.
 
 ## Workload throttle (global default, all rigs)
 

@@ -311,22 +311,34 @@ epoch_to_date() {
 # market median by this factor (deduct 10%) to get the price we aim for.
 MARKET_PRICE_DISCOUNT=0.90
 
-# Which market-stat vastai_pricing() targets: "median" (default), "p75",
-# "mean", or "p25". A verified machine (Vast's own trust badge — check
-# `verification` via dump-machine-json) with a strong reliability score can
-# reasonably price above the middle of the pack — p75 targets the top
-# quartile instead of the median. Override per rig in /etc/gpu_monitor.conf,
-# e.g. Zappa1/Zappa2 (verified RTX 5090) at "p75", Zappa3 (unverified RTX
-# 5080) left at the "median" default. Falls back to "median" if unset/unknown.
-PRICE_TARGET_STAT="${PRICE_TARGET_STAT:-median}"
+# Which market-stat vastai_pricing() targets: "mean" (default), "p75",
+# "median", or "p25". mean sits above median in a right-skewed market (a few
+# premium listings pull it up), so targeting it converges to a modestly
+# higher steady-state price than median did — the entry point (see
+# START_PRICE_DISCOUNT below) is what keeps a freshly-listed or freshly-idle
+# machine competitive despite that higher ceiling. Override per rig in
+# /etc/gpu_monitor.conf. Falls back to "median" if unset/unknown.
+PRICE_TARGET_STAT="${PRICE_TARGET_STAT:-mean}"
+
+# A never-priced machine (just listed) or one that just crossed
+# IDLE_LISTING_THRESHOLD unrented gets anchored to (fee-adjusted mean) x
+# (1 - START_PRICE_DISCOUNT) — a deliberately low, attractive opening price —
+# rather than jumping straight to PRICE_TARGET_STAT or the hard floor. From
+# the next pricing cycle on, it's indistinguishable from any other
+# below-target machine and climbs back toward PRICE_TARGET_STAT via the
+# normal 1-2¢ random step (see vastai_pricing()) — so the net effect is
+# "start ~20% under mean, then slowly walk up toward mean," not a permanent
+# discount. Falls back to the hard floor if market mean isn't available yet.
+START_PRICE_DISCOUNT="${START_PRICE_DISCOUNT:-0.20}"
 
 # How long a listing (or a partially-rented machine's free GPU slot) can sit
-# UNRENTED before pricing stops climbing straight for the target stat. Chasing
-# p75/mean upward while nobody is renting is fighting the market's own
-# feedback — an empty listing means the price is already too rich, so once a
-# machine crosses this threshold pricing switches to a small randomized nudge
-# (mostly down, sometimes a small test bump up) instead of a deterministic
-# climb. Resets the moment the slot gets rented.
+# UNRENTED before pricing re-anchors to the START_PRICE_DISCOUNT entry point
+# (once) instead of continuing to sit wherever it was — an empty listing
+# means the price is already too rich for now, so the re-anchor cuts it back
+# to the same attractive opening price a fresh listing gets, then lets it
+# climb back toward PRICE_TARGET_STAT the normal way. Resets (both the timer
+# and the "already re-anchored this vacancy" flag) the moment the slot gets
+# rented again.
 IDLE_LISTING_THRESHOLD="${IDLE_LISTING_THRESHOLD:-7200}"  # 2 hours
 VACANCY_STATE_DIR="/var/tmp/gpu_monitor_vacancy"
 
@@ -2557,9 +2569,13 @@ PYEOF
 
         # Track how long this machine has had a free (unrented) GPU slot to
         # sell, so we can tell "just freed up" apart from "been sitting empty
-        # for hours" — see the idle-mode branch below.
+        # for hours" — see the idle-mode branch below. idle_reset_file marks
+        # "already re-anchored to the START_PRICE_DISCOUNT entry point during
+        # THIS vacancy" so that re-anchor happens once per vacancy, not every
+        # cycle (which would pin the price at the anchor forever instead of
+        # climbing back up).
         mkdir -p "$VACANCY_STATE_DIR" 2>/dev/null || true
-        local vacancy_file="$VACANCY_STATE_DIR/$mid" vacancy_secs=0 now_epoch
+        local vacancy_file="$VACANCY_STATE_DIR/$mid" idle_reset_file="$VACANCY_STATE_DIR/${mid}.idle_reset" vacancy_secs=0 now_epoch
         now_epoch=$(date +%s)
         if [[ "${free_count:-0}" -gt 0 ]]; then
             [[ -f "$vacancy_file" ]] || echo "$now_epoch" > "$vacancy_file"
@@ -2567,7 +2583,7 @@ PYEOF
             vacant_since=$(cat "$vacancy_file" 2>/dev/null || echo "$now_epoch")
             vacancy_secs=$(( now_epoch - vacant_since ))
         else
-            rm -f "$vacancy_file" 2>/dev/null || true
+            rm -f "$vacancy_file" "$idle_reset_file" 2>/dev/null || true
         fi
 
         # Fetch market stats; parse p25/median/p75/mean in one Python call
@@ -2707,39 +2723,42 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
 
         log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid | vacant=${vacancy_hours}h$([[ $idle_mode -eq 1 ]] && echo ' (idle mode)')"
 
-        # Asymmetric step: UP 2-3¢ when below the fee-adjusted median, DOWN 1¢
-        # when above it.
+        # Random 1-2¢ step, either direction, applied below whenever more
+        # than 2¢ off ${target_label} (or walking up from the start_price
+        # anchor computed below, which is also more than 2¢ under target).
         local up_cents=$(( RANDOM % (PRICE_ADJUST_UP_MAX - PRICE_ADJUST_UP_MIN + 1) + PRICE_ADJUST_UP_MIN ))
         local down_cents=$(( RANDOM % (PRICE_ADJUST_DOWN_MAX - PRICE_ADJUST_DOWN_MIN + 1) + PRICE_ADJUST_DOWN_MIN ))
         local adjust_up adjust_down
         adjust_up=$(printf "%.4f" "$(echo "scale=4; $up_cents / 100" | bc)")
         adjust_down=$(printf "%.4f" "$(echo "scale=4; $down_cents / 100" | bc)")
 
+        # Low, attractive opening anchor for a never-priced machine or one
+        # that just crossed the idle threshold: fee-adjusted mean x
+        # (1 - START_PRICE_DISCOUNT). Falls back to the hard floor if market
+        # mean isn't available this cycle.
+        local start_price="$floor"
+        if [[ -n "$market_mean" && "$market_mean" != "0" ]]; then
+            start_price=$(printf "%.4f" "$(echo "scale=4; $market_mean * (1 - $START_PRICE_DISCOUNT)" | bc)")
+        fi
+
         local new_price direction
         if (( $(echo "${cur_bid:-0} < 0.01" | bc -l) )); then
-            new_price="$floor"
-            direction="↑ (was \$0 — setting to floor)"
+            new_price="$start_price"
+            direction="↑ (was \$0 — anchored to mean-${START_PRICE_DISCOUNT} \$$start_price)"
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
             new_price="$floor"
             direction="↑ (below floor \$$floor)"
-        elif (( idle_mode )); then
-            # Listed but unrented for IDLE_LISTING_THRESHOLD+ — climbing
-            # toward p75/mean/median here is fighting the market's own
-            # signal that the price is already too rich. Stop chasing the
-            # target and nudge randomly instead: mostly down (to actually
-            # attract a renter), sometimes a small test bump up, sometimes
-            # hold — rather than a deterministic march toward target.
-            local roll=$(( RANDOM % 100 ))
-            if (( roll < 45 )); then
-                new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
-                direction="↓ ${down_cents}¢ (idle ${vacancy_hours}h+ unrented — probing lower, not chasing ${target_label})"
-            elif (( roll < 70 )); then
-                new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
-                direction="↑ ${up_cents}¢ (idle ${vacancy_hours}h+ unrented — small test bump, not chasing ${target_label})"
-            else
-                log "  Machine $mid: idle ${vacancy_hours}h+ unrented — holding price, not chasing ${target_label}"
-                continue
-            fi
+        elif (( idle_mode )) && [[ ! -f "$idle_reset_file" ]]; then
+            # Just crossed IDLE_LISTING_THRESHOLD unrented — re-anchor to the
+            # same low entry point a fresh listing gets, once per vacancy
+            # (idle_reset_file prevents re-anchoring every cycle, which would
+            # pin the price at the anchor instead of climbing back up). From
+            # the next cycle on, this machine falls through to the normal
+            # below-target step below and climbs back toward ${target_label}
+            # the same way any other below-target machine does.
+            touch "$idle_reset_file" 2>/dev/null || true
+            new_price="$start_price"
+            direction="↓/↑ (idle ${vacancy_hours}h+ unrented — re-anchored to mean-${START_PRICE_DISCOUNT} \$$start_price to re-attract)"
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
             direction="↓ ${down_cents}¢ (above ${target_label})"
