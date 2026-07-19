@@ -253,7 +253,14 @@ def build(rig, jsonl_paths, log_paths, out_path):
             sample_count += 1
 
     for epoch, ev in collect_event_samples(jsonl_paths, "daily_earnings"):
-        if ev.get("source") != "vast_api":
+        # Missing source (not "vast_api") only means the entry predates
+        # gpu_monitor.sh's write format adding that field (src_ver 2 -> 3) —
+        # same real Vast API data, just an older tag. Requiring an exact
+        # match here silently dropped every pre-src_ver-3 day from the
+        # backfill, which is why rig_daily_earnings_dollars only had the
+        # last couple of days in Prometheus despite the JSONL holding real
+        # history back to early June (confirmed 2026-07-19).
+        if ev.get("source") not in ("vast_api", None):
             continue
         w.add("rig_daily_earnings_dollars", "gauge", "Vast's own daily_earnings total for that date.",
               {"rig": rig, "date": ev.get("date", "")}, _to_float(ev.get("total")), epoch)

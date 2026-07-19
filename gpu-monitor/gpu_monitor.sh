@@ -676,7 +676,12 @@ try:
             e = json.loads(line)
         except Exception:
             continue
-        if (e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api'
+        # source is missing (not "vast_api") only on entries written before
+        # src_ver 3 added that field — same real Vast-sourced data, just an
+        # older write format. There's no other writer of daily_earnings
+        # events and no other source value ever used, so treat a missing
+        # source as equivalent rather than silently discarding real history.
+        if (e.get('type') == 'daily_earnings' and e.get('source') in ('vast_api', None)
                 and e.get('host') == host):
             d = e.get('date')
             ts = e.get('ts', '')
@@ -1842,14 +1847,24 @@ machids = set(machids_s.split())
 days = int(float(days_s))
 base = "https://console.vast.ai"
 
-# API-sourced, per-machine (src_ver 2) daily_earnings already stored for this host
+# API-sourced daily_earnings already stored for this host. Deliberately
+# does NOT require a specific src_ver: the write format has changed more
+# than once (src_ver 2 -> 3, and older entries have no src_ver/source field
+# at all), and requiring the latest version here silently invalidated every
+# prior day's entry on each format bump — the "have" cache came up empty for
+# history that was already correct, so every bump triggered a full re-fetch
+# of the whole EARNINGS_SYNC_DAYS window and re-appended it, which is almost
+# certainly how the doubled/tripled entries that necessitated purge-earnings
+# happened in the first place. There's only one writer of daily_earnings
+# events and it's always real Vast API data regardless of format version, so
+# any entry for this (host, date) counts as "have."
 have = {}
 try:
     for line in open(jsonl, errors='replace'):
         try: e = json.loads(line)
         except Exception: continue
-        if (e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api'
-                and e.get('host') == host and e.get('src_ver') == 3):
+        if (e.get('type') == 'daily_earnings' and e.get('source') in ('vast_api', None)
+                and e.get('host') == host):
             have[e.get('date')] = float(e.get('total', 0) or 0)
 except FileNotFoundError:
     pass

@@ -55,7 +55,9 @@ try:
             e = json.loads(line)
         except Exception:
             continue
-        if e.get('type') == 'daily_earnings' and e.get('source') == 'vast_api' and e.get('host') == host:
+        # Missing source (not "vast_api") only means an entry predates the
+        # write format adding that field — same real data, see gpu_monitor.sh.
+        if e.get('type') == 'daily_earnings' and e.get('source') in ('vast_api', None) and e.get('host') == host:
             d = e.get('date')
             ts = e.get('ts', '')
             prev = by_date.get(d)
