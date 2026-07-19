@@ -26,6 +26,7 @@ health_api.py, this only ever runs a small, fixed set of hardcoded PromQL
 queries — never raw PromQL from the browser — since this dashboard has no
 auth in front of it.
 """
+import time
 import prom_client
 
 OCCUPANCY_WINDOW_HOURS = 24 * 7  # 7 days — long enough to smooth out normal rental churn
@@ -74,12 +75,41 @@ def _occupancy_by_machine(prom_url, window_hours, at=None):
     return {k: (sums[k] / counts[k]) * 100 for k in sums}
 
 
-def _recommend(price, median, p25, p75, occ_pct, floor):
+def _current_idle_hours(prom_url, window_hours, now_ts=None):
+    """Hours since each machine last had ANY GPU slot rented — i.e. how long
+    its current idle stretch (if any) has run. 0 (or close to it) if
+    currently rented. None if it's been vacant for the entire lookback
+    window — long enough that we can't tell exactly how much longer, only
+    that it's at least window_hours. This is what actually answers "has GPU
+    N been idle for hours and does it need a nudge" without re-deriving it
+    by hand each time."""
+    now = now_ts if now_ts is not None else time.time()
+    window_s = int(window_hours * 3600)
+    step = max(300, window_s // 500)
+    try:
+        series = prom_client.range_by_series(
+            prom_url, "max by(rig, machine_id)(gpu_slot_rented)",
+            now - window_s, now, step, ("rig", "machine_id"))
+    except Exception:
+        return {}
+    out = {}
+    for key, pts in series.items():
+        last_rented_ts = None
+        for ts, v in pts:
+            if v >= 0.5:
+                last_rented_ts = ts
+        out[key] = round(max(0.0, now - last_rented_ts) / 3600.0, 1) if last_rented_ts is not None else None
+    return out
+
+
+def _recommend(price, median, p25, p75, occ_pct, floor, idle_hours=None):
     """Rule-based, transparent recommendation — no hidden weights. Missing
     occupancy or market data degrades gracefully to a plain price-vs-market
     comparison instead of refusing to answer."""
+    idle_note = f" Currently idle {idle_hours:.1f}h." if idle_hours is not None and idle_hours > 0 else ""
+
     if median is None or median == 0:
-        return "UNKNOWN", None, "No market comparables available for this machine right now."
+        return "UNKNOWN", None, "No market comparables available for this machine right now." + idle_note
 
     deviation_pct = (price - median) / median * 100
 
@@ -88,25 +118,35 @@ def _recommend(price, median, p25, p75, occ_pct, floor):
         suggested = price + (target - price) * 0.5
         return ("RAISE", suggested,
                 f"Occupancy {occ_pct:.0f}% over the last 7d at a price already at/below market "
-                f"median — demand is strong enough to support a higher rate.")
+                f"median — demand is strong enough to support a higher rate." + idle_note)
 
     if occ_pct is not None and occ_pct < 50 and price > median * 1.05:
         target = p25 if p25 is not None else median * 0.9
         suggested = max(target + (price - target) * 0.5, floor or 0)
         return ("LOWER", suggested,
                 f"Occupancy only {occ_pct:.0f}% over the last 7d while priced {deviation_pct:+.0f}% "
-                f"vs. median — demand looks price-sensitive here.")
+                f"vs. median — demand looks price-sensitive here." + idle_note)
 
     if occ_pct is not None and occ_pct < 50 and price <= median * 1.05:
         return ("HOLD", None,
                 f"Occupancy only {occ_pct:.0f}% over the last 7d, but price is already at/below "
                 f"market median — likely not a pricing problem (check machine health, listing "
-                f"visibility, or market saturation instead).")
+                f"visibility, or market saturation instead)." + idle_note)
+
+    # No occupancy data at all (new/never-rented machine, or a metric gap) —
+    # a large price deviation here is NOT confirmed reasonable, just
+    # unjudged: don't claim it looks fine when there's no signal to back
+    # that up (this previously said "looks reasonable" even at +400% vs.
+    # median, which is misleading — confirmed live on zappa2, 2026-07-19).
+    if occ_pct is None and abs(deviation_pct) >= 25:
+        return ("UNKNOWN", None,
+                f"Priced {deviation_pct:+.0f}% vs. median but no occupancy data yet to judge "
+                f"demand — worth a manual look, not enough signal for an automatic call." + idle_note)
 
     return ("HOLD", None,
             f"Priced {deviation_pct:+.0f}% vs. median" +
             (f" with {occ_pct:.0f}% occupancy over 7d" if occ_pct is not None else "") +
-            " — looks reasonable, no action needed.")
+            " — looks reasonable, no action needed." + idle_note)
 
 
 def get_recommendations(prom_url, occupancy_window_hours=None, now_ts=None):
@@ -137,6 +177,7 @@ def get_recommendations(prom_url, occupancy_window_hours=None, now_ts=None):
         market_by_stat.setdefault(key, {})[stat] = v
 
     occupancy_by_machine = _occupancy_by_machine(prom_url, window_hours, at=now_ts)
+    idle_hours_by_machine = _current_idle_hours(prom_url, window_hours, now_ts=now_ts)
 
     machines = set(listing_price) | set(market_by_stat)
     out = []
@@ -150,9 +191,10 @@ def get_recommendations(prom_url, occupancy_window_hours=None, now_ts=None):
         occ_pct = occupancy_by_machine.get(key)
         floor = floor_price.get(key)
         target_val = target_price.get(key)
+        idle_hours = idle_hours_by_machine.get(key)
 
         recommendation, suggested_price, reason = _recommend(
-            price, market.get("median"), market.get("p25"), market.get("p75"), occ_pct, floor)
+            price, market.get("median"), market.get("p25"), market.get("p75"), occ_pct, floor, idle_hours)
 
         out.append({
             "rig": rig,
@@ -162,6 +204,7 @@ def get_recommendations(prom_url, occupancy_window_hours=None, now_ts=None):
             "target_price": round(target_val, 4) if target_val is not None else None,
             "market": {k: round(v, 4) for k, v in market.items()},
             "occupancy_pct_7d": round(occ_pct, 1) if occ_pct is not None else None,
+            "idle_hours": idle_hours,
             "recommendation": recommendation,
             "suggested_price": round(suggested_price, 4) if suggested_price is not None else None,
             "reason": reason,

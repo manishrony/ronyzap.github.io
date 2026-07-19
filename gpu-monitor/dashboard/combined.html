@@ -351,6 +351,7 @@
           <th class="text-right py-2 pr-4">Current Price</th>
           <th class="text-right py-2 pr-4">Market (p25 / median / p75)</th>
           <th class="text-right py-2 pr-4">Occupancy (7d)</th>
+          <th class="text-right py-2 pr-4">Idle Now</th>
           <th class="text-center py-2 pr-4">Recommendation</th>
           <th class="text-right py-2 pr-4">Suggested Price</th>
           <th class="text-left py-2">Why</th>
@@ -1040,6 +1041,7 @@ async function fetchPricingAdvisor() {
       <td class="py-1.5 pr-4 text-right font-mono text-slate-200">${fmtMoney(m.current_price)}/hr</td>
       <td class="py-1.5 pr-4 text-right font-mono text-slate-400">${marketStr}</td>
       <td class="py-1.5 pr-4 text-right font-mono ${m.occupancy_pct_7d != null ? occupancyColorClass(m.occupancy_pct_7d) : ''}">${m.occupancy_pct_7d != null ? m.occupancy_pct_7d + '%' : '—'}</td>
+      <td class="py-1.5 pr-4 text-right font-mono ${m.idle_hours != null && m.idle_hours >= 2 ? 'text-amber-400' : 'text-slate-500'}">${m.idle_hours != null ? m.idle_hours + 'h' : '≥7d'}</td>
       <td class="py-1.5 pr-4 text-center"><span class="${pricingBadgeClass(m.recommendation)}">${m.recommendation}</span></td>
       <td class="py-1.5 pr-4 text-right font-mono text-blue-300">${m.suggested_price != null ? fmtMoney(m.suggested_price) + "/hr" : "—"}</td>
       <td class="py-1.5 text-xs text-slate-500">${m.reason}</td>

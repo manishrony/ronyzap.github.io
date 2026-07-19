@@ -360,8 +360,27 @@ it?
   at/below median: something other than price is keeping this machine
   empty (machine health, listing visibility, market saturation) — raising
   or lowering price further isn't the fix.
+- **UNKNOWN** — no occupancy data at all (new/never-rented machine, or a
+  metric gap) AND price deviates ≥25% from median either way: not enough
+  signal to call it either reasonable or a problem, flagged for a manual
+  look instead of silently assuming it's fine. (Fixed 2026-07-19: this used
+  to fall into the "HOLD, looks reasonable" bucket purely because
+  `occ_pct` was `None`, so a machine priced +436% vs. median with zero
+  occupancy data got told it "looks reasonable, no action needed" —
+  confirmed live on zappa2. Missing data now degrades to "unjudged," not
+  "assumed fine.")
 - **HOLD** (reasonable) — anything else: current price already looks
   sensible given the occupancy signal.
+
+Every row also reports `idle_hours` — hours since that machine's
+`gpu_slot_rented` last read ≥0.5 (i.e. how long its *current* idle stretch
+has run, derived by walking the raw window rather than a single instant
+query so a currently-rented machine correctly reads ~0 and a
+never-rented-in-window one reads `null`/"≥7d" instead of a wrong number).
+This is what actually answers "has this GPU been sitting idle for hours"
+on the dashboard itself, without re-deriving it from `gpu_monitor.sh`'s
+own vacancy-file state each time — added 2026-07-19 after a live idle GPU
+on zappa1 prompted the question.
 
 `suggested_price` is a concrete number (halfway from current price toward
 the relevant market band edge, floor-respecting on the LOWER side) for a
