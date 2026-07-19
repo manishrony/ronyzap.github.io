@@ -30,6 +30,7 @@ import time
 import prom_client
 
 OCCUPANCY_WINDOW_HOURS = 24 * 7  # 7 days — long enough to smooth out normal rental churn
+IDLE_HOURS_NOISE_FLOOR = 0.25    # hours — below this, treat as "not idle" (scrape-interval noise), not a real idle stretch worth reporting. Keep in sync with fmtIdleHours()'s threshold in market.html.
 
 
 def _latest_by_key(prom_url, query, label_keys, at=None):
@@ -135,7 +136,13 @@ def _recommend(price, median, p25, p75, occ_pct, floor, idle_hours=None, window_
     comparison instead of refusing to answer."""
     if idle_hours is not None and window_hours and idle_hours >= window_hours:
         idle_note = f" Currently idle for the entire {window_hours / 24:.0f}d window (or longer)."
-    elif idle_hours is not None and idle_hours > 0:
+    elif idle_hours is not None and idle_hours >= IDLE_HOURS_NOISE_FLOOR:
+        # Same floor the frontend uses to collapse the table's "Idle Now"
+        # cell to "—" (see fmtIdleHours in market.html) — anything under it
+        # is scrape-interval noise around "currently rented", not real idle
+        # time. Without this the reason text said "Currently idle 0.1h."
+        # right next to a table cell that had already collapsed to "—" for
+        # the exact same value — a fresh contradiction, confirmed live.
         idle_note = f" Currently idle {idle_hours:.1f}h."
     else:
         idle_note = ""
