@@ -46,14 +46,23 @@ for base in "https://console.vast.ai" "https://cloud.vast.ai"; do
 done
 [[ -z "$instances_json" ]] && instances_json='{"instances":[]}'
 
+# Live GPU compute process names (this script runs ON the host, so it can see
+# exactly what nvidia-smi sees) — used as a classification fallback below for
+# D-type rentals where get_image() has nothing to go on (no /instances/ match
+# means no container ID to look up in kaalia.log at all, not just a missing
+# entry) — e.g. a "hashcat.bin"/"*miner*" process is still identifiable even
+# though the image name is unavailable.
+proc_names=$(nvidia-smi --query-compute-apps=process_name --format=csv,noheader 2>/dev/null || true)
+
 backup="${JSONL_FILE}.bak.$(date +%s)"
 cp "$JSONL_FILE" "$backup"
 echo "[*] Backed up JSONL to $backup"
 
-python3 - "$JSONL_FILE" "$machines_json" "$instances_json" "$MAX_RENTAL_DAYS" <<'PYEOF'
+python3 - "$JSONL_FILE" "$machines_json" "$instances_json" "$MAX_RENTAL_DAYS" "$proc_names" <<'PYEOF'
 import sys, json, socket, glob, re, datetime
 
 jsonl, machines_raw, instances_raw = sys.argv[1], sys.argv[2], sys.argv[3]
+proc_names = [p for p in sys.argv[5].splitlines() if p.strip()] if len(sys.argv) > 5 else []
 try:
     max_rental_days = int(sys.argv[4])
 except Exception:
@@ -124,8 +133,21 @@ for m in machines:
     print(f"[LIVE] Machine {mid} ({gpu_name}): {count} GPU(s) rented, ${total:.3f}/hr total{fallback_note}")
     if count > 0 and total > 0:
         img = get_image(iid)
+        workload = classify_workload(img)
+        # D-type rentals have no iid at all, so get_image() has nothing to look
+        # up (not just a missing kaalia.log entry) — fall back to classifying
+        # whatever's actually running on the GPUs right now (this script runs
+        # on the host, so it sees the same processes gpu_monitor.sh's live
+        # throttle does).
+        if workload == 'unknown' and proc_names:
+            for p in proc_names:
+                pw = classify_workload(p)
+                if pw != 'unknown':
+                    workload = pw
+                    img = img or p
+                    break
         correct[mid] = {'count': count, 'rate': total, 'gpu_name': gpu_name,
-                        'iid': iid, 'image': img, 'workload': classify_workload(img),
+                        'iid': iid, 'image': img, 'workload': workload,
                         'end_date': m.get('end_date')}
 
 if not correct:
