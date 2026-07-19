@@ -236,6 +236,35 @@ month-to-date fix established:
   gauge trap the profit fix was about); `changes()` over an existing gauge
   with real depth sidesteps that entirely.
 
+## Major Event Feed (hub only)
+
+The combined dashboard's "Live Event Feed" (all rigs) and each rig's
+"Recent Events" tab (`/api/events`, `events_api.py`) — no longer sourced
+from each rig's own JSONL log (which requires that rig's dashboard to be
+reachable and mixes in a `gpu_status` snapshot every 30s scrape, market
+snapshots, etc.). Instead it's derived directly from the central
+Prometheus, so the hub can show it for every rig with one source of truth
+and no per-rig noise:
+
+- **GPU temp alert** — `gpu_temp_celsius` crossing into the amber zone.
+  Rise at 80°C, recovers at 75°C (hysteresis, not a single cutoff) so a
+  temperature sitting right at the boundary doesn't flap in and out of
+  "alert" on every scrape and flood the feed.
+- **CPU temp alert** — same hysteresis band (80°C rise / 75°C fall) on
+  `rig_cpu_temp_celsius`.
+- **Rental activity change** — `gpu_slot_rented` flipping 0→1 or 1→0, per
+  GPU slot (not just a machine-level flag).
+- **Price change** — `listing_price_dollars_per_hour` actual value changes
+  per machine.
+
+Each event carries `ts`, `rig`, `type`, `severity` (`warning` for a rise,
+`info` for everything else including a recovery), a ready-made `badge`
+label, and a `detail` string — the frontend just renders them, no per-type
+formatting logic duplicated in JS. Query params: `hours` (window, default
+24), `limit` (default 60), `rig` (optional filter, case-insensitive —
+matches Prometheus's own `rig` label, e.g. `zappa1`, not the display name
+`Zappa1`).
+
 ## Per-node install (no peers)
 
 ```bash

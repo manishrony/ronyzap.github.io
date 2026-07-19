@@ -107,7 +107,7 @@
   <div class="card p-4 overflow-x-auto">
     <table class="w-full text-xs text-left">
       <thead class="text-slate-500 border-b border-slate-700">
-        <tr><th class="py-2 pr-4">Timestamp (UTC)</th><th class="py-2 pr-4">Series</th><th class="py-2 pr-4">Value</th></tr>
+        <tr><th class="py-2 pr-4">Timestamp (UTC)</th><th class="py-2 pr-4">Series</th><th class="py-2 pr-4" id="th-value">Value</th></tr>
       </thead>
       <tbody id="table-body"></tbody>
     </table>
@@ -200,6 +200,25 @@ async function load() {
   renderTable(series);
 }
 
+// Matches the units already shown in each <option> label above — surfaced
+// again on the table's Value column, since once you're looking at rows the
+// metric dropdown may be scrolled out of view and "56.000" alone doesn't
+// say whether that's °C, W, or $.
+const METRIC_UNITS = {
+  gpu_temp_celsius: '°C',
+  gpu_power_draw_watts: 'W',
+  gpu_power_limit_watts: 'W',
+  gpu_fan_percent: '%',
+  gpu_util_percent: '%',
+  machine_rental_rate_dollars_per_hour: '$/hr',
+  machine_earn_day_dollars: '$',
+  market_price_dollars_per_hour: '$/hr',
+  listing_price_dollars_per_hour: '$/hr',
+  listing_target_dollars_per_hour: '$/hr',
+  rig_daily_earnings_dollars: '$',
+  machine_rented: '0/1',
+};
+
 function seriesLabel(metric) {
   return function (m) {
     const parts = [];
@@ -256,7 +275,10 @@ function renderChart(metric, series) {
 }
 
 function renderTable(series) {
-  const labelFn = seriesLabel(document.getElementById('f-metric').value);
+  const metric = document.getElementById('f-metric').value;
+  const labelFn = seriesLabel(metric);
+  const unit = METRIC_UNITS[metric];
+  document.getElementById('th-value').textContent = unit ? `Value (${unit})` : 'Value';
   const tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
   let rows = [];

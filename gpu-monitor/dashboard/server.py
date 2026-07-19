@@ -8,6 +8,7 @@ import history_api
 import profit_api
 import occupancy_api
 import daily_summary_api
+import events_api
 import time
 
 DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
@@ -53,6 +54,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_occupancy()
         elif self.path.startswith("/api/daily-summary"):
             self._serve_daily_summary()
+        elif self.path.startswith("/api/events"):
+            self._serve_events()
         elif path_only in ("/history", "/history.html"):
             self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
         elif path_only in ("/", "/index.html"):
@@ -146,6 +149,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         daily_summary_api.py). No query params."""
         try:
             result = daily_summary_api.handle_daily_summary_request(PROMETHEUS_URL, time.time())
+            body = json.dumps(result).encode()
+            status = 200
+        except Exception as e:
+            body = json.dumps({"error": str(e)}).encode()
+            status = 400
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _serve_events(self):
+        """Major-event feed derived from Prometheus (hub only — see
+        events_api.py): GPU/CPU temp alerts, rental slot changes, price
+        changes. Query params: hours (default 24), limit (default 60),
+        rig (optional filter)."""
+        _, _, qs = self.path.partition("?")
+        query = urllib.parse.parse_qs(qs)
+        try:
+            result = events_api.handle_events_request(PROMETHEUS_URL, query, time.time())
             body = json.dumps(result).encode()
             status = 200
         except Exception as e:

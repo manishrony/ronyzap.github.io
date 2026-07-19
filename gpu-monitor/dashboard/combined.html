@@ -729,6 +729,8 @@ async function fetchAll() {
   fetchProfit();
   fetchOccupancy();
   fetchDailySummary();
+  fetchMajorEvents();
+  if (activeRig !== -1) fetchRigMajorEvents(activeRig);
 }
 
 function fmtMoney(v) {
@@ -905,6 +907,7 @@ function drilldown(idx) {
   document.getElementById("rig-detail-history-link").href =
     "/history?rig=" + encodeURIComponent(rigName(idx));
   showRigTab("overview");
+  fetchRigMajorEvents(idx);
 }
 function backToCombined() {
   activeRig = -1;
@@ -1263,36 +1266,6 @@ function computeAnalysisScore(events, periodStart, periodEnd) {
   return { combined, utilScore, priceScore };
 }
 
-function eventBadge(type) {
-  const m = {gpu_status:["badge-blue","GPU"],temp_warning:["badge-red","🌡️ TEMP"],
-    gpu_fault:["badge-red","⚡ FAULT"],cpu_temp_warning:["badge-red","🔥 CPU"],
-    cpu_thermal_protect:["badge-yellow","🛡️ CPU PROTECT"],
-    cpu_freq_throttle:["badge-yellow","🐢 CPU CAP"],cpu_freq_restore:["badge-blue","🚀 CPU FULL"],
-    workload_throttle:["badge-yellow","⚙️ WORKLOAD CAP"],
-    profit_throttle:["badge-yellow","💵 PROFIT CAP"],profit_override:["badge-purple","🔧 OVERRIDE"],
-    rental_start:["badge-green","▶ RENTED"],rental_end:["badge-yellow","■ ENDED"],
-    price_change:["badge-purple","💰 PRICE"],startup:["badge-blue","🚀 START"]};
-  const [cls,lbl] = m[type]||["badge-blue",type];
-  return `<span class="text-xs px-2 py-0.5 rounded font-medium ${cls}">${lbl}</span>`;
-}
-
-function eventDetail(e) {
-  if (e.type==="gpu_status" && e.gpus) return e.gpus.map(g=>`GPU${g.idx} ${g.temp}°C ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ") + (typeof e.cpu_temp==="number"?` | CPU ${e.cpu_temp}°C`:"");
-  if (e.type==="gpu_fault") return (e.gpu_hint ? e.gpu_hint+": " : "") + (e.message||"").slice(0,120);
-  if (e.type==="price_change") return `${e.gpu_name} x${e.num_gpus} $${Number(e.old_price).toFixed(2)}→$${Number(e.new_price).toFixed(2)}/hr`;
-  if (e.type==="rental_start") return `${e.gpus} @ ${e.rate}`;
-  if (e.type==="rental_end")   return `${e.gpus} ended`;
-  if (e.type==="temp_warning") return `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
-  if (e.type==="cpu_temp_warning") return `CPU at ${e.cpu_temp}°C (>${e.threshold}°C)`;
-  if (e.type==="cpu_thermal_protect") return `CPU ${e.cpu_temp}°C — dropped GPU power ${e.dropped_w}W`;
-  if (e.type==="cpu_freq_throttle") return `CPU ${e.cpu_temp}°C — capped CPU to ${e.cap_mhz}MHz`;
-  if (e.type==="cpu_freq_restore") return `CPU ${e.cpu_temp}°C — restored CPU to ${e.max_mhz}MHz`;
-  if (e.type==="workload_throttle") return e.state==="on" ? `${e.types} running — capped to ${e.watts}W` : "workload cleared — power curve restored";
-  if (e.type==="profit_throttle") return e.state==="on" ? `rental paying ~$${Number(e.daily_rate_est||0).toFixed(2)}/day — capped to ${e.watts}W` : "rate improved or rental ended — full power restored";
-  if (e.type==="profit_override") return e.state==="cleared" ? `override cleared (${e.reason})` : "";
-  if (e.type==="startup") return `Power ${e.power_limit}W threshold ${e.temp_threshold}°C`;
-  return "";
-}
 // Latest CPU temp (°C) from the most recent gpu_status event carrying one.
 function lastCpuTemp(events) {
   for (let i = events.length - 1; i >= 0; i--)
@@ -1473,15 +1446,59 @@ function renderCombined() {
     borderWidth:1, borderRadius:4,
   })));
 
-  // Combined events table
-  const tbody = document.getElementById("c-events");
-  const recent = [...allEvs].filter(e=>e.type!=="pdu_power").reverse().slice(0,60);
-  tbody.innerHTML = recent.map(e=>`<tr class="hover:bg-slate-800/30">
+  // Combined events table is populated separately by fetchMajorEvents() —
+  // see there for why (Prometheus-derived major events, not raw JSONL).
+}
+
+function severityBadgeClass(sev) {
+  return sev === "warning"
+    ? "text-xs px-2 py-0.5 rounded border border-red-700/50 bg-red-900/30 text-red-300"
+    : "text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 text-slate-300";
+}
+
+function renderMajorEvents(tbodyId, events, showRig) {
+  const tbody = document.getElementById(tbodyId);
+  if (!events.length) {
+    tbody.innerHTML = `<tr><td colspan="${showRig?4:3}" class="py-4 text-center text-slate-600 text-xs">No temp alerts, rental changes, or price changes in this window.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = events.map(e => `<tr class="hover:bg-slate-800/30">
     <td class="py-1.5 pr-3 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
-    <td class="py-1.5 pr-3"><span class="text-xs px-2 py-0.5 rounded border" style="color:${rigColor(e._rig)};border-color:${rigColor(e._rig)}66;background:${rigColor(e._rig)}1a;">${rigName(e._rig)}</span></td>
-    <td class="py-1.5 pr-3">${eventBadge(e.type)}</td>
-    <td class="py-1.5 text-xs text-slate-400">${eventDetail(e)}</td>
+    ${showRig ? `<td class="py-1.5 pr-3 text-xs text-slate-300">${e.rig}</td>` : ""}
+    <td class="py-1.5 pr-3"><span class="${severityBadgeClass(e.severity)}">${e.badge}</span></td>
+    <td class="py-1.5 text-xs text-slate-400">${e.detail}</td>
   </tr>`).join("");
+}
+
+// Major-event feed: derived server-side from Prometheus time-series
+// (GPU/CPU temp crossing the amber zone, rental slot changes, price
+// changes) rather than raw per-rig JSONL — see events_api.py. Same
+// "hide on error" posture as the other Prometheus-backed panels.
+async function fetchMajorEvents() {
+  let data;
+  try {
+    const resp = await fetch("/api/events?hours=24&limit=60");
+    data = await resp.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    renderMajorEvents("c-events", [], true);
+    return;
+  }
+  renderMajorEvents("c-events", data.events || [], true);
+}
+
+async function fetchRigMajorEvents(idx) {
+  const rig = rigName(idx);
+  let data;
+  try {
+    const resp = await fetch("/api/events?hours=24&limit=50&rig=" + encodeURIComponent(rig));
+    data = await resp.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    renderMajorEvents("r-events", [], false);
+    return;
+  }
+  renderMajorEvents("r-events", data.events || [], false);
 }
 
 function renderRigCard(idx, d) {
@@ -1626,12 +1643,8 @@ function renderRig(idx) {
     if (priceEvs.length) lineChart("chart-r-price7", priceEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts)),
       [{label:"Ask $/hr",data:priceEvs.map(e=>e.new_price),borderColor:"#c084fc",backgroundColor:"#c084fc20",fill:true}]);
 
-    const tbody = document.getElementById("r-events");
-    tbody.innerHTML = [...events].filter(e=>e.type!=="pdu_power").reverse().slice(0,50).map(e=>`<tr class="hover:bg-slate-800/30">
-      <td class="py-1.5 pr-4 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
-      <td class="py-1.5 pr-4">${eventBadge(e.type)}</td>
-      <td class="py-1.5 text-xs text-slate-400">${eventDetail(e)}</td>
-    </tr>`).join("");
+    // r-events table is populated separately by fetchRigMajorEvents() —
+    // Prometheus-derived major events, not raw JSONL.
   }
 
   if (activeRigTab === "daily") {
