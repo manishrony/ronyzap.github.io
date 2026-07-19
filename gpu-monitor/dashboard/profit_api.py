@@ -2,13 +2,25 @@
 """Live + period-to-date profit metrics from the central Prometheus (hub only).
 
 'Live' figures are instant queries against gauges prom_exporter.py already
-computes every scrape (rig_revenue_dollars_per_hour etc.). Daily/monthly
-profit are estimated by integrating those same live-rate gauges over the
-elapsed period (avg rate x hours elapsed) — this is a continuously-updating
-ESTIMATE, not Vast's own ground-truth daily_earnings sync (which only
-updates once a day and lags "right now"); rig_daily_earnings_dollars is
-still exposed separately by the exporter for cross-checking against this
-estimate.
+computes every scrape (rig_revenue_dollars_per_hour etc.).
+
+Daily/monthly REVENUE uses rig_daily_earnings_dollars (Vast's own
+ground-truth daily sync, one series per (rig, date) — a still-accumulating
+running total for today, a settled total for a completed day) rather than
+integrating the live rig_revenue_dollars_per_hour rate over the period.
+That distinction matters: rig_revenue_dollars_per_hour only exists in
+Prometheus since Live Profit Metrics was deployed (no history before that),
+so integrating it over a multi-week "month to date" window would silently
+average the last few hours of real samples and then multiply that average
+across weeks it was never actually measured for — a large, confirmed
+overestimate. rig_daily_earnings_dollars has real depth back to ~June 8
+(the historical backfill), so summing actual per-day totals is correct.
+
+Daily/monthly ELECTRICITY has no ground-truth equivalent (it's our own
+estimate either way), so it's estimated by integrating gpu_power_draw_watts
+(same depth problem solved the same way — it also has real backfilled
+history, unlike the newer rig_electricity_cost_dollars_per_hour) against
+each rig's own rig_energy_rate_dollars_per_kwh.
 
 Like history_api.py, this only ever runs a small, fixed set of hardcoded
 PromQL queries — never raw PromQL from the browser — since this dashboard
@@ -64,38 +76,85 @@ def get_live_profit(prom_url):
     return {"rigs": rigs, "fleet": fleet}
 
 
-def _integrate(prom_url, metric, start_ts, now_ts):
-    """Estimated total $ over [start_ts, now_ts] for a $/hour gauge: average
-    value over the window (per rig, via a bare avg_over_time — no nested
-    aggregation, so no subquery syntax needed) x hours elapsed, summed
-    across rigs."""
+def _earnings_by_rig_date(prom_url, start_ts, now_ts):
+    """{(rig, date): total_dollars} for every distinct rig_daily_earnings_dollars
+    series touched by [start_ts, now_ts] — each (rig, date) combination is its
+    own Prometheus series (the exporter's `date` label only changes once a
+    day), so the LAST sample in range for a given series is that day's most
+    up-to-date total: a still-growing running total for today, a settled
+    total for a completed day. Ground truth (Vast's own daily sync), not an
+    extrapolation."""
+    step = 3600  # this gauge only updates ~hourly; no need for finer resolution
+    data = prom_client.query_range(prom_url, "rig_daily_earnings_dollars", start_ts, now_ts, step)
+    out = {}
+    for series in data.get("result", []):
+        metric = series.get("metric", {})
+        rig, date = metric.get("rig"), metric.get("date")
+        if rig is None or date is None:
+            continue
+        values = series.get("values") or []
+        if not values:
+            continue
+        try:
+            out[(rig, date)] = float(values[-1][1])
+        except (ValueError, TypeError, IndexError):
+            continue
+    return out
+
+
+def _estimate_electricity_cost(prom_url, start_ts, now_ts):
+    """Estimated total electricity $ over [start_ts, now_ts]: each rig's
+    average total GPU power draw over the window (bare avg_over_time, no
+    nested aggregation — summed per rig in Python instead of via a subquery)
+    x hours elapsed x that rig's own configured rate."""
     hours = (now_ts - start_ts) / 3600.0
     if hours <= 0:
         return 0.0
     window_s = int(now_ts - start_ts)
-    query = f"avg_over_time({metric}[{window_s}s])"
     try:
-        results = prom_client.query_instant(prom_url, query, at=now_ts)
+        power_results = prom_client.query_instant(prom_url, f"avg_over_time(gpu_power_draw_watts[{window_s}s])", at=now_ts)
     except Exception:
         return 0.0
-    per_rig_avg = prom_client.group_by_label(results, 'rig')
-    return sum(per_rig_avg.values()) * hours
+    power_by_rig = {}
+    for r in power_results:
+        rig = r.get("metric", {}).get("rig")
+        if rig is None:
+            continue
+        try:
+            power_by_rig[rig] = power_by_rig.get(rig, 0.0) + float(r["value"][1])
+        except (KeyError, ValueError, TypeError, IndexError):
+            continue
+
+    try:
+        rate_by_rig = prom_client.group_by_label(prom_client.query_instant(prom_url, "rig_energy_rate_dollars_per_kwh"), "rig")
+    except Exception:
+        rate_by_rig = {}
+
+    total_cost = 0.0
+    for rig, avg_watts in power_by_rig.items():
+        rate = rate_by_rig.get(rig, 0.25)  # matches gpu_monitor.sh's own PDU_ENERGY_RATE default
+        kwh = avg_watts / 1000.0 * hours
+        total_cost += kwh * rate
+    return total_cost
 
 
 def get_period_profit(prom_url, now_ts=None):
     """Daily (today, calendar UTC) and monthly (month-to-date, calendar UTC)
-    profit, estimated by integrating the live rate gauges over the elapsed
-    period so far."""
+    profit: ground-truth revenue (rig_daily_earnings_dollars) minus
+    estimated electricity (integrated GPU power draw x each rig's rate)."""
     now = datetime.datetime.utcfromtimestamp(now_ts) if now_ts else datetime.datetime.utcnow()
     now = now.replace(tzinfo=datetime.timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = day_start.replace(day=1)
     now_epoch = now.timestamp()
+    today_str = now.strftime("%Y-%m-%d")
 
-    day_revenue = _integrate(prom_url, "rig_revenue_dollars_per_hour", day_start.timestamp(), now_epoch)
-    day_elec = _integrate(prom_url, "rig_electricity_cost_dollars_per_hour", day_start.timestamp(), now_epoch)
-    month_revenue = _integrate(prom_url, "rig_revenue_dollars_per_hour", month_start.timestamp(), now_epoch)
-    month_elec = _integrate(prom_url, "rig_electricity_cost_dollars_per_hour", month_start.timestamp(), now_epoch)
+    earnings = _earnings_by_rig_date(prom_url, month_start.timestamp(), now_epoch)
+    month_revenue = sum(earnings.values())
+    day_revenue = sum(v for (rig, date), v in earnings.items() if date == today_str)
+
+    day_elec = _estimate_electricity_cost(prom_url, day_start.timestamp(), now_epoch)
+    month_elec = _estimate_electricity_cost(prom_url, month_start.timestamp(), now_epoch)
 
     return {
         "today": {

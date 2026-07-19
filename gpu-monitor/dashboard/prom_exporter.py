@@ -210,6 +210,13 @@ def render_metrics(data_file, state_file):
     if latest_earnings:
         m.add("rig_daily_earnings_dollars", "gauge", "Vast's own daily_earnings total for the most recently synced date.", {"rig": rig, "date": latest_earnings.get("date", "")}, _to_float(latest_earnings.get("total")))
 
+    # Configured $/kWh, exposed as its own gauge regardless of gpu_status
+    # presence — lets anything computing HISTORICAL electricity cost (see
+    # occupancy/profit period rollups) look up each rig's own rate via
+    # Prometheus instead of needing filesystem access to that rig's conf.
+    energy_rate = _read_energy_rate()
+    m.add("rig_energy_rate_dollars_per_kwh", "gauge", "Configured PDU_ENERGY_RATE for this rig.", {"rig": rig}, energy_rate)
+
     # --- Live profit gauges: revenue vs. estimated electricity cost ---
     # GPU power draw only (not full system draw — CPU/fans/PSU losses aren't
     # metered per-rig anywhere; the PDU meters the whole rack collectively,
@@ -221,7 +228,6 @@ def render_metrics(data_file, state_file):
         num_gpus = len(gpus)
         total_power_w = sum(_to_float(g.get("power_draw")) for g in gpus)
         total_revenue_hr = sum(s["cost"] for s in state.values())
-        energy_rate = _read_energy_rate()
         elec_cost_hr = total_power_w / 1000.0 * energy_rate
         profit_hr = total_revenue_hr - elec_cost_hr
         labels = {"rig": rig}

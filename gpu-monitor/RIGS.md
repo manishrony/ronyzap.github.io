@@ -137,13 +137,21 @@ estimated today/month-to-date profit, fleet-wide. Built entirely on gauges
   signal actually available on every rig, not just the hub.
 - **Revenue per GPU** — revenue/hr ÷ total GPU count (rented + free), a
   fleet-monetization-efficiency figure, not just the rented rate.
-- **Today / month-to-date profit** — estimated by integrating the live
-  rate gauges over the elapsed calendar period (avg rate × hours/days so
-  far via PromQL `avg_over_time`), continuously updating. This is
-  deliberately NOT Vast's own `daily_earnings` ground truth (which only
-  syncs once a day and lags "right now") — that figure is still exposed
-  separately (`rig_daily_earnings_dollars`) for cross-checking against
-  this estimate.
+- **Today / month-to-date profit** — revenue is summed from
+  `rig_daily_earnings_dollars` (Vast's own ground-truth daily sync, one
+  series per `(rig, date)` — a still-accumulating running total for today,
+  a settled total for a completed day), NOT by integrating the live
+  `rig_revenue_dollars_per_hour` rate over the period. That distinction
+  matters and was a real bug (2026-07-19): `rig_revenue_dollars_per_hour`
+  only exists in Prometheus since this feature was deployed, so
+  `avg_over_time(...)` over a multi-week "month to date" window silently
+  averaged just the last few hours of real samples and multiplied that
+  average across weeks it was never measured for — confirmed inflating
+  month-to-date revenue by ~75% against the real total. Electricity has no
+  ground-truth equivalent, so it's still estimated — but by integrating
+  `gpu_power_draw_watts` (has real backfilled depth, unlike the newer
+  `rig_electricity_cost_dollars_per_hour`) against each rig's own
+  `rig_energy_rate_dollars_per_kwh`, not the same short-lived derived gauge.
 
 The whole panel hides itself (rather than showing a wall of "—") if
 `/api/profit` errors — expected on a standalone node, since Prometheus
