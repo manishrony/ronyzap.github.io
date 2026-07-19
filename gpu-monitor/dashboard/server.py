@@ -446,6 +446,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass  # suppress BrokenPipeError and connection reset noise
 
 if __name__ == "__main__":
-    srv = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
+    # ThreadingHTTPServer, not plain HTTPServer: the latter handles one
+    # request at a time, so a single slow/stuck request (a laggy peer, an
+    # LLM call near its timeout, anything) blocks every other request —
+    # including the Cloudflare tunnel's own health checks — until it
+    # finishes. Confirmed live 2026-07-19: a ~20-minute request stall took
+    # the whole dashboard down (502 at the edge) even though every
+    # individual upstream call already has its own bounded timeout.
+    srv = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"[gpu-dashboard] http://localhost:{PORT}  (data: {DATA_FILE})")
     srv.serve_forever()
