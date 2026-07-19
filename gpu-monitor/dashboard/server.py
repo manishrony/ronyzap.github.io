@@ -7,6 +7,7 @@ import prom_exporter
 import history_api
 import profit_api
 import occupancy_api
+import daily_summary_api
 import time
 
 DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
@@ -50,6 +51,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_profit()
         elif self.path.startswith("/api/occupancy"):
             self._serve_occupancy()
+        elif self.path.startswith("/api/daily-summary"):
+            self._serve_daily_summary()
         elif path_only in ("/history", "/history.html"):
             self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
         elif path_only in ("/", "/index.html"):
@@ -121,6 +124,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(qs)
         try:
             result = occupancy_api.handle_occupancy_request(PROMETHEUS_URL, query, time.time())
+            body = json.dumps(result).encode()
+            status = 200
+        except Exception as e:
+            body = json.dumps({"error": str(e)}).encode()
+            status = 400
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _serve_daily_summary(self):
+        """Previous full UTC calendar day's revenue/electricity/profit,
+        occupancy, temps, and price-change activity (hub only — see
+        daily_summary_api.py). No query params."""
+        try:
+            result = daily_summary_api.handle_daily_summary_request(PROMETHEUS_URL, time.time())
             body = json.dumps(result).encode()
             status = 200
         except Exception as e:

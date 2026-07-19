@@ -183,6 +183,59 @@ Shares its Prometheus HTTP-query plumbing with `history_api.py` and
 `profit_api.py` via `prom_client.py` (label grouping, instant/range query
 helpers) — one place for that logic, not three.
 
+### Cleaning up a stale/duplicate `rig` label
+
+Prometheus never deletes a label value just because the exporter stops
+writing it — the old series (e.g. a leftover `rig="Zappa1"` from before the
+2026-07-19 hostname-labeling fix) stays queryable for as long as any
+`avg_over_time(...[window])` still reaches back to touch its last samples.
+It ages out of a 24h view within a day, but pollutes 7d/30d views for up to
+a month unless removed directly. To purge it (run on the hub, zappa1, as
+root):
+
+```bash
+# 1. Temporarily enable the TSDB admin API
+sudo sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=10y --web.enable-admin-api"|' /etc/default/prometheus
+sudo systemctl restart prometheus
+
+# 2. Delete the stale series (adjust the label match to whatever's stale)
+curl -X POST 'http://localhost:9090/api/v1/admin/tsdb/delete_series?match[]={rig="Zappa1"}'
+curl -X POST 'http://localhost:9090/api/v1/admin/tsdb/clean_tombstones'
+
+# 3. Turn the admin API back off
+sudo sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=10y"|' /etc/default/prometheus
+sudo systemctl restart prometheus
+```
+
+## Previous Day Summary (hub only)
+
+The combined dashboard's "Previous Day Summary" row (`/api/daily-summary`,
+`daily_summary_api.py`) — a end-of-day digest for the most recently
+completed full UTC calendar day, per rig and fleet-wide: revenue,
+estimated electricity, profit, occupancy %, idle GPU-hours + estimated lost
+revenue, peak/avg GPU temp, and a price-change count.
+
+Follows the same ground-truth-vs-estimate rules `profit_api.py`'s
+month-to-date fix established:
+
+- **Revenue** — `rig_daily_earnings_dollars` (Vast's own ground truth),
+  summed per rig for that specific calendar date. Reuses
+  `profit_api._earnings_by_rig_date`.
+- **Electricity** — integrates `gpu_power_draw_watts` (has real backfilled
+  depth, unlike the newer live-rate gauges) over the target day's 24h
+  window, at each rig's own `rig_energy_rate_dollars_per_kwh`.
+- **Occupancy** — reuses `occupancy_api.get_occupancy` verbatim, just
+  anchored (`now_ts`) at the end of the target day instead of the live
+  present moment, so the 24h lookback window lands on that day exactly
+  rather than a trailing window from "now".
+- **Temps** — `max_over_time`/`avg_over_time(gpu_temp_celsius[24h])`,
+  anchored the same way.
+- **Price changes** — PromQL's `changes(listing_price_dollars_per_hour[24h])`
+  per machine, summed per rig. Not a dedicated counter metric — one added
+  today would have no history for "yesterday" anyway (the same short-lived-
+  gauge trap the profit fix was about); `changes()` over an existing gauge
+  with real depth sidesteps that entirely.
+
 ## Per-node install (no peers)
 
 ```bash

@@ -256,6 +256,62 @@
     </div>
   </div>
 
+  <!-- Previous Day Summary (hub only — Prometheus-backed) -->
+  <div id="c-daily-summary-row" class="px-6 pb-4 hidden">
+    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Previous Day Summary — <span id="ds-date">—</span></p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Revenue</p>
+        <p class="text-2xl font-bold text-emerald-400" id="ds-revenue">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Electricity</p>
+        <p class="text-2xl font-bold text-orange-400" id="ds-elec">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Profit</p>
+        <p class="text-2xl font-bold" id="ds-profit">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Occupancy</p>
+        <p class="text-2xl font-bold" id="ds-occupancy">—</p>
+        <p class="text-xs text-slate-500 mt-1" id="ds-occupancy-sub"></p>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Est. Lost Revenue (idle)</p>
+        <p class="text-lg font-bold text-red-400" id="ds-lost">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Peak GPU Temp</p>
+        <p class="text-lg font-bold text-amber-300" id="ds-temp">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Price Changes</p>
+        <p class="text-lg font-bold text-violet-400" id="ds-prices">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Total GPUs</p>
+        <p class="text-lg font-bold text-blue-300" id="ds-gpus">—</p>
+      </div>
+    </div>
+    <div class="card p-4 mt-4 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+          <th class="text-left py-2 pr-4">Rig</th>
+          <th class="text-right py-2 pr-4">Revenue</th>
+          <th class="text-right py-2 pr-4">Electricity</th>
+          <th class="text-right py-2 pr-4">Profit</th>
+          <th class="text-right py-2 pr-4">Occupancy</th>
+          <th class="text-right py-2 pr-4">Max Temp</th>
+          <th class="text-right py-2">Price Changes</th>
+        </tr></thead>
+        <tbody id="ds-table"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Rig cards (clickable) -->
   <div class="px-6 pb-4">
     <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rigs — click to drill down</p>
@@ -672,6 +728,7 @@ async function fetchAll() {
   render();
   fetchProfit();
   fetchOccupancy();
+  fetchDailySummary();
 }
 
 function fmtMoney(v) {
@@ -774,6 +831,58 @@ async function fetchOccupancy() {
                     <td class="py-1.5 pr-4 text-right font-mono ${occupancyColorClass(s.occupancy_pct)}">${s.occupancy_pct}%</td>
                     <td class="py-1.5 pr-4 text-right font-mono text-slate-300">${s.idle_hours}h</td>
                     <td class="py-1.5 text-right font-mono text-red-400">${fmtMoney(s.estimated_lost_revenue)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function fetchDailySummary() {
+  // Same "hide on error" posture as fetchProfit/fetchOccupancy — hub-only,
+  // and nothing to show until at least one full UTC calendar day of history
+  // exists.
+  let data;
+  try {
+    const resp = await fetch("/api/daily-summary");
+    data = await resp.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    document.getElementById("c-daily-summary-row").classList.add("hidden");
+    return;
+  }
+  if (!data.fleet || Object.keys(data.rigs || {}).length === 0) {
+    document.getElementById("c-daily-summary-row").classList.add("hidden");
+    return;
+  }
+  document.getElementById("c-daily-summary-row").classList.remove("hidden");
+
+  document.getElementById("ds-date").textContent = data.date;
+  const fleet = data.fleet;
+  document.getElementById("ds-revenue").textContent = fmtMoney(fleet.revenue);
+  document.getElementById("ds-elec").textContent = fmtMoney(fleet.electricity);
+  const profitEl = document.getElementById("ds-profit");
+  profitEl.textContent = fmtMoney(fleet.profit);
+  profitEl.className = "text-2xl font-bold " + profitColorClass(fleet.profit);
+  const occEl = document.getElementById("ds-occupancy");
+  occEl.textContent = fleet.occupancy_pct != null ? fleet.occupancy_pct + "%" : "—";
+  occEl.className = "text-2xl font-bold " + (fleet.occupancy_pct != null ? occupancyColorClass(fleet.occupancy_pct) : "");
+  document.getElementById("ds-occupancy-sub").textContent = fleet.idle_hours != null ? fleet.idle_hours + " idle GPU-hours" : "";
+  document.getElementById("ds-lost").textContent = fmtMoney(fleet.estimated_lost_revenue);
+  document.getElementById("ds-temp").textContent = fleet.max_temp_c != null ? fleet.max_temp_c + "°C" : "—";
+  document.getElementById("ds-prices").textContent = fleet.price_changes ?? "—";
+  document.getElementById("ds-gpus").textContent = fleet.gpus ?? "—";
+
+  const tbody = document.getElementById("ds-table");
+  tbody.innerHTML = "";
+  Object.keys(data.rigs).sort().forEach(rig => {
+    const r = data.rigs[rig];
+    const tr = document.createElement("tr");
+    tr.className = "border-b border-slate-800/60";
+    tr.innerHTML = `<td class="py-1.5 pr-4 text-slate-300">${rig}</td>
+                    <td class="py-1.5 pr-4 text-right font-mono text-emerald-400">${fmtMoney(r.revenue)}</td>
+                    <td class="py-1.5 pr-4 text-right font-mono text-orange-400">${fmtMoney(r.electricity)}</td>
+                    <td class="py-1.5 pr-4 text-right font-mono ${profitColorClass(r.profit)}">${fmtMoney(r.profit)}</td>
+                    <td class="py-1.5 pr-4 text-right font-mono ${r.occupancy_pct != null ? occupancyColorClass(r.occupancy_pct) : ''}">${r.occupancy_pct != null ? r.occupancy_pct + '%' : '—'}</td>
+                    <td class="py-1.5 pr-4 text-right font-mono text-slate-300">${r.max_temp_c != null ? r.max_temp_c + '°C' : '—'}</td>
+                    <td class="py-1.5 text-right font-mono text-violet-400">${r.price_changes ?? '—'}</td>`;
     tbody.appendChild(tr);
   });
 }
