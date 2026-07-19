@@ -217,7 +217,10 @@ if [[ -n "$PEER_URLS" ]]; then
     echo "[*] Peer URLs set — this is the hub. Installing Prometheus..."
     if ! command -v prometheus >/dev/null 2>&1; then
         apt-get update -qq
-        apt-get install -y prometheus
+        # --no-install-recommends: the 'prometheus' deb Recommends node-exporter
+        # + ipmitool/smartmontools/nvme-cli (a whole hardware-monitoring stack we
+        # don't use — our own custom /metrics exporter covers what we need). Skip it.
+        apt-get install -y --no-install-recommends prometheus
     fi
 
     PROM_TARGETS="\"localhost:$DASHBOARD_PORT\""
