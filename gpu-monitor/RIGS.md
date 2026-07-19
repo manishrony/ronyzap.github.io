@@ -393,6 +393,38 @@ WORKLOAD_THROTTLE_TYPES="cracking mining"
   (both at startup and in the main loop), so the cap is re-applied within the
   same cycle instead of leaving a window at full power.
 
+### Rate-confirmed bypass — don't throttle a mining/cracking rental that's paying well
+
+The blanket cap protects against a low-value rental burning full power for
+little return, but it also silently caps hashrate on a renter who IS paying
+well — with zero visibility to them, that's a real churn risk if they notice
+degraded performance and move to an uncapped host. If this host's confirmed
+live per-GPU rate (Vast's own `earn_day` — the same ground-truth figure the
+profit throttle uses, never the listing price) is at/above the most recent
+`market_snapshot`'s `MINING_THROTTLE_RATE_STAT` value for that GPU model (the
+same fee-discounted comparable-listings data `vastai_pricing()` already
+writes every cycle — no extra API call), `thermal_adjust()` skips the cap
+entirely and leaves the normal per-model curve (500W/5090, 300W/5080) in
+place.
+
+```bash
+MINING_THROTTLE_RATE_BYPASS=1       # default on; 0 = always throttle (original behavior)
+MINING_THROTTLE_RATE_STAT="mean"    # or "p75" for a stricter bar — mean|p75|median|p25
+```
+
+- Falls through to the normal cap on any missing/unusable data (nothing
+  rented, no market snapshot yet, bad numbers) — this only ever **lifts** the
+  cap on confirmed-good data, never guesses.
+- Host-level granularity, matching `workload_throttle_active()` itself: this
+  fleet is one machine per host, so summing across "the" rented machine here
+  isn't a narrowing of the existing all-GPUs-cap scope.
+- Log lines to watch: `WORKLOAD THROTTLE: ... mining/cracking detected, but
+  confirmed rental rate >= market {stat} → NOT capping, full power` (bypass
+  engaged) vs. the existing `capping all GPUs to {watts}W` (bypass not met).
+  `price_change`/`market_snapshot` events already carry per-stat values if you
+  want to check what the current comparison basis actually is for a given GPU
+  model.
+
 ### Unnamed-miner heuristic fallback
 
 `classify_workload()` only recognizes a fixed list of known miner/cracker

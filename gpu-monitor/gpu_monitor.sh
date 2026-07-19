@@ -125,6 +125,26 @@ GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-400}"
 WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
 
+# --- Rate-confirmed bypass: don't throttle a mining/cracking rental that's
+# actually paying well (runs every THERMAL_CHECK_INTERVAL) --------------------
+# The blanket cap above protects against a low-value rental burning full power
+# for little return, but it also silently caps hashrate on a renter who IS
+# paying well — with zero visibility to them, that's a real churn risk if they
+# notice degraded performance and move to an uncapped host. If this host's
+# confirmed live rate (Vast's own earn_day — the same ground-truth figure the
+# profit throttle uses, not the listing price) per rented GPU is at/above
+# MINING_THROTTLE_RATE_STAT's value from the most recent market_snapshot for
+# that GPU model (the same fee-discounted comparable-listings data
+# vastai_pricing() already writes every cycle — no extra API call needed),
+# skip the cap entirely and let the normal per-model curve (500W/5090,
+# 300W/5080) stand. Falls through to the normal cap on any missing/unusable
+# data — this only ever LIFTS the cap on confirmed good data, never guesses.
+# Override per-rig in /etc/gpu_monitor.conf: MINING_THROTTLE_RATE_BYPASS=0
+# disables it (always throttle, the original behavior); MINING_THROTTLE_RATE_STAT
+# can be raised to "p75" for a stricter bar.
+MINING_THROTTLE_RATE_BYPASS="${MINING_THROTTLE_RATE_BYPASS:-1}"
+MINING_THROTTLE_RATE_STAT="${MINING_THROTTLE_RATE_STAT:-mean}"    # mean|p75|median|p25
+
 # --- Unnamed-miner heuristic fallback (runs every THERMAL_CHECK_INTERVAL) ------
 # classify_workload() only recognizes a fixed list of known miner/cracker binary
 # names (e.g. we missed "matador-miner" until it was seen on Zappa1 and added).
@@ -484,6 +504,7 @@ set_power_limits() {
 # namespace pmon fallback) and classify_workload (substring match, so a process
 # name like "./hashcat.bin" classifies 'cracking' exactly like an image would).
 _WORKLOAD_THROTTLE_STATE=0   # edge-tracking so we log the transition, not every tick
+_MINING_RATE_BYPASS_STATE=0  # edge-tracking for the "mining detected but rate confirmed high" case
 _PROFIT_THROTTLE_LAST_TIER=""   # edge-tracking for the profit throttle below (empty = not capping)
 workload_throttle_active() {
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[0-9]+$ ]] && (( WORKLOAD_THROTTLE_WATTS > 0 )) || return 1
@@ -550,6 +571,60 @@ mining_heuristic_active() {
         _MINING_HEURISTIC_STREAK=0
     fi
     (( _MINING_HEURISTIC_STREAK >= MINING_HEURISTIC_SUSTAIN_SECONDS ))
+}
+
+# True (0) if this host's confirmed live per-GPU rate is at/above the most
+# recent market_snapshot's MINING_THROTTLE_RATE_STAT value for the GPU model
+# actually rented — i.e. the mining/cracking rental IS paying competitively,
+# so thermal_adjust() should skip the workload-throttle cap. False (1) —
+# including any missing/unusable data, the safe default — on anything short
+# of a confirmed-good rate. Host-level granularity (like workload_throttle_
+# active() itself): this fleet is one machine per host, so summing across
+# "the" rented machine here matches the existing all-GPUs-cap scope, not a
+# narrowing of it.
+_mining_rate_confirmed_high() {
+    [[ "$MINING_THROTTLE_RATE_BYPASS" == "1" ]] || return 1
+    [[ -f "$VASTAI_LAST_STATE_FILE" ]] || return 1
+
+    local mid rented gpus cost real_iid rented_count earn_day end_epoch
+    local rate="" model=""
+    while IFS='|' read -r mid rented gpus cost real_iid rented_count earn_day end_epoch; do
+        [[ "$rented" == "True" ]] || continue
+        [[ "$earn_day" =~ ^[0-9]+(\.[0-9]+)?$ ]] || continue
+        (( $(echo "$earn_day > 0" | bc -l) )) || continue
+        [[ "$rented_count" =~ ^[1-9][0-9]*$ ]] || continue
+        rate=$(echo "scale=6; $earn_day / 24 / $rented_count" | bc -l)
+        model="${gpus#*x }"   # "2x RTX 5090" -> "RTX 5090"
+    done < "$VASTAI_LAST_STATE_FILE"
+    [[ -n "$rate" ]] || return 1
+
+    local market_val
+    market_val=$(python3 - "$JSONL_FILE" "$model" "$MINING_THROTTLE_RATE_STAT" <<'PYEOF' 2>/dev/null
+import sys, json
+jsonl, model, stat = sys.argv[1], sys.argv[2], sys.argv[3]
+key = stat if stat in ("mean", "p75", "median", "p25") else "mean"
+best = None
+try:
+    for line in open(jsonl, errors='replace'):
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get('type') != 'market_snapshot':
+            continue
+        if model not in (e.get('gpu_name') or ''):
+            continue
+        v = e.get(key)
+        if v is not None:
+            best = (e.get('ts', ''), float(v))
+except FileNotFoundError:
+    pass
+if best:
+    print(best[1])
+PYEOF
+)
+    [[ -n "$market_val" ]] || return 1
+    (( $(echo "$rate >= $market_val" | bc -l) ))
 }
 
 # ── Profitability-based power throttle ────────────────────────────────────
@@ -724,11 +799,17 @@ profit_throttle_target() {
 # the workload/rental changes.
 thermal_adjust() {
     [[ -n "$GPU_POWER_LIMIT" ]] && return   # manual override owns power; don't fight it
-    local throttle_cap=0 throttle_src=""
+    local throttle_cap=0 throttle_src="" workload_detected=0
     if workload_throttle_active; then
-        throttle_cap="$WORKLOAD_THROTTLE_WATTS"; throttle_src="named"
+        workload_detected=1; throttle_src="named"
     elif mining_heuristic_active; then
-        throttle_cap="$WORKLOAD_THROTTLE_WATTS"; throttle_src="heuristic"
+        workload_detected=1; throttle_src="heuristic"
+    fi
+    local rate_bypassed=0
+    if (( workload_detected )) && _mining_rate_confirmed_high; then
+        rate_bypassed=1
+    elif (( workload_detected )); then
+        throttle_cap="$WORKLOAD_THROTTLE_WATTS"
     fi
     if (( throttle_cap > 0 )) && (( _WORKLOAD_THROTTLE_STATE == 0 )); then
         _WORKLOAD_THROTTLE_STATE=1
@@ -744,6 +825,13 @@ thermal_adjust() {
         _WORKLOAD_THROTTLE_STATE=0
         log "  WORKLOAD THROTTLE: workload cleared → restoring the automatic power curve"
         write_event "workload_throttle" "{\"state\":\"off\"}"
+    fi
+    if (( rate_bypassed )) && (( _MINING_RATE_BYPASS_STATE == 0 )); then
+        _MINING_RATE_BYPASS_STATE=1
+        log "  WORKLOAD THROTTLE: ${throttle_src} mining/cracking detected, but confirmed rental rate >= market ${MINING_THROTTLE_RATE_STAT} → NOT capping, full power"
+        write_event "workload_throttle" "{\"state\":\"bypassed\",\"reason\":\"rate_above_${MINING_THROTTLE_RATE_STAT}\",\"source\":\"$throttle_src\"}"
+    elif (( ! rate_bypassed )) && (( _MINING_RATE_BYPASS_STATE == 1 )); then
+        _MINING_RATE_BYPASS_STATE=0
     fi
     local profit_cap=0 profit_target
     profit_target=$(profit_throttle_target)
