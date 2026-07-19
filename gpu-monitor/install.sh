@@ -246,15 +246,18 @@ scrape_configs:
       - targets: [$PROM_TARGETS]
 EOF
 
-    # 14-day retention — the dashboard's own history needs (History page,
-    # Occupancy 24h/7d/14d, Daily Summary's "yesterday", month-to-date profit
-    # capped to this same window — see profit_api.py) don't reach further
-    # back than 2 weeks. The raw JSONL log + its own daily gzip backup
-    # (gpu-backup.timer, 14-day retention) remain the longer-lived record.
+    # Keep everything — disk on these rigs is abundant (hundreds of GB) and a
+    # handful of metrics scraped every 30s across 3 rigs is a trivial amount
+    # of data even over years. The whole point of this is to never lose
+    # history to log rotation/rotation-driven pruning again — Prometheus
+    # itself is the durable, never-delete record; the JSONL log's own daily
+    # gzip backup (gpu-backup.timer, 14-day retention) exists to *restore*
+    # Prometheus if a rig's disk is ever destroyed or corrupted, not to
+    # define how long Prometheus itself keeps data.
     if [[ -f /etc/default/prometheus ]] && grep -q '^ARGS=' /etc/default/prometheus; then
-        sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=14d"|' /etc/default/prometheus
+        sed -i 's|^ARGS=.*|ARGS="--storage.tsdb.retention.time=10y"|' /etc/default/prometheus
     else
-        echo 'ARGS="--storage.tsdb.retention.time=14d"' >> /etc/default/prometheus
+        echo 'ARGS="--storage.tsdb.retention.time=10y"' >> /etc/default/prometheus
     fi
 
     systemctl enable prometheus

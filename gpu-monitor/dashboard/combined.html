@@ -157,7 +157,7 @@
     </div>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
       <div class="card p-4">
-        <p class="text-xs text-slate-500 mb-1" id="cp-profit-month-label">Month-to-Date Profit (est.)</p>
+        <p class="text-xs text-slate-500 mb-1">Month-to-Date Profit (est.)</p>
         <p class="text-2xl font-bold" id="cp-profit-month">—</p>
         <p class="text-xs text-slate-500 mt-1" id="cp-profit-month-sub"></p>
       </div>
@@ -225,7 +225,7 @@
       <div class="flex gap-1 text-xs">
         <button onclick="setOccupancyWindow(24)"  id="occ-btn-24"  class="px-2.5 py-1 rounded bg-blue-600 text-white font-medium">24h</button>
         <button onclick="setOccupancyWindow(168)" id="occ-btn-168" class="px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800">7d</button>
-        <button onclick="setOccupancyWindow(336)" id="occ-btn-336" class="px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800">14d</button>
+        <button onclick="setOccupancyWindow(720)" id="occ-btn-720" class="px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800">30d</button>
       </div>
     </div>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -801,15 +801,8 @@ async function fetchProfit() {
   const monthEl = document.getElementById("cp-profit-month");
   monthEl.textContent = fmtMoney(month.profit);
   monthEl.className = "text-2xl font-bold " + profitColorClass(month.profit);
-  // Prometheus only retains 14 days — profit_api.py caps the "month to
-  // date" window to that instead of silently dropping early-month days out
-  // of the sum, and tells us via window_capped so the label stays honest
-  // about what it's actually showing once a month runs past that cap.
-  document.getElementById("cp-profit-month-label").textContent =
-    month.window_capped ? "Last " + Math.ceil(month.days_elapsed) + " Days Profit (est.)" : "Month-to-Date Profit (est.)";
   document.getElementById("cp-profit-month-sub").textContent =
-    fmtMoney(month.revenue) + " revenue − " + fmtMoney(month.electricity) + " elec, " + month.days_elapsed + "d"
-    + (month.window_capped ? " (retention-limited)" : " so far");
+    fmtMoney(month.revenue) + " revenue − " + fmtMoney(month.electricity) + " elec, " + month.days_elapsed + "d so far";
 
   document.getElementById("cp-per-gpu").textContent = fleet.revenue_per_gpu_per_hour != null ? fmtMoney(fleet.revenue_per_gpu_per_hour) + "/hr" : "—";
   document.getElementById("cp-per-watt").textContent = fleet.revenue_per_watt_per_hour != null ? "$" + fleet.revenue_per_watt_per_hour.toFixed(5) + "/hr" : "—";
@@ -819,7 +812,7 @@ async function fetchProfit() {
 let occupancyWindowHours = 24;
 function setOccupancyWindow(hours) {
   occupancyWindowHours = hours;
-  ["24", "168", "336"].forEach(h => {
+  ["24", "168", "720"].forEach(h => {
     const btn = document.getElementById("occ-btn-" + h);
     btn.className = (Number(h) === hours)
       ? "px-2.5 py-1 rounded bg-blue-600 text-white font-medium"
