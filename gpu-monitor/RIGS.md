@@ -161,6 +161,25 @@ estimated today/month-to-date profit, fleet-wide. Built entirely on gauges
   `rig_electricity_cost_dollars_per_hour`) against each rig's own
   `rig_energy_rate_dollars_per_kwh`, not the same short-lived derived gauge.
 
+A second, subtler bug in the same revenue path was found and fixed
+2026-07-19: `_earnings_by_rig_date()` queried `rig_daily_earnings_dollars`
+with a **bare selector** at a coarse (1h) step. That's fine for a
+continuously-scraped live gauge, but `gpu_monitor.sh`'s earnings sync
+writes each day's sample with `ts=utcnow()` — whenever the sync happened to
+run, not a fixed grid time — so a backfilled or otherwise irregularly-timed
+sample almost never falls within Prometheus's 5-minute default lookback of
+an hourly grid point. Confirmed live: a bare-selector `query_range` at a 1h
+step found **zero** of 7 known-good real samples on zappa2 after a
+backfill that had genuinely landed in Prometheus (`/api/v1/series`
+confirmed the series existed). Fixed by wrapping the query in
+`last_over_time(rig_daily_earnings_dollars[2h])` — a window wider than the
+step guarantees every real sample falls inside at least one evaluated
+window regardless of its exact timestamp. `history_api.py`'s equivalent
+metric queries were already safe (they wrap every metric in
+`{agg}_over_time(selector[window])` with `window == step`, which tiles the
+timeline with no gaps) — this bare-selector pattern only existed in this
+one function.
+
 The whole panel hides itself (rather than showing a wall of "—") if
 `/api/profit` errors — expected on a standalone node, since Prometheus
 only runs on the hub.

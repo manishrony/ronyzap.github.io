@@ -85,9 +85,21 @@ def _earnings_by_rig_date(prom_url, start_ts, now_ts):
     day), so the LAST sample in range for a given series is that day's most
     up-to-date total: a still-growing running total for today, a settled
     total for a completed day. Ground truth (Vast's own daily sync), not an
-    extrapolation."""
-    step = 3600  # this gauge only updates ~hourly; no need for finer resolution
-    data = prom_client.query_range(prom_url, "rig_daily_earnings_dollars", start_ts, now_ts, step)
+    extrapolation.
+
+    Uses last_over_time() with a window wider than the query step, NOT a bare
+    metric selector — confirmed live (2026-07-19) that a bare selector at a
+    1h step silently returns NOTHING for this gauge's backfilled samples.
+    gpu_monitor.sh's earnings sync writes each sample with ts=utcnow() (when
+    the sync happened to run), not a fixed grid time, so a backfilled sample
+    almost never falls within Prometheus's 5-minute default lookback of an
+    hourly grid point — a bare selector query_range at 1h steps found ZERO
+    of 7 known-good test samples. last_over_time(...[window]) with window >=
+    step guarantees every real sample falls inside at least one evaluated
+    window regardless of its exact timestamp."""
+    step = 3600
+    window_s = step * 2  # generous overlap margin beyond just matching the step
+    data = prom_client.query_range(prom_url, f"last_over_time(rig_daily_earnings_dollars[{window_s}s])", start_ts, now_ts, step)
     out = {}
     for series in data.get("result", []):
         metric = series.get("metric", {})
