@@ -11,10 +11,8 @@ raw PromQL through from the browser: this dashboard has no auth in front of
 it (same posture as /api/data and /api/chat elsewhere in this file), so query
 params are validated before ever reaching a query string.
 """
-import json
 import re
-import urllib.request
-import urllib.parse
+import prom_client
 
 # Metric name -> whether it's an aggregatable numeric series worth averaging
 # over the step window (avg_over_time) vs. a 0/1 state flag worth taking the
@@ -68,15 +66,6 @@ def build_query(metric, rig=None, machine_id=None, gpu_idx=None, window_s=3600):
     return f"{agg}_over_time({selector}[{int(window_s)}s])"
 
 
-def query_range(prom_url, query, start, end, step):
-    qs = urllib.parse.urlencode({
-        "query": query, "start": start, "end": end, "step": step,
-    })
-    url = f"{prom_url.rstrip('/')}/api/v1/query_range?{qs}"
-    with urllib.request.urlopen(url, timeout=10) as resp:
-        return json.loads(resp.read())
-
-
 def list_rigs(prom_url):
     """Actual `rig` label values Prometheus has seen — NOT the display names
     from /api/config. Those come from SELF_NAME/PEER_NAMES, which an operator
@@ -84,10 +73,7 @@ def list_rigs(prom_url):
     actually labels metrics with; using the config names for the History
     dropdown would let a rig's display name silently stop matching its own
     data (confirmed happening: Zappa1's SELF_NAME vs. its hostname label)."""
-    url = f"{prom_url.rstrip('/')}/api/v1/label/rig/values"
-    with urllib.request.urlopen(url, timeout=10) as resp:
-        data = json.loads(resp.read())
-    return sorted(data.get("data", []))
+    return prom_client.label_values(prom_url, "rig")
 
 
 def handle_history_request(prom_url, query_params, now_ts):
@@ -114,7 +100,7 @@ def handle_history_request(prom_url, query_params, now_ts):
     step = max(1, window_s // points_target)
 
     query = build_query(metric, rig, machine_id, gpu_idx, window_s=step)
-    result = query_range(prom_url, query, start, end, step)
+    result = prom_client.query_range(prom_url, query, start, end, step)
 
     return {
         "metric": metric,
@@ -126,5 +112,5 @@ def handle_history_request(prom_url, query_params, now_ts):
         "start": start,
         "end": end,
         "step": step,
-        "result": result.get("data", {}),
+        "result": result,
     }

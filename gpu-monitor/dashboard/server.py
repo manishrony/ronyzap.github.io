@@ -6,6 +6,7 @@ import assistant
 import prom_exporter
 import history_api
 import profit_api
+import occupancy_api
 import time
 
 DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
@@ -47,6 +48,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_history()
         elif self.path.startswith("/api/profit"):
             self._serve_profit()
+        elif self.path.startswith("/api/occupancy"):
+            self._serve_occupancy()
         elif path_only in ("/history", "/history.html"):
             self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
         elif path_only in ("/", "/index.html"):
@@ -95,6 +98,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         has data for."""
         try:
             result = profit_api.handle_profit_request(PROMETHEUS_URL, time.time())
+            body = json.dumps(result).encode()
+            status = 200
+        except Exception as e:
+            body = json.dumps({"error": str(e)}).encode()
+            status = 400
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _serve_occupancy(self):
+        """Occupancy analytics (hub only — see occupancy_api.py). Query
+        param: hours (window size, default 24)."""
+        _, _, qs = self.path.partition("?")
+        query = urllib.parse.parse_qs(qs)
+        try:
+            result = occupancy_api.handle_occupancy_request(PROMETHEUS_URL, query, time.time())
             body = json.dumps(result).encode()
             status = 200
         except Exception as e:

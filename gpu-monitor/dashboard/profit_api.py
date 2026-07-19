@@ -14,10 +14,8 @@ Like history_api.py, this only ever runs a small, fixed set of hardcoded
 PromQL queries — never raw PromQL from the browser — since this dashboard
 has no auth in front of it.
 """
-import json
-import urllib.request
-import urllib.parse
 import datetime
+import prom_client
 
 _INSTANT_METRICS = [
     "rig_revenue_dollars_per_hour",
@@ -30,29 +28,6 @@ _INSTANT_METRICS = [
 ]
 
 
-def _query_instant(prom_url, query, at=None):
-    params = {"query": query}
-    if at is not None:
-        params["time"] = at
-    qs = urllib.parse.urlencode(params)
-    url = f"{prom_url.rstrip('/')}/api/v1/query?{qs}"
-    with urllib.request.urlopen(url, timeout=10) as resp:
-        data = json.loads(resp.read())
-    return data.get("data", {}).get("result", [])
-
-
-def _by_rig(results):
-    out = {}
-    for r in results:
-        rig = r.get("metric", {}).get("rig")
-        if rig:
-            try:
-                out[rig] = float(r["value"][1])
-            except (KeyError, ValueError, TypeError):
-                pass
-    return out
-
-
 def get_live_profit(prom_url):
     """Current instant per-rig values for every _INSTANT_METRICS entry, plus
     a fleet-wide summary. The per-GPU/watt/kWh ratios are NOT summed across
@@ -61,17 +36,17 @@ def get_live_profit(prom_url):
     rigs = {}
     for metric in _INSTANT_METRICS:
         try:
-            results = _query_instant(prom_url, metric)
+            results = prom_client.query_instant(prom_url, metric)
         except Exception:
             results = []
-        for rig, val in _by_rig(results).items():
+        for rig, val in prom_client.group_by_label(results, 'rig').items():
             rigs.setdefault(rig, {})[metric] = round(val, 6)
 
     fleet_revenue = sum(v.get("rig_revenue_dollars_per_hour", 0) for v in rigs.values())
     fleet_elec = sum(v.get("rig_electricity_cost_dollars_per_hour", 0) for v in rigs.values())
     fleet_power_w = sum(v.get("rig_power_draw_total_watts", 0) for v in rigs.values())
     try:
-        gpu_counts = _by_rig(_query_instant(prom_url, "count by(rig)(gpu_temp_celsius)"))
+        gpu_counts = prom_client.group_by_label(prom_client.query_instant(prom_url, "count by(rig)(gpu_temp_celsius)"), 'rig')
     except Exception:
         gpu_counts = {}
     total_gpus = sum(gpu_counts.values())
@@ -100,10 +75,10 @@ def _integrate(prom_url, metric, start_ts, now_ts):
     window_s = int(now_ts - start_ts)
     query = f"avg_over_time({metric}[{window_s}s])"
     try:
-        results = _query_instant(prom_url, query, at=now_ts)
+        results = prom_client.query_instant(prom_url, query, at=now_ts)
     except Exception:
         return 0.0
-    per_rig_avg = _by_rig(results)
+    per_rig_avg = prom_client.group_by_label(results, 'rig')
     return sum(per_rig_avg.values()) * hours
 
 

@@ -214,6 +214,48 @@
     </div>
   </div>
 
+  <!-- Occupancy Analytics (hub only — Prometheus-backed) -->
+  <div id="c-occupancy-row" class="px-6 pb-4 hidden">
+    <div class="flex items-center justify-between mb-3">
+      <p class="text-xs text-slate-500 uppercase tracking-wider">Occupancy — idle GPU-time &amp; estimated lost revenue</p>
+      <div class="flex gap-1 text-xs">
+        <button onclick="setOccupancyWindow(24)"  id="occ-btn-24"  class="px-2.5 py-1 rounded bg-blue-600 text-white font-medium">24h</button>
+        <button onclick="setOccupancyWindow(168)" id="occ-btn-168" class="px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800">7d</button>
+        <button onclick="setOccupancyWindow(720)" id="occ-btn-720" class="px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800">30d</button>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Fleet Occupancy</p>
+        <p class="text-2xl font-bold" id="occ-fleet-pct">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Idle GPU-Hours</p>
+        <p class="text-2xl font-bold text-amber-400" id="occ-fleet-idle">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Estimated Lost Revenue</p>
+        <p class="text-2xl font-bold text-red-400" id="occ-fleet-lost">—</p>
+      </div>
+      <div class="card p-4">
+        <p class="text-xs text-slate-500 mb-1">Total GPUs</p>
+        <p class="text-2xl font-bold text-blue-300" id="occ-fleet-gpus">—</p>
+      </div>
+    </div>
+    <div class="card p-4 mt-4 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+          <th class="text-left py-2 pr-4">Rig</th>
+          <th class="text-left py-2 pr-4">GPU</th>
+          <th class="text-right py-2 pr-4">Occupancy</th>
+          <th class="text-right py-2 pr-4">Idle Hours</th>
+          <th class="text-right py-2">Est. Lost Revenue</th>
+        </tr></thead>
+        <tbody id="occ-table"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Rig cards (clickable) -->
   <div class="px-6 pb-4">
     <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rigs — click to drill down</p>
@@ -629,6 +671,7 @@ async function fetchAll() {
   document.getElementById("last-updated").textContent = "Last updated: " + new Date().toLocaleTimeString();
   render();
   fetchProfit();
+  fetchOccupancy();
 }
 
 function fmtMoney(v) {
@@ -677,6 +720,62 @@ async function fetchProfit() {
   document.getElementById("cp-per-gpu").textContent = fleet.revenue_per_gpu_per_hour != null ? fmtMoney(fleet.revenue_per_gpu_per_hour) + "/hr" : "—";
   document.getElementById("cp-per-watt").textContent = fleet.revenue_per_watt_per_hour != null ? "$" + fleet.revenue_per_watt_per_hour.toFixed(5) + "/hr" : "—";
   document.getElementById("cp-per-kwh").textContent = fleet.revenue_per_kwh != null ? fmtMoney(fleet.revenue_per_kwh) + "/hr" : "—";
+}
+
+let occupancyWindowHours = 24;
+function setOccupancyWindow(hours) {
+  occupancyWindowHours = hours;
+  ["24", "168", "720"].forEach(h => {
+    const btn = document.getElementById("occ-btn-" + h);
+    btn.className = (Number(h) === hours)
+      ? "px-2.5 py-1 rounded bg-blue-600 text-white font-medium"
+      : "px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800";
+  });
+  fetchOccupancy();
+}
+
+function occupancyColorClass(pct) {
+  if (pct >= 80) return "text-emerald-400";
+  if (pct >= 50) return "text-amber-400";
+  return "text-red-400";
+}
+
+async function fetchOccupancy() {
+  let data;
+  try {
+    const resp = await fetch("/api/occupancy?hours=" + occupancyWindowHours);
+    data = await resp.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    document.getElementById("c-occupancy-row").classList.add("hidden");
+    return;
+  }
+  if (!data.fleet || data.fleet.gpus === 0) {
+    document.getElementById("c-occupancy-row").classList.add("hidden");
+    return;
+  }
+  document.getElementById("c-occupancy-row").classList.remove("hidden");
+
+  const fleet = data.fleet;
+  const pctEl = document.getElementById("occ-fleet-pct");
+  pctEl.textContent = fleet.occupancy_pct != null ? fleet.occupancy_pct + "%" : "—";
+  pctEl.className = "text-2xl font-bold " + (fleet.occupancy_pct != null ? occupancyColorClass(fleet.occupancy_pct) : "");
+  document.getElementById("occ-fleet-idle").textContent = fleet.idle_hours + "h";
+  document.getElementById("occ-fleet-lost").textContent = fmtMoney(fleet.estimated_lost_revenue);
+  document.getElementById("occ-fleet-gpus").textContent = fleet.gpus;
+
+  const tbody = document.getElementById("occ-table");
+  tbody.innerHTML = "";
+  (data.per_slot || []).forEach(s => {
+    const tr = document.createElement("tr");
+    tr.className = "border-b border-slate-800/60";
+    tr.innerHTML = `<td class="py-1.5 pr-4 text-slate-300">${s.rig}</td>
+                    <td class="py-1.5 pr-4 text-slate-400">GPU ${s.gpu_idx}</td>
+                    <td class="py-1.5 pr-4 text-right font-mono ${occupancyColorClass(s.occupancy_pct)}">${s.occupancy_pct}%</td>
+                    <td class="py-1.5 pr-4 text-right font-mono text-slate-300">${s.idle_hours}h</td>
+                    <td class="py-1.5 text-right font-mono text-red-400">${fmtMoney(s.estimated_lost_revenue)}</td>`;
+    tbody.appendChild(tr);
+  });
 }
 
 function updatePill(idx) {

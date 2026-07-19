@@ -149,6 +149,32 @@ The whole panel hides itself (rather than showing a wall of "—") if
 `/api/profit` errors — expected on a standalone node, since Prometheus
 only runs on the hub.
 
+## Occupancy Analytics (hub only)
+
+The combined dashboard's "Occupancy" row (`/api/occupancy`,
+`occupancy_api.py`) — how much of the fleet's GPU-time is actually rented
+vs. idle, per GPU slot, over a selectable window (24h/7d/30d), plus an
+estimated dollar cost of the idle time. Built on `gpu_slot_rented` and
+`listing_price_dollars_per_hour`, both of which `prom_exporter.py` already
+scrapes every cycle:
+
+- **Occupancy %** — `avg_over_time(gpu_slot_rented[window])` per GPU slot
+  — the fraction of the window that specific slot was actually rented, not
+  just a machine-level rented/not-rented flag. This is exactly what caught
+  Zappa1 running at 50% occupancy (GPU 0 mining, GPU 1 idle) when the
+  blended per-rig revenue number alone made it easy to miss which GPU
+  specifically was sitting empty.
+- **Estimated lost revenue** — idle hours × that machine's own average
+  *listing* price during the window (what we were actually asking, a
+  conservative estimate) — not an optimistic market-rate assumption.
+- Per-slot breakdown table, so "which GPU is idle" is immediate instead of
+  something you have to reconstruct from `dump-machine-json` and pricing
+  logs.
+
+Shares its Prometheus HTTP-query plumbing with `history_api.py` and
+`profit_api.py` via `prom_client.py` (label grouping, instant/range query
+helpers) — one place for that logic, not three.
+
 ## Per-node install (no peers)
 
 ```bash
