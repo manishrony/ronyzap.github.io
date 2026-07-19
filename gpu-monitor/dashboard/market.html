@@ -158,6 +158,21 @@ function occupancyColorClass(pct) {
   if (pct >= 50) return "text-amber-400";
   return "text-red-400";
 }
+// null means no gpu_slot_rented data exists for this machine at all (e.g. a
+// brand-new listing) — genuinely unknown, shown as "—". idle_hours >=
+// windowHours means "confirmed idle for the entire lookback window" (see
+// pricing_advisor_api.py's _current_idle_hours) — shown as "≥Nd", not a
+// literal hour count. Anything under 15 minutes is just scrape-interval
+// noise around "currently rented", not meaningful idle time worth a number.
+function fmtIdleHours(hours, windowHours) {
+  if (hours == null) return "—";
+  if (hours < 0.25) return "—";
+  if (windowHours && hours >= windowHours) {
+    const days = windowHours / 24;
+    return Number.isInteger(days) ? `≥${days}d` : `≥${windowHours}h`;
+  }
+  return hours + "h";
+}
 function pricingBadgeClass(rec) {
   if (rec === "RAISE") return "text-xs px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-900/30 text-emerald-300 font-medium";
   if (rec === "LOWER") return "text-xs px-2 py-0.5 rounded border border-amber-700/50 bg-amber-900/30 text-amber-300 font-medium";
@@ -193,7 +208,7 @@ async function fetchPricingAdvisor() {
       <td class="py-1.5 pr-4 text-right font-mono text-slate-200">${fmtMoney(m.current_price)}/hr</td>
       <td class="py-1.5 pr-4 text-right font-mono text-slate-400">${marketStr}</td>
       <td class="py-1.5 pr-4 text-right font-mono ${m.occupancy_pct_7d != null ? occupancyColorClass(m.occupancy_pct_7d) : ''}">${m.occupancy_pct_7d != null ? m.occupancy_pct_7d + '%' : '—'}</td>
-      <td class="py-1.5 pr-4 text-right font-mono ${m.idle_hours != null && m.idle_hours >= 2 ? 'text-amber-400' : 'text-slate-500'}">${m.idle_hours != null ? m.idle_hours + 'h' : '≥7d'}</td>
+      <td class="py-1.5 pr-4 text-right font-mono ${m.idle_hours != null && m.idle_hours >= 2 ? 'text-amber-400' : 'text-slate-500'}">${fmtIdleHours(m.idle_hours, data.occupancy_window_hours)}</td>
       <td class="py-1.5 pr-4 text-center"><span class="${pricingBadgeClass(m.recommendation)}">${m.recommendation}</span></td>
       <td class="py-1.5 pr-4 text-right font-mono text-blue-300">${m.suggested_price != null ? fmtMoney(m.suggested_price) + "/hr" : "—"}</td>
       <td class="py-1.5 text-xs text-slate-500">${m.reason}</td>

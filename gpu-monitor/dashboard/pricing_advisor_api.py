@@ -90,9 +90,24 @@ def _current_idle_hours(prom_url, window_hours, now_ts=None):
     dashboard while this function's MAX-based first version reported
     idle_hours ~0 because slot 0 was rented.
 
-    0 (or close to it) if every slot is currently rented. None if it's had
-    a free slot for the entire lookback window — long enough that we can't
-    tell exactly how much longer, only that it's at least window_hours."""
+    0 (or close to it) if every slot is currently rented. window_hours
+    itself if it's had a free slot for the entire lookback window — long
+    enough that we can't tell exactly how much longer, only that it's at
+    least window_hours (the caller/UI should read this as "≥ window_hours",
+    not treat it as an exact figure).
+
+    A machine simply absent from the returned dict is a DIFFERENT thing
+    from "confirmed idle the whole window": it means gpu_slot_rented has no
+    samples for it at all (e.g. a brand-new listing Prometheus hasn't
+    scraped yet), not that we know it's been idle. Collapsing those two
+    into the same None value previously produced a live, confusing UI
+    contradiction — a machine showing "Idle Now: ≥7d" (implying known,
+    confirmed idle) right next to "no occupancy data yet to judge demand"
+    (implying the opposite) for the exact same machine, confirmed on
+    zappa2 2026-07-19. Now only a machine with real (even if all-idle)
+    samples gets a value; one with zero samples is simply missing from the
+    dict, so the caller's dict.get(key) correctly returns None only for
+    genuine no-data machines."""
     now = now_ts if now_ts is not None else time.time()
     window_s = int(window_hours * 3600)
     step = max(300, window_s // 500)
@@ -104,19 +119,26 @@ def _current_idle_hours(prom_url, window_hours, now_ts=None):
         return {}
     out = {}
     for key, pts in series.items():
+        if not pts:
+            continue   # no real samples — leave this machine out entirely, not "confirmed idle"
         last_rented_ts = None
         for ts, v in pts:
             if v >= 0.5:
                 last_rented_ts = ts
-        out[key] = round(max(0.0, now - last_rented_ts) / 3600.0, 1) if last_rented_ts is not None else None
+        out[key] = round(max(0.0, now - last_rented_ts) / 3600.0, 1) if last_rented_ts is not None else window_hours
     return out
 
 
-def _recommend(price, median, p25, p75, occ_pct, floor, idle_hours=None):
+def _recommend(price, median, p25, p75, occ_pct, floor, idle_hours=None, window_hours=None):
     """Rule-based, transparent recommendation — no hidden weights. Missing
     occupancy or market data degrades gracefully to a plain price-vs-market
     comparison instead of refusing to answer."""
-    idle_note = f" Currently idle {idle_hours:.1f}h." if idle_hours is not None and idle_hours > 0 else ""
+    if idle_hours is not None and window_hours and idle_hours >= window_hours:
+        idle_note = f" Currently idle for the entire {window_hours / 24:.0f}d window (or longer)."
+    elif idle_hours is not None and idle_hours > 0:
+        idle_note = f" Currently idle {idle_hours:.1f}h."
+    else:
+        idle_note = ""
 
     if median is None or median == 0:
         return "UNKNOWN", None, "No market comparables available for this machine right now." + idle_note
@@ -204,7 +226,7 @@ def get_recommendations(prom_url, occupancy_window_hours=None, now_ts=None):
         idle_hours = idle_hours_by_machine.get(key)
 
         recommendation, suggested_price, reason = _recommend(
-            price, market.get("median"), market.get("p25"), market.get("p75"), occ_pct, floor, idle_hours)
+            price, market.get("median"), market.get("p25"), market.get("p75"), occ_pct, floor, idle_hours, window_hours)
 
         out.append({
             "rig": rig,
