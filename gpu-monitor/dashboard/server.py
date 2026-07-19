@@ -31,6 +31,15 @@ PEER_NAMES = [n.strip() for n in os.environ.get("PEER_NAMES", "").split(",") if 
 SELF_NAME  = os.environ.get("SELF_NAME", "").strip() or socket.gethostname()
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    # Belt-and-suspenders alongside ThreadingHTTPServer: every individual
+    # upstream call already has its own bounded timeout (Prometheus 10s,
+    # peer proxy 8s, LLM 25s), but this catches a hang at the socket layer
+    # itself — a client that connects and then never finishes sending its
+    # request, or stops reading its response — which none of those cover.
+    # Threading already stops one such connection from blocking every other
+    # request; this stops it from occupying a thread forever.
+    timeout = 30
+
     def do_GET(self):
         # Exact-match routes below must ignore any query string (e.g.
         # /history?rig=Zappa2 from the rig-drilldown deep link) — matching on
