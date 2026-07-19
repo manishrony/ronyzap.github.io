@@ -50,6 +50,32 @@
   <a href="/combined#c-power-row" class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">⚡ Power &amp; Energy</a>
 </nav>
 
+<!-- Pricing Advisor (hub only — Prometheus-backed, read-only, never
+     writes back to Vast) — fleet-wide, shown regardless of which rig tab
+     below is selected, since it compares every machine's price to market
+     in one place. Moved here from the main Dashboard (2026-07-19) since
+     it's a market-pricing decision, not a fleet health/profit metric. -->
+<div id="pricing-row" class="px-6 pt-4 hidden">
+  <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Pricing Advisor — current price vs. market, last 7d occupancy</p>
+  <div class="card p-4 overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
+        <th class="text-left py-2 pr-4">Rig</th>
+        <th class="text-left py-2 pr-4">Machine</th>
+        <th class="text-right py-2 pr-4">Current Price</th>
+        <th class="text-right py-2 pr-4">Market (p25 / median / p75)</th>
+        <th class="text-right py-2 pr-4">Occupancy (7d)</th>
+        <th class="text-right py-2 pr-4">Idle Now</th>
+        <th class="text-center py-2 pr-4">Recommendation</th>
+        <th class="text-right py-2 pr-4">Suggested Price</th>
+        <th class="text-left py-2">Why</th>
+      </tr></thead>
+      <tbody id="pricing-table"></tbody>
+    </table>
+    <p id="pricing-empty" class="hidden text-slate-600 text-sm py-4 text-center">No machines with both a listing price and market comparables right now.</p>
+  </div>
+</div>
+
 <!-- Rig tabs -->
 <div class="px-6 pt-4">
   <div class="flex gap-0 border-b border-slate-700" id="rig-tabs"></div>
@@ -119,6 +145,60 @@ async function fetchAll() {
   document.getElementById("last-updated").textContent = "Updated: " + new Date().toLocaleTimeString();
   buildTabs();
   render();
+  fetchPricingAdvisor();
+}
+
+// ── Pricing Advisor ───────────────────────────────────────────────────
+function fmtMoney(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return "$" + Number(v).toFixed(2);
+}
+function occupancyColorClass(pct) {
+  if (pct >= 80) return "text-emerald-400";
+  if (pct >= 50) return "text-amber-400";
+  return "text-red-400";
+}
+function pricingBadgeClass(rec) {
+  if (rec === "RAISE") return "text-xs px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-900/30 text-emerald-300 font-medium";
+  if (rec === "LOWER") return "text-xs px-2 py-0.5 rounded border border-amber-700/50 bg-amber-900/30 text-amber-300 font-medium";
+  if (rec === "UNKNOWN") return "text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 text-slate-400";
+  return "text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 text-slate-300";
+}
+
+// Read-only comparison of each machine's current listing price against
+// market comparables + its own recent occupancy — see
+// pricing_advisor_api.py. Never writes anything back to Vast; the
+// suggested_price is advisory only, for a human to act on manually.
+async function fetchPricingAdvisor() {
+  let data;
+  try {
+    const resp = await fetch("/api/pricing-advisor?hours=168");
+    data = await resp.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    document.getElementById("pricing-row").classList.add("hidden");
+    return;
+  }
+  const machines = data.machines || [];
+  document.getElementById("pricing-row").classList.remove("hidden");
+
+  const tbody = document.getElementById("pricing-table");
+  document.getElementById("pricing-empty").classList.toggle("hidden", machines.length > 0);
+  tbody.innerHTML = machines.map(m => {
+    const market = m.market || {};
+    const marketStr = ["p25", "median", "p75"].map(s => market[s] != null ? fmtMoney(market[s]) : "—").join(" / ");
+    return `<tr class="border-b border-slate-800/60">
+      <td class="py-1.5 pr-4 text-slate-300">${m.rig}</td>
+      <td class="py-1.5 pr-4 text-slate-400">${m.machine_id}</td>
+      <td class="py-1.5 pr-4 text-right font-mono text-slate-200">${fmtMoney(m.current_price)}/hr</td>
+      <td class="py-1.5 pr-4 text-right font-mono text-slate-400">${marketStr}</td>
+      <td class="py-1.5 pr-4 text-right font-mono ${m.occupancy_pct_7d != null ? occupancyColorClass(m.occupancy_pct_7d) : ''}">${m.occupancy_pct_7d != null ? m.occupancy_pct_7d + '%' : '—'}</td>
+      <td class="py-1.5 pr-4 text-right font-mono ${m.idle_hours != null && m.idle_hours >= 2 ? 'text-amber-400' : 'text-slate-500'}">${m.idle_hours != null ? m.idle_hours + 'h' : '≥7d'}</td>
+      <td class="py-1.5 pr-4 text-center"><span class="${pricingBadgeClass(m.recommendation)}">${m.recommendation}</span></td>
+      <td class="py-1.5 pr-4 text-right font-mono text-blue-300">${m.suggested_price != null ? fmtMoney(m.suggested_price) + "/hr" : "—"}</td>
+      <td class="py-1.5 text-xs text-slate-500">${m.reason}</td>
+    </tr>`;
+  }).join("");
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────

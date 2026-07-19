@@ -93,10 +93,10 @@
 
 <!-- Primary navigation -->
 <nav class="px-6 py-2.5 border-b border-slate-800 flex items-center gap-2 text-sm bg-slate-900/40">
-  <a href="/combined" class="px-3.5 py-1.5 rounded-md bg-blue-600 text-white font-semibold">🏠 Dashboard</a>
+  <a href="/combined" id="nav-dashboard" class="px-3.5 py-1.5 rounded-md bg-blue-600 text-white font-semibold">🏠 Dashboard</a>
   <a href="/market"   class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">📈 Market</a>
   <a href="/history"  class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">📜 History</a>
-  <a href="#c-power-row" class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">⚡ Power &amp; Energy</a>
+  <a href="#" id="nav-power" onclick="togglePowerView(); return false;" class="px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium">⚡ Power &amp; Energy</a>
 </nav>
 
 <!-- ════════════════════ COMBINED VIEW ════════════════════════════ -->
@@ -106,6 +106,58 @@
        what's over threshold RIGHT NOW, not history) -->
   <div id="c-alerts-banner" class="mx-6 mt-4 hidden"></div>
 
+  <!-- Power & Energy — a toggled section (not a separate page), shown only
+       when the nav link is clicked via togglePowerView(). Hidden by
+       default regardless of PDU data; renderPower() separately hides the
+       inner c-power-row if no PDU is reporting at all. -->
+  <div id="power-view-container" class="hidden">
+    <div class="px-6 pt-4">
+      <a href="#" onclick="togglePowerView(); return false;" class="text-xs text-slate-400 hover:text-white">← Back to Dashboard</a>
+    </div>
+    <!-- Power / net-profit row (only shown when a PDU is reporting) -->
+    <div id="c-power-row" class="px-6 pb-2 hidden">
+      <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rack power (APC PDU) &amp; net profit</p>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="card p-4">
+          <p class="text-xs text-slate-500 mb-1">Power Now</p>
+          <p class="text-2xl font-bold text-amber-400" id="c-power-now">—</p>
+          <p class="text-xs text-slate-500 mt-1" id="c-power-now-sub"></p>
+        </div>
+        <div class="card p-4">
+          <p class="text-xs text-slate-500 mb-1">Power Cost Today</p>
+          <p class="text-2xl font-bold text-orange-400" id="c-power-cost">—</p>
+          <p class="text-xs text-slate-500 mt-1" id="c-power-cost-sub"></p>
+        </div>
+        <div class="card p-4">
+          <p class="text-xs text-slate-500 mb-1">Net Profit Today</p>
+          <p class="text-2xl font-bold" id="c-net-today">—</p>
+          <p class="text-xs text-slate-500 mt-1">Revenue − power cost</p>
+        </div>
+        <div class="card p-4">
+          <p class="text-xs text-slate-500 mb-1">Lifetime Energy</p>
+          <p class="text-2xl font-bold text-slate-200" id="c-power-life">—</p>
+          <p class="text-xs text-slate-500 mt-1" id="c-power-life-sub"></p>
+        </div>
+      </div>
+      <div class="card p-4 mt-4">
+        <h2 class="text-sm font-semibold text-slate-400 mb-3">Daily rack energy &amp; cost (metered)</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-slate-500 text-xs border-b border-slate-800">
+              <th class="text-left py-2 pr-4">Day (UTC)</th>
+              <th class="text-right py-2 pr-4">Energy</th>
+              <th class="text-right py-2 pr-4">Avg Power</th>
+              <th class="text-right py-2">Cost</th>
+            </tr></thead>
+            <tbody id="c-power-daily"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <p id="power-no-pdu" class="px-6 pb-6 text-slate-600 text-sm hidden">No PDU is reporting power data yet — see RIGS.md's "APC PDU power metering" section to configure one.</p>
+  </div>
+
+  <div id="dashboard-main-content">
   <!-- Summary stats -->
   <div class="p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
     <div class="card p-4">
@@ -175,47 +227,6 @@
       </div>
     </div>
     <p class="text-xs text-slate-600 mt-2">Electricity cost is estimated from GPU power draw only (not full system draw — CPU/fans/PSU losses aren't metered per-rig). Today/month figures are a live estimate from integrating the hourly rate, not Vast's own end-of-day sync.</p>
-  </div>
-
-  <!-- Power / net-profit row (only shown when a PDU is reporting) -->
-  <div id="c-power-row" class="px-6 pb-2 hidden">
-    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rack power (APC PDU) &amp; net profit</p>
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <div class="card p-4">
-        <p class="text-xs text-slate-500 mb-1">Power Now</p>
-        <p class="text-2xl font-bold text-amber-400" id="c-power-now">—</p>
-        <p class="text-xs text-slate-500 mt-1" id="c-power-now-sub"></p>
-      </div>
-      <div class="card p-4">
-        <p class="text-xs text-slate-500 mb-1">Power Cost Today</p>
-        <p class="text-2xl font-bold text-orange-400" id="c-power-cost">—</p>
-        <p class="text-xs text-slate-500 mt-1" id="c-power-cost-sub"></p>
-      </div>
-      <div class="card p-4">
-        <p class="text-xs text-slate-500 mb-1">Net Profit Today</p>
-        <p class="text-2xl font-bold" id="c-net-today">—</p>
-        <p class="text-xs text-slate-500 mt-1">Revenue − power cost</p>
-      </div>
-      <div class="card p-4">
-        <p class="text-xs text-slate-500 mb-1">Lifetime Energy</p>
-        <p class="text-2xl font-bold text-slate-200" id="c-power-life">—</p>
-        <p class="text-xs text-slate-500 mt-1" id="c-power-life-sub"></p>
-      </div>
-    </div>
-    <div class="card p-4 mt-4">
-      <h2 class="text-sm font-semibold text-slate-400 mb-3">Daily rack energy &amp; cost (metered)</h2>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead><tr class="text-slate-500 text-xs border-b border-slate-800">
-            <th class="text-left py-2 pr-4">Day (UTC)</th>
-            <th class="text-right py-2 pr-4">Energy</th>
-            <th class="text-right py-2 pr-4">Avg Power</th>
-            <th class="text-right py-2">Cost</th>
-          </tr></thead>
-          <tbody id="c-power-daily"></tbody>
-        </table>
-      </div>
-    </div>
   </div>
 
   <!-- Occupancy Analytics (hub only — Prometheus-backed) -->
@@ -339,29 +350,6 @@
     </div>
   </div>
 
-  <!-- Pricing Advisor (hub only — Prometheus-backed, read-only, never
-       writes back to Vast) -->
-  <div id="c-pricing-row" class="px-6 pb-4 hidden">
-    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Pricing Advisor — current price vs. market, last 7d occupancy</p>
-    <div class="card p-4 overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead><tr class="text-xs text-slate-500 border-b border-slate-800">
-          <th class="text-left py-2 pr-4">Rig</th>
-          <th class="text-left py-2 pr-4">Machine</th>
-          <th class="text-right py-2 pr-4">Current Price</th>
-          <th class="text-right py-2 pr-4">Market (p25 / median / p75)</th>
-          <th class="text-right py-2 pr-4">Occupancy (7d)</th>
-          <th class="text-right py-2 pr-4">Idle Now</th>
-          <th class="text-center py-2 pr-4">Recommendation</th>
-          <th class="text-right py-2 pr-4">Suggested Price</th>
-          <th class="text-left py-2">Why</th>
-        </tr></thead>
-        <tbody id="pricing-table"></tbody>
-      </table>
-      <p id="pricing-empty" class="hidden text-slate-600 text-sm py-4 text-center">No machines with both a listing price and market comparables right now.</p>
-    </div>
-  </div>
-
   <!-- Rig cards (clickable) -->
   <div class="px-6 pb-4">
     <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Rigs — click to drill down</p>
@@ -396,6 +384,7 @@
         </table>
       </div>
     </div>
+  </div>
   </div>
 </div>
 
@@ -780,7 +769,6 @@ async function fetchAll() {
   fetchOccupancy();
   fetchDailySummary();
   fetchHealth();
-  fetchPricingAdvisor();
   fetchMajorEvents();
   if (activeRig !== -1) fetchRigMajorEvents(activeRig);
 }
@@ -1006,49 +994,6 @@ async function fetchHealth() {
   </div>`;
 }
 
-function pricingBadgeClass(rec) {
-  if (rec === "RAISE") return "text-xs px-2 py-0.5 rounded border border-emerald-700/50 bg-emerald-900/30 text-emerald-300 font-medium";
-  if (rec === "LOWER") return "text-xs px-2 py-0.5 rounded border border-amber-700/50 bg-amber-900/30 text-amber-300 font-medium";
-  if (rec === "UNKNOWN") return "text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 text-slate-400";
-  return "text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 text-slate-300";
-}
-
-// Pricing Advisor: read-only comparison of each machine's current listing
-// price against market comparables + its own recent occupancy — see
-// pricing_advisor_api.py. Never writes anything back to Vast; the
-// suggested_price is advisory only, for a human to act on manually.
-async function fetchPricingAdvisor() {
-  let data;
-  try {
-    const resp = await fetch("/api/pricing-advisor?hours=168");
-    data = await resp.json();
-    if (data.error) throw new Error(data.error);
-  } catch (e) {
-    document.getElementById("c-pricing-row").classList.add("hidden");
-    return;
-  }
-  const machines = data.machines || [];
-  document.getElementById("c-pricing-row").classList.remove("hidden");
-
-  const tbody = document.getElementById("pricing-table");
-  document.getElementById("pricing-empty").classList.toggle("hidden", machines.length > 0);
-  tbody.innerHTML = machines.map(m => {
-    const market = m.market || {};
-    const marketStr = ["p25", "median", "p75"].map(s => market[s] != null ? fmtMoney(market[s]) : "—").join(" / ");
-    return `<tr class="border-b border-slate-800/60">
-      <td class="py-1.5 pr-4 text-slate-300">${m.rig}</td>
-      <td class="py-1.5 pr-4 text-slate-400">${m.machine_id}</td>
-      <td class="py-1.5 pr-4 text-right font-mono text-slate-200">${fmtMoney(m.current_price)}/hr</td>
-      <td class="py-1.5 pr-4 text-right font-mono text-slate-400">${marketStr}</td>
-      <td class="py-1.5 pr-4 text-right font-mono ${m.occupancy_pct_7d != null ? occupancyColorClass(m.occupancy_pct_7d) : ''}">${m.occupancy_pct_7d != null ? m.occupancy_pct_7d + '%' : '—'}</td>
-      <td class="py-1.5 pr-4 text-right font-mono ${m.idle_hours != null && m.idle_hours >= 2 ? 'text-amber-400' : 'text-slate-500'}">${m.idle_hours != null ? m.idle_hours + 'h' : '≥7d'}</td>
-      <td class="py-1.5 pr-4 text-center"><span class="${pricingBadgeClass(m.recommendation)}">${m.recommendation}</span></td>
-      <td class="py-1.5 pr-4 text-right font-mono text-blue-300">${m.suggested_price != null ? fmtMoney(m.suggested_price) + "/hr" : "—"}</td>
-      <td class="py-1.5 text-xs text-slate-500">${m.reason}</td>
-    </tr>`;
-  }).join("");
-}
-
 function updatePill(idx) {
   const online = DATA[idx]?.online;
   const el = document.getElementById("pill-rig-" + idx);
@@ -1074,6 +1019,21 @@ function backToCombined() {
   document.getElementById("view-combined").classList.remove("hidden");
   document.getElementById("view-rig").classList.add("hidden");
   render();
+}
+
+// Power & Energy is a toggled section within the Dashboard page (not a
+// separate URL) — clicking the nav link swaps it in for the normal
+// dashboard content, clicking "Dashboard" (a real navigation, full reload)
+// naturally resets back to the default view.
+let powerViewActive = false;
+const NAV_ACTIVE_CLASS = "px-3.5 py-1.5 rounded-md bg-blue-600 text-white font-semibold";
+const NAV_INACTIVE_CLASS = "px-3.5 py-1.5 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 font-medium";
+function togglePowerView() {
+  powerViewActive = !powerViewActive;
+  document.getElementById("dashboard-main-content").classList.toggle("hidden", powerViewActive);
+  document.getElementById("power-view-container").classList.toggle("hidden", !powerViewActive);
+  document.getElementById("nav-power").className = powerViewActive ? NAV_ACTIVE_CLASS : NAV_INACTIVE_CLASS;
+  document.getElementById("nav-dashboard").className = powerViewActive ? NAV_INACTIVE_CLASS : NAV_ACTIVE_CLASS;
 }
 function showRigTab(name) {
   activeRigTab = name;
@@ -1475,8 +1435,13 @@ function barChart(id, labels, datasets, color) {
 function renderPower(allEvs, revToday, rev30d) {
   const row = document.getElementById("c-power-row");
   const pdu = allEvs.filter(e => e.type === "pdu_power");
-  if (!pdu.length) { row.classList.add("hidden"); return; }
+  if (!pdu.length) {
+    row.classList.add("hidden");
+    document.getElementById("power-no-pdu").classList.remove("hidden");
+    return;
+  }
   row.classList.remove("hidden");
+  document.getElementById("power-no-pdu").classList.add("hidden");
 
   const latest = pdu[pdu.length - 1];
   const rate = Number(latest.rate) || 0;
@@ -2475,6 +2440,10 @@ setInterval(()=>{
   wireAssistantBackend();
   rebuildRigDOM();
   fetchAll();
+  // Cross-page links (Market/History nav) still use #c-power-row since
+  // Power & Energy is a toggled section here, not a real anchor target —
+  // open it automatically on arrival instead of landing on hidden content.
+  if (location.hash === "#c-power-row" && !powerViewActive) togglePowerView();
 })();
 </script>
 </body>
