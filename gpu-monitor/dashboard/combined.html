@@ -1443,8 +1443,26 @@ function renderPower(allEvs, revToday, rev30d) {
   row.classList.remove("hidden");
   document.getElementById("power-no-pdu").classList.add("hidden");
 
-  const latest = pdu[pdu.length - 1];
+  // More than one meter can report pdu_power now (the shared APC PDU
+  // covering zappa1+zappa2, plus a per-rig smart plug like zappa3's Tapo
+  // covering just its own draw) — each writes its OWN host field. A
+  // "latest" snapshot value (current watts, lifetime kWh) has to be the
+  // latest reading PER HOST summed together, not just the single most
+  // recent event overall, or whichever meter reported least recently
+  // drops out of the total silently. The interval sums below (today/30d/
+  // daily kWh) don't have this problem — summing kwh_interval across every
+  // event already combines multiple meters correctly, since each interval
+  // is that host's own incremental usage.
+  const latestByHost = {};
+  for (const e of pdu) {
+    const h = e.host || "unknown";
+    if (!latestByHost[h] || new Date(e.ts) > new Date(latestByHost[h].ts)) latestByHost[h] = e;
+  }
+  const latestPerHost = Object.values(latestByHost);
+  const latest = pdu[pdu.length - 1];   // still used for rate + "as of" timestamp display
   const rate = Number(latest.rate) || 0;
+  const nowWatts = latestPerHost.reduce((a, e) => a + (Number(e.watts) || 0), 0);
+  const nowAmps  = latestPerHost.reduce((a, e) => a + (Number(e.amps) || 0), 0);
   const tS = today().getTime();
   const sumKwh = (from) => pdu.reduce((a, e) =>
     new Date(e.ts).getTime() >= from ? a + (Number(e.kwh_interval) || 0) : a, 0);
@@ -1452,11 +1470,13 @@ function renderPower(allEvs, revToday, rev30d) {
   const kwh30d   = sumKwh(daysAgo(30).getTime());
   const costToday = kwhToday * rate;
   const cost30d   = kwh30d * rate;
-  const lifeKwh = Number(latest.cumulative_kwh_total) || Number(latest.cumulative_kwh) || 0;
+  const lifeKwh = latestPerHost.reduce((a, e) =>
+    a + (Number(e.cumulative_kwh_total) || Number(e.cumulative_kwh) || 0), 0);
 
-  document.getElementById("c-power-now").textContent = (Number(latest.watts)||0).toLocaleString() + " W";
+  document.getElementById("c-power-now").textContent = nowWatts.toLocaleString() + " W";
   document.getElementById("c-power-now-sub").textContent =
-    (Number(latest.amps)||0).toFixed(1) + " A @ $" + rate.toFixed(2) + "/kWh · " + fmtTS(latest.ts);
+    nowAmps.toFixed(1) + " A @ $" + rate.toFixed(2) + "/kWh · " + fmtTS(latest.ts) +
+    (latestPerHost.length > 1 ? " · " + latestPerHost.length + " meters" : "");
   document.getElementById("c-power-cost").textContent = fmtUSD(costToday);
   document.getElementById("c-power-cost-sub").textContent = kwhToday.toFixed(1) + " kWh today · 30d " + fmtUSD(cost30d);
 

@@ -27,6 +27,8 @@ set -euo pipefail
 
 SCRIPT_SRC="$(dirname "$0")/gpu_monitor.sh"
 SCRIPT_DEST="/usr/local/bin/gpu_monitor.sh"
+TAPOPOLL_SRC="$(dirname "$0")/tapo-poll.py"
+TAPOPOLL_DEST="/usr/local/bin/tapo-poll.py"
 ACTIVITY_SRC="$(dirname "$0")/vast-activity.sh"
 ACTIVITY_DEST="/usr/local/bin/vast-activity"
 BACKFILL_SRC="$(dirname "$0")/backfill-workloads.sh"
@@ -65,6 +67,20 @@ cp "$SCRIPT_SRC" "$SCRIPT_DEST"
 chmod +x "$SCRIPT_DEST"
 touch "$LOG_FILE"
 chmod 644 "$LOG_FILE"
+
+echo "[*] Installing tapo-poll.py (Tapo smart-plug power metering, only active if TAPO_HOST is set)..."
+cp "$TAPOPOLL_SRC" "$TAPOPOLL_DEST"
+chmod +x "$TAPOPOLL_DEST"
+if [[ -f /etc/gpu_monitor.conf ]] && grep -q '^TAPO_HOST=.\+' /etc/gpu_monitor.conf 2>/dev/null; then
+    echo "[*] TAPO_HOST is configured — ensuring python-kasa is installed..."
+    if command -v pip3 >/dev/null 2>&1; then
+        pip3 install --quiet --break-system-packages python-kasa 2>/dev/null \
+            || pip3 install --quiet python-kasa 2>/dev/null \
+            || echo "  ⚠️  Could not auto-install python-kasa — Tapo metering stays disabled until: pip3 install python-kasa"
+    else
+        echo "  ⚠️  pip3 not found — Tapo metering stays disabled until python-kasa is installed for python3"
+    fi
+fi
 
 echo "[*] Installing vast-activity helper..."
 cp "$ACTIVITY_SRC" "$ACTIVITY_DEST"
@@ -290,6 +306,11 @@ echo "     Profit ovr:profit-override <watts>|off|clear|status (force/inspect th
 echo "     Machine dump:dump-machine-json [outfile] (one-off: dump this rig's full raw Vast /machines/ JSON, for finding undocumented fields)"
 echo "     Earnings:  earnings-today (today's rentals, times, prices + revenue; pass YYYY-MM-DD for a past day)"
 echo "     PDU power: pdu-power (live rack watts + today/lifetime kWh & cost; hub rig only, needs PDU_HOSTS)"
+if [[ -f /etc/gpu_monitor.conf ]] && grep -q '^TAPO_HOST=.\+' /etc/gpu_monitor.conf 2>/dev/null; then
+    echo "     Tapo power:enabled (TAPO_HOST set) — python3 /usr/local/bin/tapo-poll.py --host \$TAPO_HOST --email \$TAPO_EMAIL --password \$TAPO_PASSWORD --dump  to verify"
+else
+    echo "     Tapo power:disabled — set TAPO_HOST/TAPO_EMAIL/TAPO_PASSWORD in this rig's own /etc/gpu_monitor.conf for a per-rig smart-plug meter (see RIGS.md)"
+fi
 echo "     Backfill:  backfill-prometheus --rig <name> --out <file>.om (one-off per rig: JSONL+log -> OpenMetrics for historical import, see RIGS.md)"
 echo "     Backup:    daily JSONL backup -> /var/backups/gpu-monitor, 14-day retention (gpu-backup.timer; run backup-jsonl manually to test)"
 CHAT_KEY_NAME=$(echo "$CHAT_PROVIDER" | tr '[:lower:]' '[:upper:]')_API_KEY

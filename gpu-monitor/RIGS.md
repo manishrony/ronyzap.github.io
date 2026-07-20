@@ -153,9 +153,10 @@ estimated today/month-to-date profit, fleet-wide. Built entirely on gauges
 - **Revenue/hr** — sum of each rig's live rental rate (same `earn_hour`/
   instance-rate data the pricing engine and profit throttle already use).
 - **Electricity/hr** — GPU power draw only (not full system draw — CPU/
-  fans/PSU losses aren't metered per-rig anywhere; the APC PDU meters the
-  whole rack collectively, hub-only, so it can't attribute cost to one rig
-  either) x `PDU_ENERGY_RATE` from that rig's own conf. A conservative
+  fans/PSU losses aren't separately metered anywhere; the APC PDU covers
+  Zappa1+Zappa2 collectively so it can't attribute cost to just one of
+  those two rigs either, and Zappa3's Tapo plug only sees its own draw) x
+  `PDU_ENERGY_RATE`/`TAPO_ENERGY_RATE` from that rig's own conf. A conservative
   (slight under-) estimate of true cost, but the only per-rig-decomposable
   signal actually available on every rig, not just the hub.
 - **Revenue per GPU** — revenue/hr ÷ total GPU count (rented + free), a
@@ -885,16 +886,22 @@ Nothing to do on the node rigs (Zappa2/Zappa3) besides the normal `install.sh`
 run — they automatically pick up `/api/diag/*` and will serve it if the hub's
 assistant asks about them. Only the hub needs the provider key.
 
-## APC PDU power metering (hub only)
+## APC PDU power metering (Zappa1 + Zappa2 only)
 
 The rack's APC Metered PDU (AP7811B) is read over SNMP to show real power draw,
 energy (kWh) and electricity cost on the dashboard, plus **net profit** (combined
 rental revenue − power cost) on the combined view.
 
-**Configure it on ONE rig only — the hub (Zappa1).** The PDU meters the whole
-rack, so if every rig polled it the energy would be counted 2–3×. The poller is
-built into `gpu_monitor.sh` and no-ops silently unless `PDU_HOSTS` is set, so
-it's safe that the same script ships everywhere.
+**Configure it on ONE rig only — the hub (Zappa1).** Correction (2026-07-20,
+confirmed against a manual meter cross-check): this PDU covers **Zappa1 and
+Zappa2 only** — NOT "the whole rack" as earlier revisions of this doc claimed.
+Zappa3 is on its own separate 15A outlet, not plugged into this PDU at all, so
+it needs its own meter (see the Tapo section right below). Configure the PDU
+poller on ONE rig only (the hub) regardless — it still meters two rigs' worth
+of draw on one circuit, so if more than one rig polled it that combined energy
+would be double/triple-counted. The poller is built into `gpu_monitor.sh` and
+no-ops silently unless `PDU_HOSTS` is set, so it's safe that the same script
+ships everywhere.
 
 Add to **Zappa1's** `/etc/gpu_monitor.conf`:
 
@@ -920,3 +927,62 @@ Check it from the terminal with `sudo pdu-power` (live watts + today + lifetime)
 or `sudo pdu-power YYYY-MM-DD` for a past day. If SNMP can't be reached the
 monitor logs one clear warning and keeps running; the dashboard power row simply
 stays hidden until samples arrive.
+
+## Tapo smart-plug power metering (per-rig, e.g. Zappa3)
+
+For a rig that isn't on the shared APC PDU — Zappa3, on its own regular 15A
+outlet — a TP-Link Tapo P110/P115/P100 (energy-monitoring model) plugged
+inline meters that rig by itself. It writes the exact same `pdu_power` event
+shape the PDU poller does (`gpu-monitor/tapo-poll.py`, called by
+`gpu_monitor.sh`'s `tapo_poll()`), just tagged with that rig's own hostname,
+so it slots into the existing dashboard/Prometheus pipeline automatically —
+no separate panel, no code changes needed on the dashboard side.
+
+**Configure it on the metered rig itself** (e.g. Zappa3's own
+`/etc/gpu_monitor.conf`) — unlike the PDU, this is per-rig, not hub-only,
+since each Tapo plug only sees its own rig's draw:
+
+```bash
+TAPO_HOST="192.168.1.<plug-ip>"    # the plug's local IP (static/reserved recommended)
+TAPO_EMAIL="you@example.com"       # TP-Link account email — local-auth handshake only,
+TAPO_PASSWORD="..."                # no cloud calls happen per-poll
+TAPO_ENERGY_RATE=0.25              # $/kWh — defaults to PDU_ENERGY_RATE if unset
+TAPO_KWH_BASELINE=0                # optional: kWh already consumed before metering began
+```
+
+Then `pip3 install python-kasa` (auto-installed by `install.sh` when
+`TAPO_HOST` is already set at install time) and
+`sudo systemctl restart gpu-monitor`. Poller cadence matches the PDU's
+(`TAPO_POLL_INTERVAL`, default 300s) and it no-ops silently unless `TAPO_HOST`
+is set, so it's safe that the same script ships everywhere.
+
+Verify the plug is actually reachable and reporting before trusting live
+polling:
+
+```bash
+python3 /usr/local/bin/tapo-poll.py --host $TAPO_HOST --email $TAPO_EMAIL \
+    --password $TAPO_PASSWORD --dump
+```
+
+`--dump` prints the device's real field values instead of writing an event —
+confirm `current_consumption` is a sane instant-watts figure before relying on
+it.
+
+Why this integrates its own cumulative kWh instead of trusting the plug's
+`consumption_total`: python-kasa documents that field as "total consumption
+since last reboot", not a true lifetime counter — a WiFi drop, firmware
+update, or power blip can silently reset it, which would cliff-drop a
+"lifetime kWh" figure that trusted it directly. `tapo-poll.py` instead
+integrates the plug's instant-watts reading into its own persistent state
+file every poll, the same approach `pdu_poll()` already uses for the APC
+unit.
+
+**Multiple meters combine correctly, they don't need separate panels.** Once
+more than one rig is writing `pdu_power` events (PDU covering Zappa1+Zappa2,
+Tapo covering Zappa3), the combined dashboard's "Power Now" and "Lifetime
+kWh" figures are computed as the latest reading **per host, summed** —
+`combined.html`'s `renderPower()` groups by `host` before combining, so
+whichever meter polled least recently doesn't silently drop out of the total.
+The interval sums (today/30d/daily kWh, and cost) never had this problem —
+summing every event's own `kwh_interval` already combines multiple meters
+correctly on its own.

@@ -1394,6 +1394,59 @@ PYEOF
 }
 
 # ─────────────────────────────────────────────
+# Tapo smart-plug power metering (for a rig NOT on the shared APC PDU)
+# ─────────────────────────────────────────────
+# A rig on its own regular outlet (e.g. Zappa3) can meter itself with a
+# TP-Link Tapo P110/P115/P100 energy-monitoring plug instead of the shared
+# APC PDU — set TAPO_HOST (+ TAPO_EMAIL/TAPO_PASSWORD, your TP-Link account)
+# in THAT rig's own /etc/gpu_monitor.conf. This writes the same pdu_power
+# event pdu_poll() does, tagged with this rig's own hostname, so multiple
+# meters covering different hardware combine correctly on the dashboard
+# (see combined.html's renderPower()) instead of needing a second panel.
+# No-ops silently when TAPO_HOST is unset, exactly like PDU_HOSTS.
+#   TAPO_HOST="192.168.1.x"      # the plug's local IP
+#   TAPO_EMAIL="you@example.com"  # TP-Link account (local-auth handshake only)
+#   TAPO_PASSWORD="..."
+#   TAPO_ENERGY_RATE=0.25          # $/kWh — defaults to PDU_ENERGY_RATE if unset
+#   TAPO_KWH_BASELINE=0             # seed lifetime kWh already consumed before now
+TAPO_HOST="${TAPO_HOST:-}"
+TAPO_EMAIL="${TAPO_EMAIL:-}"
+TAPO_PASSWORD="${TAPO_PASSWORD:-}"
+TAPO_ENERGY_RATE="${TAPO_ENERGY_RATE:-$PDU_ENERGY_RATE}"
+TAPO_KWH_BASELINE="${TAPO_KWH_BASELINE:-0}"
+TAPO_POLL_INTERVAL="${TAPO_POLL_INTERVAL:-300}"   # matches PDU_POLL_INTERVAL's default
+TAPO_WARNED_FILE="/var/tmp/gpu_monitor_tapo_warned"
+tapo_poll() {
+    [[ -z "$TAPO_HOST" ]] && return
+    if [[ -z "$TAPO_EMAIL" || -z "$TAPO_PASSWORD" ]]; then
+        if [[ ! -f "$TAPO_WARNED_FILE" ]]; then
+            log "TAPO: TAPO_HOST set but TAPO_EMAIL/TAPO_PASSWORD missing — skipping."
+            touch "$TAPO_WARNED_FILE"
+        fi
+        return
+    fi
+    if ! python3 -c "import kasa" >/dev/null 2>&1; then
+        if [[ ! -f "$TAPO_WARNED_FILE" ]]; then
+            log "TAPO: python-kasa not installed — pip3 install python-kasa to meter this plug. Skipping."
+            touch "$TAPO_WARNED_FILE"
+        fi
+        return
+    fi
+    local out
+    out=$(python3 "$(dirname "$0")/tapo-poll.py" --host "$TAPO_HOST" --email "$TAPO_EMAIL" \
+          --password "$TAPO_PASSWORD" --jsonl "$JSONL_FILE" --rig "$(hostname)" \
+          --rate "$TAPO_ENERGY_RATE" --baseline-kwh "$TAPO_KWH_BASELINE" 2>&1)
+    if [[ $? -ne 0 || -n "$out" ]]; then
+        if [[ ! -f "$TAPO_WARNED_FILE" ]]; then
+            log "TAPO: $out"
+            touch "$TAPO_WARNED_FILE"
+        fi
+    else
+        rm -f "$TAPO_WARNED_FILE" 2>/dev/null
+    fi
+}
+
+# ─────────────────────────────────────────────
 # GPU fault detection (Xid / NVRM PCIe errors)
 # ─────────────────────────────────────────────
 
@@ -2916,6 +2969,7 @@ main() {
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[1-9] ]] && log "Workload throttle   : ${WORKLOAD_THROTTLE_TYPES:-<none>} → ${WORKLOAD_THROTTLE_WATTS}W (auto, lifts when rental flips)"
     [[ -n "$PROFIT_THROTTLE_TIERS" ]] && log "Profit throttle     : ${PROFIT_THROTTLE_TIERS} (auto, lifts when rental ends or rate improves)"
     [[ -n "$PDU_HOSTS" ]] && log "PDU metering        : ${PDU_HOSTS} @ ${PDU_VOLTAGE}V, \$${PDU_ENERGY_RATE}/kWh (every ${PDU_POLL_INTERVAL}s)"
+    [[ -n "$TAPO_HOST" ]] && log "Tapo metering       : ${TAPO_HOST} @ \$${TAPO_ENERGY_RATE}/kWh (every ${TAPO_POLL_INTERVAL}s)"
     log "GPU/rental interval : ${CHECK_INTERVAL}s (1 hour, earnings sync/fault checks)"
     log "Rental/occupancy    : ${GPU_CHECK_INTERVAL}s (rentals, per-GPU occupancy, partial re-pricing)"
     log "Pricing interval    : ${PRICE_INTERVAL}s (30 min)"
@@ -2950,6 +3004,7 @@ main() {
     # hit twice within seconds at startup.
     vastai_init_state
     pdu_poll   # seed a PDU reading immediately so the dashboard isn't blank
+    tapo_poll  # same, for a rig metered by its own Tapo plug instead
 
     local last_price_check=0
 
@@ -3014,6 +3069,9 @@ main() {
             fi
             # Sample the PDU on its own cadence (no-ops unless PDU_HOSTS is set).
             (( slept % PDU_POLL_INTERVAL == 0 )) && pdu_poll
+            # Same, for a rig metered by its own Tapo plug instead (no-ops
+            # unless TAPO_HOST is set).
+            (( slept % TAPO_POLL_INTERVAL == 0 )) && tapo_poll
         done
     done
 }
