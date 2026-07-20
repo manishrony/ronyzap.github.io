@@ -211,17 +211,35 @@ def render_metrics(data_file, state_file):
                 labels = dict(labels_base, stat=stat)
                 m.add("market_price_dollars_per_hour", "gauge", "Comparable-listing market stat for this GPU model, fee-discounted.", labels, _to_float(v))
 
-    for mid, ev in latest_price.items():
+    for mid in set(latest_price) | set(latest_market):
         if mid not in state:
             continue
+        price_ev = latest_price.get(mid)
         labels = {"rig": rig, "machine_id": mid}
-        if ev.get("new_price") is not None:
-            m.add("listing_price_dollars_per_hour", "gauge", "This machine's current listing (ask) price.", labels, _to_float(ev.get("new_price")))
-        if ev.get("floor") is not None:
-            m.add("listing_floor_dollars_per_hour", "gauge", "Configured price floor for this GPU model.", labels, _to_float(ev.get("floor")))
-        if ev.get("target_value") is not None:
-            target_labels = dict(labels, target_stat=ev.get("target_stat", "median"))
-            m.add("listing_target_dollars_per_hour", "gauge", "The market stat value vastai_pricing() is targeting (see target_stat label).", target_labels, _to_float(ev.get("target_value")))
+        # A machine that's been fully rented every cycle since its last real
+        # price adjustment never gets a NEW price_change event — vastai_pricing()
+        # exits before writing one once a machine has no free GPU slot to
+        # price (see "fully rented — skipping price adjustment" in
+        # gpu_monitor.sh). Its market_snapshot event still fires every cycle
+        # regardless of rented status though, and carries the listing price
+        # at snapshot time as my_price — use that as a fallback so a
+        # continuously-fully-rented machine still gets a
+        # listing_price_dollars_per_hour instead of having none at all.
+        # Confirmed live on zappa3 (2026-07-20): machine 143953 had market
+        # comparables but zero listing price data, silently dropping it from
+        # the Pricing Advisor entirely (it requires both to show a machine).
+        if price_ev is not None and price_ev.get("new_price") is not None:
+            m.add("listing_price_dollars_per_hour", "gauge", "This machine's current listing (ask) price.", labels, _to_float(price_ev.get("new_price")))
+        else:
+            market_ev = latest_market.get(mid)
+            if market_ev is not None and market_ev.get("my_price") is not None:
+                m.add("listing_price_dollars_per_hour", "gauge", "This machine's current listing (ask) price (from the last market snapshot — no recent price_change event, e.g. continuously fully rented).", labels, _to_float(market_ev.get("my_price")))
+        if price_ev is not None:
+            if price_ev.get("floor") is not None:
+                m.add("listing_floor_dollars_per_hour", "gauge", "Configured price floor for this GPU model.", labels, _to_float(price_ev.get("floor")))
+            if price_ev.get("target_value") is not None:
+                target_labels = dict(labels, target_stat=price_ev.get("target_stat", "median"))
+                m.add("listing_target_dollars_per_hour", "gauge", "The market stat value vastai_pricing() is targeting (see target_stat label).", target_labels, _to_float(price_ev.get("target_value")))
 
     if latest_earnings:
         m.add("rig_daily_earnings_dollars", "gauge", "Vast's own daily_earnings total for the most recently synced date.", {"rig": rig, "date": latest_earnings.get("date", "")}, _to_float(latest_earnings.get("total")))
