@@ -166,15 +166,24 @@ WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
 # continuously busy (some compute process, not idle) for this long. Measured
 # via a persistent per-GPU state file (_gpu_busy_age_secs/_gpu_busy_clear_idle
 # — one file per physical GPU index, created the first time that GPU is seen
-# busy, removed the moment it goes idle), deliberately NOT the age of any one
-# PID: confirmed live on Zappa2 (2026-07-20), hashcat's own process restarted
-# mid-rental (job chunking/reconnect — same continuous cracking rental, new
-# PID), which would silently reset a PID-age-based clock to zero every time,
-# letting a persistent miner dodge the cap forever just by relaunching its
-# own binary periodically. Also not the machine-level rental_start event: an
+# busy, removed once it's been idle for WORKLOAD_THROTTLE_IDLE_TOLERANCE_SECS
+# straight), deliberately NOT the age of any one PID: confirmed live on
+# Zappa2 (2026-07-20), hashcat's own process restarted mid-rental (job
+# chunking/reconnect — same continuous cracking rental, new PID), which would
+# silently reset a PID-age-based clock to zero every time, letting a
+# persistent miner dodge the cap forever just by relaunching its own binary
+# periodically. Also not the machine-level rental_start event: an
 # incremental 2nd/3rd GPU renting on an already-rented multi-GPU box wouldn't
 # get its own timer from that alone.
 WORKLOAD_THROTTLE_GRACE_SECS="${WORKLOAD_THROTTLE_GRACE_SECS:-3600}"  # 60 min
+# A single missed poll (a renter-side network blip that doesn't actually stop
+# the process on the GPU, or our own nvidia-smi/pmon having one transient
+# hiccup) must NOT look identical to a genuinely idle GPU — that would wipe
+# out up to the full grace period's progress from one bad sample, the same
+# class of bug CPU_FREQ_MIN_THROTTLE_SECS fixed for the thermal throttle
+# above. A GPU only actually loses its busy-streak once it's shown no
+# compute process for this many CONSECUTIVE seconds straight.
+WORKLOAD_THROTTLE_IDLE_TOLERANCE_SECS="${WORKLOAD_THROTTLE_IDLE_TOLERANCE_SECS:-300}"  # 5 min
 
 # --- Rate-confirmed bypass: don't throttle a mining/cracking rental that's
 # actually paying well (runs every THERMAL_CHECK_INTERVAL) --------------------
@@ -1297,15 +1306,34 @@ _gpu_busy_age_secs() {
     fi
     echo $(( now - since ))
 }
-# Drop the busy-since file for any GPU NOT in the given proc-map (idle right
-# now) so its next compute process starts the grace-period clock fresh.
+# Drop the busy-since file for any GPU that's been out of the given proc-map
+# (no compute process seen) for WORKLOAD_THROTTLE_IDLE_TOLERANCE_SECS
+# straight — NOT the instant it's missing for one poll, which would let a
+# single renter-side network blip or nvidia-smi/pmon hiccup erase up to a
+# full grace period's worth of progress (see the WORKLOAD_THROTTLE_IDLE_
+# TOLERANCE_SECS comment above). Uses a second per-GPU file
+# (gpu_monitor_gpu_idle_since_<idx>) to track how long the current idle
+# streak has run; that file itself is removed the moment the GPU is busy
+# again, so a brief blip costs nothing once the GPU is seen busy again.
 _gpu_busy_clear_idle() {
     local -n _busy_procs="$1"
-    local f idx
+    local f idx idlef idle_since now
+    now=$(date +%s)
     for f in /var/tmp/gpu_monitor_gpu_busy_since_*; do
         [[ -e "$f" ]] || continue
         idx="${f##*gpu_monitor_gpu_busy_since_}"
-        [[ -n "${_busy_procs[$idx]:-}" ]] || rm -f "$f"
+        idlef="/var/tmp/gpu_monitor_gpu_idle_since_${idx}"
+        if [[ -n "${_busy_procs[$idx]:-}" ]]; then
+            rm -f "$idlef"   # busy again -- any in-progress idle streak doesn't count
+            continue
+        fi
+        idle_since=""
+        [[ -f "$idlef" ]] && idle_since=$(cat "$idlef" 2>/dev/null)
+        if [[ ! "$idle_since" =~ ^[0-9]+$ ]]; then
+            echo "$now" > "$idlef" 2>/dev/null   # first idle poll -- start tolerating, don't clear yet
+            continue
+        fi
+        (( now - idle_since >= WORKLOAD_THROTTLE_IDLE_TOLERANCE_SECS )) && rm -f "$f" "$idlef"
     done
 }
 
