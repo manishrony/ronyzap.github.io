@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # GPU Power Management Monitor
-# - Sets all GPUs to 500W on startup and every cycle
+# - Sets all GPUs to their per-model power default on startup and every cycle
+#   (see POWER_LIMITS)
 # - Checks GPU temps every hour; Telegram alert only if >75°C
 # - Monitors Vast.ai rental start/end + per-GPU occupancy every 5 min (also
 #   triggers an immediate re-price on any occupancy change, see vastai_pricing)
@@ -68,9 +69,19 @@ CPU_FREQ_MIN_THROTTLE_SECS="${CPU_FREQ_MIN_THROTTLE_SECS:-300}"  # min time to s
 # cap once the GPU reaches TEMP°C (steps listed low→high temp). The lowest WATTS
 # in the curve is the hard floor — power never drops below it.
 #   "5090:500:78@475:80@450" → 500W normally, 475W at ≥78°C, 450W at ≥80°C
+#
+# Base raised 2026-07-20 (500→575 on the 5090, 300→325 on the 5080): a real
+# inferencing/training renter can't actually pull full board power out of a
+# conservative cap the way a miner can, so the old bases were leaving
+# legitimate performance on the table for the common case just to protect
+# against the uncommon one — that protection now lives in
+# WORKLOAD_THROTTLE_LIMITS below instead, which only engages once a workload
+# actually classifies as low-value. Thermal safety steps (78@/80@) are
+# unchanged — this only moves the normal-workload ceiling, not the
+# overheat floor.
 POWER_LIMITS=(
-    "5090:500:78@475:80@450"
-    "5080:300:80@250"
+    "5090:575:78@475:80@450"
+    "5080:325:80@250"
 )
 POWER_LIMIT_FALLBACK=500      # base cap if a GPU matches no rule above
 POWER_LIMIT_HOT_FALLBACK=450  # floor cap if a GPU matches no rule above
@@ -121,10 +132,10 @@ GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 # Low-value rentals (hash-cracking, mining) aren't worth full power/heat, but we
 # don't want to kick the renter. When a GPU compute process classifies (via
 # classify_workload) into one of WORKLOAD_THROTTLE_TYPES, cap THAT GPU (and any
-# other GPU running an offending workload) to WORKLOAD_THROTTLE_WATTS. The cap
-# composes with the thermal curve (whichever is lower wins) and lifts
-# automatically the instant the workload changes or the rental ends — no manual
-# reset.
+# other GPU running an offending workload) to its own model's throttle target —
+# see WORKLOAD_THROTTLE_LIMITS below. The cap composes with the thermal curve
+# (whichever is lower wins) and lifts automatically the instant the workload
+# changes or the rental ends — no manual reset.
 #
 # Per-GPU on purpose, NOT rig-wide: this used to cap EVERY GPU whenever any one
 # of them ran a miner, which silently penalized the *other* tenant on a
@@ -134,14 +145,33 @@ GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 # poorly, and churned out within hours. A renter must never inherit another
 # renter's throttle.
 #
-# Default: cracking + mining → 400W. This only pulls down cards whose curve is
-# above 400W (the RTX 5090s); a lower-TDP card (e.g. RTX 5080 at 300W) is already
-# below the cap so min(curve,400) leaves it untouched — i.e. this is effectively
-# a "throttle 5090s" policy without needing a model check. Override per-rig in
-# /etc/gpu_monitor.conf: set WORKLOAD_THROTTLE_WATTS=0 to disable, or change the
-# watts/type list.
+# Per-GPU-model throttle target (Watts) as "pattern:watts" — same substring-
+# match convention as POWER_LIMITS. A card with a higher normal ceiling has
+# more to give up on a low-value workload than one already closer to
+# non-profitable at full power, so this is a curve, not one flat number for
+# every model. Falls back to WORKLOAD_THROTTLE_WATTS for any unlisted model.
+WORKLOAD_THROTTLE_LIMITS=(
+    "5090:400"
+    "5080:250"
+)
+# Override per-rig in /etc/gpu_monitor.conf: set WORKLOAD_THROTTLE_WATTS=0 to
+# disable entirely, change the type list, or override the fallback watts for a
+# model not listed above.
 WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-400}"
 WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
+
+# --- New-rental grace period before the throttle engages (named-match only) ---
+# A brand-new rental deserves a fair first look before losing power on a
+# process-name match alone — cap the SAME renter's GPU only once the
+# offending process has actually been running this long. Measured from the
+# process's own age (ps etimes on the PID nvidia-smi/pmon reports for that
+# GPU), not the rental_start event: rental_start is machine-level, so an
+# incremental 2nd/3rd GPU renting on an already-rented multi-GPU box
+# wouldn't get its own timer from that alone. If the process's age can't be
+# determined (PID gone, ps unavailable), throttle immediately rather than
+# silently skipping protection forever — unknown age fails toward capping,
+# not away from it.
+WORKLOAD_THROTTLE_GRACE_SECS="${WORKLOAD_THROTTLE_GRACE_SECS:-3600}"  # 60 min
 
 # --- Rate-confirmed bypass: don't throttle a mining/cracking rental that's
 # actually paying well (runs every THERMAL_CHECK_INTERVAL) --------------------
@@ -471,6 +501,18 @@ get_power_limit_for_gpu() {
     [[ -z "$body" ]] && { echo "$POWER_LIMIT_FALLBACK"; return; }
     echo "${body%%:*}"
 }
+# Mining/cracking throttle target (watts) for a GPU name — see
+# WORKLOAD_THROTTLE_LIMITS. Falls back to WORKLOAD_THROTTLE_WATTS for any
+# model not listed.
+get_workload_throttle_watts_for_gpu() {
+    local gpu_name="${1^^}" rule pattern
+    for rule in "${WORKLOAD_THROTTLE_LIMITS[@]}"; do
+        [[ -z "$rule" ]] && continue
+        pattern="${rule%%:*}"
+        [[ "$gpu_name" == *"${pattern^^}"* ]] && { echo "${rule#*:}"; return; }
+    done
+    echo "$WORKLOAD_THROTTLE_WATTS"
+}
 # Hard-minimum cap (watts) — the lowest WATTS in the curve; power never goes below.
 get_hot_power_limit_for_gpu() {
     local body; body=$(_power_rule_for_gpu "$1" "${2:-}")
@@ -554,12 +596,21 @@ workload_throttle_active() {
     _WORKLOAD_OFFENDER_GPUS=""
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[0-9]+$ ]] && (( WORKLOAD_THROTTLE_WATTS > 0 )) || return 1
     [[ -n "$WORKLOAD_THROTTLE_TYPES" ]] || return 1
-    local -A _procs; build_gpu_proc_map _procs
-    local gi cat t
+    local -A _procs _pids; build_gpu_proc_map _procs _pids
+    local gi cat t age
     for gi in "${!_procs[@]}"; do
         cat=$(classify_workload "${_procs[$gi]}")
         for t in $WORKLOAD_THROTTLE_TYPES; do
-            [[ "$cat" == "$t" ]] && _WORKLOAD_OFFENDER_GPUS="$_WORKLOAD_OFFENDER_GPUS $gi"
+            [[ "$cat" == "$t" ]] || continue
+            # Grace period: a brand-new rental gets WORKLOAD_THROTTLE_GRACE_SECS
+            # before this GPU is added to the offender list, even on a named
+            # match — see the WORKLOAD_THROTTLE_GRACE_SECS comment block for why
+            # (and why unknown age fails toward capping, not away from it).
+            age=$(_proc_age_secs "${_pids[$gi]:-}")
+            if [[ -n "$age" ]] && (( age < WORKLOAD_THROTTLE_GRACE_SECS )); then
+                continue
+            fi
+            _WORKLOAD_OFFENDER_GPUS="$_WORKLOAD_OFFENDER_GPUS $gi"
         done
     done
     _WORKLOAD_OFFENDER_GPUS="${_WORKLOAD_OFFENDER_GPUS# }"
@@ -871,12 +922,12 @@ thermal_adjust() {
     if (( throttle_cap > 0 )) && (( _WORKLOAD_THROTTLE_STATE == 0 )); then
         _WORKLOAD_THROTTLE_STATE=1
         if [[ "$throttle_src" == "heuristic" ]]; then
-            log "  WORKLOAD THROTTLE: unnamed process behaves like mining (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ util, ~0% encode/decode, stable VRAM for ${MINING_HEURISTIC_SUSTAIN_SECONDS}s) → capping GPU(s) ${_WORKLOAD_OFFENDER_GPUS} to ${throttle_cap}W (other GPUs unaffected)"
-            write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"source\":\"heuristic\",\"gpus\":\"$_WORKLOAD_OFFENDER_GPUS\"}"
-            tg_send "⚠️ $(hostname): suspected UNNAMED miner (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ GPU util, ~0% encode/decode, stable VRAM) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS} — auto-capped those to ${throttle_cap}W. Check nvidia-smi / use profit-override if this is wrong."
+            log "  WORKLOAD THROTTLE: unnamed process behaves like mining (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ util, ~0% encode/decode, stable VRAM for ${MINING_HEURISTIC_SUSTAIN_SECONDS}s) → capping GPU(s) ${_WORKLOAD_OFFENDER_GPUS} to their model's mining-throttle limit (other GPUs unaffected; see the THERMAL log line below for the actual watts applied per GPU)"
+            write_event "workload_throttle" "{\"state\":\"on\",\"source\":\"heuristic\",\"gpus\":\"$_WORKLOAD_OFFENDER_GPUS\"}"
+            tg_send "⚠️ $(hostname): suspected UNNAMED miner (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ GPU util, ~0% encode/decode, stable VRAM) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS} — auto-capped those to their model's mining-throttle limit. Check nvidia-smi / use profit-override if this is wrong."
         else
-            log "  WORKLOAD THROTTLE: not-ideal workload (${WORKLOAD_THROTTLE_TYPES}) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS} → capping those to ${throttle_cap}W (other GPUs unaffected)"
-            write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"types\":\"$WORKLOAD_THROTTLE_TYPES\",\"gpus\":\"$_WORKLOAD_OFFENDER_GPUS\"}"
+            log "  WORKLOAD THROTTLE: not-ideal workload (${WORKLOAD_THROTTLE_TYPES}) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS}, past the ${WORKLOAD_THROTTLE_GRACE_SECS}s grace period → capping those to their model's mining-throttle limit (other GPUs unaffected)"
+            write_event "workload_throttle" "{\"state\":\"on\",\"types\":\"$WORKLOAD_THROTTLE_TYPES\",\"gpus\":\"$_WORKLOAD_OFFENDER_GPUS\"}"
         fi
     elif (( throttle_cap == 0 )) && (( _WORKLOAD_THROTTLE_STATE == 1 )); then
         _WORKLOAD_THROTTLE_STATE=0
@@ -909,14 +960,19 @@ thermal_adjust() {
         curlimit=$(printf "%.0f" "$(echo "$curlimit" | xargs)" 2>/dev/null || echo 0)
         [[ "$temp" =~ ^[0-9]+$ ]] || continue
         target=$(thermal_target_power "$name" "$temp" "$curlimit" "$idx")
-        # Not-ideal workload: clamp to the throttle ceiling (never raise above
-        # it) — but ONLY the GPU(s) actually running the offending workload.
-        # A neighbor GPU's renter must never inherit this cap (see the
-        # WORKLOAD_THROTTLE_WATTS comment block: rig-wide capping was silently
-        # starving the innocent tenant on zappa1's spare 5090 and churning
-        # renters).
-        if (( throttle_cap > 0 )) && _is_workload_offender "$idx" && [[ "$target" =~ ^[0-9]+$ ]] && (( target > throttle_cap )); then
-            target="$throttle_cap"
+        # Not-ideal workload: clamp to this GPU's own model's throttle ceiling
+        # (never raise above it) — but ONLY the GPU(s) actually running the
+        # offending workload. A neighbor GPU's renter must never inherit this
+        # cap (see the WORKLOAD_THROTTLE_LIMITS comment block: rig-wide
+        # capping was silently starving the innocent tenant on zappa1's spare
+        # 5090 and churning renters). Per-model, not one flat number, since a
+        # card with a higher normal ceiling has more to give up than one
+        # already closer to non-profitable at full power (WORKLOAD_THROTTLE_LIMITS).
+        if (( throttle_cap > 0 )) && _is_workload_offender "$idx"; then
+            local model_throttle_cap; model_throttle_cap=$(get_workload_throttle_watts_for_gpu "$name")
+            if [[ "$target" =~ ^[0-9]+$ ]] && [[ "$model_throttle_cap" =~ ^[0-9]+$ ]] && (( target > model_throttle_cap )); then
+                target="$model_throttle_cap"
+            fi
         fi
         # Low-paying rental: clamp to the profit-tier ceiling (never raise above it).
         if (( profit_cap > 0 )) && [[ "$target" =~ ^[0-9]+$ ]] && (( target > profit_cap )); then
@@ -1159,9 +1215,18 @@ Check chassis airflow / CPU cooler under the current workload."
 # nvidia-smi. This reveals what's ACTUALLY running (e.g. FahCore_27 =
 # Folding@home, SRBMiner = mining, python3 = ML) even when the rental's base
 # image (e.g. linux-desktop) doesn't. Populates the associative array named by
-# the first arg: <idx> -> <process name>.
+# the first arg: <idx> -> <process name>. An optional second arg names an
+# associative array to also populate <idx> -> <pid> (used by the workload
+# throttle's grace period to check how long that process has been running;
+# omit it and only the name map is filled, same as before this existed).
 build_gpu_proc_map() {
     local -n _map="$1"
+    local -A _pid_sink
+    if [[ -n "${2:-}" ]]; then
+        local -n _pidmap="$2"
+    else
+        local -n _pidmap="_pid_sink"
+    fi
     local -A _uuid_idx _best_mem
     local gi guuid pid pname pmem
     # uuid -> index
@@ -1171,14 +1236,14 @@ build_gpu_proc_map() {
     done < <(nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null)
     # compute apps: keep the highest-memory process per GPU (the workload)
     while IFS=',' read -r guuid pid pname pmem; do
-        guuid="$(echo "$guuid" | xargs)"; pname="$(echo "$pname" | xargs)"; pmem="$(echo "$pmem" | xargs)"
+        guuid="$(echo "$guuid" | xargs)"; pid="$(echo "$pid" | xargs)"; pname="$(echo "$pname" | xargs)"; pmem="$(echo "$pmem" | xargs)"
         [[ -z "$guuid" ]] && continue
         gi="${_uuid_idx[$guuid]:-}"
         [[ -z "$gi" ]] && continue
         pmem="${pmem//[^0-9]/}"; [[ -z "$pmem" ]] && pmem=0
         pname="$(basename "$pname" 2>/dev/null || echo "$pname")"
         if (( pmem >= ${_best_mem[$gi]:-0} )); then
-            _best_mem["$gi"]="$pmem"; _map["$gi"]="$pname"
+            _best_mem["$gi"]="$pmem"; _map["$gi"]="$pname"; _pidmap["$gi"]="$pid"
         fi
     done < <(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null)
 
@@ -1200,9 +1265,19 @@ build_gpu_proc_map() {
             local pcmd; pcmd="$(awk '{print $NF}' <<< "$pgi $ppid $ptype $_rest")"
             [[ -z "$pcmd" || "$pcmd" == "-" ]] && continue
             # only fill if compute-apps didn't already name this GPU
-            [[ -z "${_map[$pgi]:-}" ]] && _map["$pgi"]="$pcmd"
+            if [[ -z "${_map[$pgi]:-}" ]]; then
+                _map["$pgi"]="$pcmd"
+                _pidmap["$pgi"]="$ppid"
+            fi
         done < <(timeout 15 nvidia-smi pmon -c 1 2>/dev/null)
     fi
+}
+# Seconds since PID <pid> started (via ps etimes), or empty if it can't be
+# determined (PID gone, ps unavailable, not a plain integer PID).
+_proc_age_secs() {
+    local pid="$1"
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo ""; return; }
+    ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' '
 }
 
 check_gpus() {
@@ -2961,12 +3036,27 @@ main() {
     if [[ -n "$GPU_POWER_LIMIT" ]]; then
         log "Power limit         : ${GPU_POWER_LIMIT}W per GPU (manual override)"
     else
-        log "Power limit         : per-model (5090=500W, 5080=300W, fallback=${POWER_LIMIT_FALLBACK}W)"
+        # Built from the POWER_LIMITS array itself (not hardcoded numbers) so
+        # this line can't silently drift out of sync with the actual curve
+        # the way it did before 2026-07-20 (still said 500/300 after the
+        # base was raised to 575/325).
+        local plsumm="" rule patt rest base
+        for rule in "${POWER_LIMITS[@]}"; do
+            patt="${rule%%:*}"; rest="${rule#*:}"; base="${rest%%:*}"
+            plsumm+="${patt}=${base}W, "
+        done
+        log "Power limit         : per-model (${plsumm%, }, fallback=${POWER_LIMIT_FALLBACK}W)"
     fi
     log "Temp threshold      : ${TEMP_THRESHOLD}°C"
     (( ${#GPU_POWER_OVERRIDE[@]} )) && log "Per-GPU power ovr    : ${GPU_POWER_OVERRIDE[*]}"
     (( ${#GPU_FAN_FLOOR[@]} ))      && log "Per-GPU fan floor    : ${GPU_FAN_FLOOR[*]} (needs X+Coolbits; power floor otherwise)"
-    [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[1-9] ]] && log "Workload throttle   : ${WORKLOAD_THROTTLE_TYPES:-<none>} → ${WORKLOAD_THROTTLE_WATTS}W (auto, lifts when rental flips)"
+    if [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[1-9] ]]; then
+        local wtsumm="" wrule
+        for wrule in "${WORKLOAD_THROTTLE_LIMITS[@]}"; do
+            wtsumm+="${wrule%%:*}=${wrule#*:}W, "
+        done
+        log "Workload throttle   : ${WORKLOAD_THROTTLE_TYPES:-<none>} → ${wtsumm%, } (fallback=${WORKLOAD_THROTTLE_WATTS}W), ${WORKLOAD_THROTTLE_GRACE_SECS}s grace period on new rentals (auto, lifts when rental flips)"
+    fi
     [[ -n "$PROFIT_THROTTLE_TIERS" ]] && log "Profit throttle     : ${PROFIT_THROTTLE_TIERS} (auto, lifts when rental ends or rate improves)"
     [[ -n "$PDU_HOSTS" ]] && log "PDU metering        : ${PDU_HOSTS} @ ${PDU_VOLTAGE}V, \$${PDU_ENERGY_RATE}/kWh (every ${PDU_POLL_INTERVAL}s)"
     [[ -n "$TAPO_HOST" ]] && log "Tapo metering       : ${TAPO_HOST} @ \$${TAPO_ENERGY_RATE}/kWh (every ${TAPO_POLL_INTERVAL}s)"
@@ -2994,14 +3084,14 @@ main() {
     enable_persistence_mode
     set_power_limits
     # set_power_limits() resets every GPU to its raw per-model default (e.g.
-    # 500W on a 5090), with no awareness of the workload/mining/profit
+    # 575W on a 5090), with no awareness of the workload/mining/profit
     # throttle — only thermal_adjust() re-applies those. Call it immediately
     # so a rig that starts up mid-rental (e.g. a hashcat/mining workload
     # already running, or an already-low-paying rental) doesn't sit at full
     # power for up to THERMAL_CHECK_INTERVAL before being reclamped.
     thermal_adjust
     # Report the power cap actually applied (read back from nvidia-smi), so the
-    # dashboard shows 300 on an RTX 5080 rig rather than the 500 fallback.
+    # dashboard shows 325 on an RTX 5080 rig rather than the 575 fallback.
     local effective_power_limit
     effective_power_limit=$(get_effective_power_limit)
     log "Effective power cap : ${effective_power_limit}W (read back from nvidia-smi)"

@@ -11,7 +11,7 @@ _Last updated: 2026-07-16_
 |--------|----------|------------------|-----------|------------------------------|-------|
 | Zappa1 | zappa1   | 192.168.1.171    | 8080      | **Hub** (serves combined view) | 2× RTX 5090 |
 | Zappa2 | zappa2   | 192.168.1.196    | 8081      | Node                         | 8× RTX 5090 (GPU 5 = MSI, lazy-fan → per-GPU override in its conf); AMD EPYC 9 B14 |
-| Zappa3 | zappa3   | 192.168.1.211    | 8082      | Node                         | RTX 5080 (300W curve, 275W@80°C; conf sets WORKLOAD_THROTTLE_WATTS=250 → cracking/mining throttle to 250W) |
+| Zappa3 | zappa3   | 192.168.1.211    | 8082      | Node                         | RTX 5080 (325W curve, 250W@80°C; mining/cracking throttles to 250W past the 60min grace period) |
 
 > ⚠️ These are **DHCP** addresses and have drifted before (Zappa3 moved
 > 192.168.1.150 → .211 on 2026-07-16, which broke the hub's peer link). Set a
@@ -691,50 +691,88 @@ actually being targeted.
 
 Low-value rentals get capped without kicking the renter: when a running GPU
 workload classifies as **cracking** (hashcat/john) or **mining**, the GPU(s)
-actually running that workload are capped to **400W**; the cap lifts
-automatically when the rental flips to anything else or ends.
+actually running that workload are capped, once past a new-rental grace
+period; the cap lifts automatically when the rental flips to anything else or
+ends.
+
+**Per-model cap and normal-power base both changed 2026-07-20.** A real
+inferencing/training renter can't actually pull full board power the way a
+miner can, so the old flat per-model bases (500W/5090, 300W/5080) were
+leaving legitimate performance on the table just to guard against the
+uncommon low-value case. The base moved up, and the *protection* against a
+low-value workload moved into a dedicated per-model throttle target instead
+of one flat number for every card:
+
+```bash
+POWER_LIMITS=(
+    "5090:575:78@475:80@450"   # normal base 575W (was 500W); unchanged thermal steps
+    "5080:325:80@250"          # normal base 325W (was 300W); unchanged thermal step
+)
+WORKLOAD_THROTTLE_LIMITS=(
+    "5090:400"   # mining/cracking throttle target for a 5090
+    "5080:250"   # mining/cracking throttle target for a 5080 (non-profitable ceiling)
+)
+WORKLOAD_THROTTLE_WATTS=400     # fallback throttle watts for any model not listed above
+WORKLOAD_THROTTLE_TYPES="cracking mining"
+WORKLOAD_THROTTLE_GRACE_SECS=3600   # 60 min — see grace period below
+```
+
+- `get_workload_throttle_watts_for_gpu()` matches the GPU name against
+  `WORKLOAD_THROTTLE_LIMITS` the same substring-match way
+  `get_power_limit_for_gpu()` matches `POWER_LIMITS`; falls back to
+  `WORKLOAD_THROTTLE_WATTS` for an unlisted model.
+- **Zappa3's `/etc/gpu_monitor.conf` `WORKLOAD_THROTTLE_WATTS=250` override is
+  now redundant** (harmless, but can be removed) — the default
+  `WORKLOAD_THROTTLE_LIMITS` already maps `5080:250` directly, so the per-rig
+  override was only ever hitting the fallback path it duplicates.
+- Override per rig in `/etc/gpu_monitor.conf`: `WORKLOAD_THROTTLE_WATTS=0` to
+  disable entirely, or edit `WORKLOAD_THROTTLE_LIMITS`/the type list.
+
+### New-rental grace period (2026-07-20)
+
+A brand-new rental gets `WORKLOAD_THROTTLE_GRACE_SECS` (60 min default)
+before a named mining/cracking classification actually caps its GPU — a
+process-name match alone shouldn't cost a fresh renter power the instant
+their container starts. Measured from the offending process's own age (`ps
+etimes` on the PID `nvidia-smi`/`pmon` reports for that GPU), not the
+`rental_start` event, since `rental_start` is machine-level and wouldn't give
+an incremental 2nd/3rd GPU on an already-rented multi-GPU box its own timer.
+If the process's age can't be determined (PID gone, `ps` unavailable), it
+throttles immediately rather than silently skipping protection forever —
+unknown age fails toward capping, not away from it. Only gates the **named**
+classifier path (`workload_throttle_active()`); the unnamed-miner heuristic
+below already has its own built-in 30-minute sustained-behavior wait and is
+unaffected.
 
 **Per-GPU since 2026-07-20, and this matters a lot on partially-rented
 machines.** The original version capped EVERY GPU whenever any one of them ran
 a miner — which meant the *other* tenant on a multi-GPU machine silently
 inherited the mining tenant's punishment. Confirmed live on Zappa1: GPU0's
 long-term `matador-miner` rental kept the spare GPU1 capped at 400W (vs. its
-500W curve), so every fresh renter of that 5090 got ~20% less power than the
-card advertises, benchmarked below expectations, and churned out within
+575W curve), so every fresh renter of that 5090 got noticeably less power than
+the card advertises, benchmarked below expectations, and churned out within
 hours — a ~2-day streak of rapid rent/unrent cycles on the spare GPU that
 stopped being mysterious the moment the rig-wide cap was noticed. A renter
-must never inherit another renter's throttle. Defaults live in
-`gpu_monitor.sh`:
+must never inherit another renter's throttle.
 
-```bash
-WORKLOAD_THROTTLE_WATTS=400
-WORKLOAD_THROTTLE_TYPES="cracking mining"
-```
-
-- Only affects cards whose curve exceeds 400W — i.e. the **RTX 5090s**
-  (Zappa1/Zappa2). **Zappa3's RTX 5080s are unaffected** (300W curve is already
-  below 400W).
-- Override per rig in `/etc/gpu_monitor.conf`: `WORKLOAD_THROTTLE_WATTS=0` to
-  disable, or change the watts / type list.
-- **Zappa3 (RTX 5080)** carries `WORKLOAD_THROTTLE_WATTS=250` in its conf, so its
-  cracking/mining rentals throttle to 250W — below the 5080's normal 300 / 275°C
-  curve. Non-cracking/mining rentals run the normal curve.
-- **`hashcat.bin` is already recognized** (it's in the original `cracking` list) —
-  confirmed live on Zappa2, 2026-07-18: `nvidia-smi --query-compute-apps` /
-  `pmon` both show it clearly (99% sm, 0% enc/dec, one process across all 8
-  GPUs), and it throttles to 400W correctly once running.
+- `hashcat.bin`, `matador`/`matador-miner`, and `wildrig-multi` are all
+  recognized by name (`classify_workload()`'s known list) — `matador-miner`
+  was missed until seen live on Zappa1 (2026-07-18) and `wildrig-multi` until
+  seen live on Zappa1 again (2026-07-20, confirmed via its own command line:
+  `--algo pearlhash --url stratum+tcp://...` connecting to a real mining
+  pool), both added the same day they were spotted.
 - **Fixed 2026-07-18**: `set_power_limits()` (resets every GPU to its raw
-  per-model default — 500W on a 5090) runs unconditionally both at startup
-  and at the top of **every hourly cycle** (`CHECK_INTERVAL`), with no
-  awareness of the workload/mining/profit throttle — only `thermal_adjust()`
-  re-applies those, and it didn't used to run until up to
-  `THERMAL_CHECK_INTERVAL` (60s) later. So a throttled rental would briefly
-  spike back to full power **every single hour**, not just after a redeploy —
-  caught live on Zappa2 (500W → 400W within seconds of `set_power_limits`
-  logging, well before the next scheduled `thermal_adjust` tick). Fixed by
-  calling `thermal_adjust` immediately after every `set_power_limits` call
-  (both at startup and in the main loop), so the cap is re-applied within the
-  same cycle instead of leaving a window at full power.
+  per-model default) runs unconditionally both at startup and at the top of
+  **every hourly cycle** (`CHECK_INTERVAL`), with no awareness of the
+  workload/mining/profit throttle — only `thermal_adjust()` re-applies those,
+  and it didn't used to run until up to `THERMAL_CHECK_INTERVAL` (60s) later.
+  So a throttled rental would briefly spike back to full power **every single
+  hour**, not just after a redeploy — caught live on Zappa2 (full power → capped
+  within seconds of `set_power_limits` logging, well before the next scheduled
+  `thermal_adjust` tick). Fixed by calling `thermal_adjust` immediately after
+  every `set_power_limits` call (both at startup and in the main loop), so the
+  cap is re-applied within the same cycle instead of leaving a window at full
+  power.
 
 ### Rate-confirmed bypass — don't throttle a mining/cracking rental that's paying well
 
@@ -747,7 +785,7 @@ profit throttle uses, never the listing price) is at/above the most recent
 `market_snapshot`'s `MINING_THROTTLE_RATE_STAT` value for that GPU model (the
 same fee-discounted comparable-listings data `vastai_pricing()` already
 writes every cycle — no extra API call), `thermal_adjust()` skips the cap
-entirely and leaves the normal per-model curve (500W/5090, 300W/5080) in
+entirely and leaves the normal per-model curve (575W/5090, 325W/5080) in
 place.
 
 ```bash
@@ -772,22 +810,26 @@ MINING_THROTTLE_RATE_STAT="mean"    # or "p75" for a stricter bar — mean|p75|m
 
 `classify_workload()` only recognizes a fixed list of known miner/cracker
 binary names (`srbminer`, `xmrig`, `nbminer`, `t-rex`, `phoenixminer`,
-`lolminer`, `gminer`, `teamredminer`, `matador`, `hashcat`, ...) — we missed
-`matador-miner` on Zappa1 until it was seen live and added (2026-07-18). Any
-future miner running under a name not on that list would bypass the throttle
-the same way, so there's now a behavioral fallback for exactly that case.
+`lolminer`, `gminer`, `teamredminer`, `matador`, `wildrig`, `hashcat`, ...) —
+we missed `matador-miner` on Zappa1 until it was seen live and added
+(2026-07-18), and `wildrig-multi` the same way (2026-07-20). Any future miner
+running under a name not on that list would bypass the throttle the same way,
+so there's now a behavioral fallback for exactly that case.
 
 If the running process classifies as `unknown` and, for **30 minutes
 straight**, every active GPU shows **≥95% compute utilization, ~0% NVENC/NVDEC
 use, and no VRAM growth** (miners settle into a fixed working set and never
 touch the video engines — a training/inference job doesn't typically hold
 that exact combination that long), it's treated the same as a named
-mining/cracking match: same `WORKLOAD_THROTTLE_WATTS` cap, same auto-lift the
-instant the workload or rental changes — plus a one-time Telegram alert,
-since (unlike a named match) this is an inference worth a human glance, not a
-certainty. **Any** disqualifying sample (utilization dips, encode/decode
-activity, VRAM growth) resets the 30-minute counter to zero — deliberately
-strict, to keep false positives on legitimate heavy-compute rentals rare.
+mining/cracking match: same per-model `WORKLOAD_THROTTLE_LIMITS` cap, same
+auto-lift the instant the workload or rental changes — plus a one-time
+Telegram alert, since (unlike a named match) this is an inference worth a
+human glance, not a certainty. **Any** disqualifying sample (utilization
+dips, encode/decode activity, VRAM growth) resets the 30-minute counter to
+zero — deliberately strict, to keep false positives on legitimate
+heavy-compute rentals rare. This path does NOT wait for
+`WORKLOAD_THROTTLE_GRACE_SECS` on top of its own 30-minute sustain — see the
+grace period note above for why.
 
 ```bash
 MINING_HEURISTIC=1                       # default on; set 0 in a rig's conf to disable
