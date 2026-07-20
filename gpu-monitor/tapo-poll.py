@@ -54,30 +54,39 @@ async def _poll(host, email, password, dump):
         sys.exit(1)
 
     dev = await Discover.discover_single(host, credentials=Credentials(username=email, password=password))
-    await dev.update()
+    try:
+        await dev.update()
 
-    energy = dev.modules.get("Energy") if hasattr(dev, "modules") else None
-    if energy is None:
-        print(f"tapo-poll: {dev.alias!r} at {host} has no Energy module — "
-              f"is this a P110/P115/P100 (energy-monitoring) model?", file=sys.stderr)
-        return None
+        energy = dev.modules.get("Energy") if hasattr(dev, "modules") else None
+        if energy is None:
+            print(f"tapo-poll: {dev.alias!r} at {host} has no Energy module — "
+                  f"is this a P110/P115/P100 (energy-monitoring) model?", file=sys.stderr)
+            return None
 
-    if dump:
-        print(f"device: {dev.alias!r} model={dev.model} host={host}")
-        print(f"  current_consumption (W)     = {energy.current_consumption}")
-        print(f"  consumption_today (kWh)     = {energy.consumption_today}")
-        print(f"  consumption_this_month (kWh)= {energy.consumption_this_month}")
-        print(f"  consumption_total (kWh, since last reboot, NOT lifetime) = {energy.consumption_total}")
-        print(f"  voltage (V) = {getattr(energy, 'voltage', None)}, current (A) = {getattr(energy, 'current', None)}")
-        return None
+        if dump:
+            print(f"device: {dev.alias!r} model={dev.model} host={host}")
+            print(f"  current_consumption (W)     = {energy.current_consumption}")
+            print(f"  consumption_today (kWh)     = {energy.consumption_today}")
+            print(f"  consumption_this_month (kWh)= {energy.consumption_this_month}")
+            print(f"  consumption_total (kWh, since last reboot, NOT lifetime) = {energy.consumption_total}")
+            print(f"  voltage (V) = {getattr(energy, 'voltage', None)}, current (A) = {getattr(energy, 'current', None)}")
+            return None
 
-    watts = energy.current_consumption
-    if watts is None:
-        print(f"tapo-poll: {dev.alias!r} responded but current_consumption is None "
-              f"(device may need a moment after power-on) — skipping this poll", file=sys.stderr)
-        return None
+        watts = energy.current_consumption
+        if watts is None:
+            print(f"tapo-poll: {dev.alias!r} responded but current_consumption is None "
+                  f"(device may need a moment after power-on) — skipping this poll", file=sys.stderr)
+            return None
 
-    return {"watts": float(watts), "alias": dev.alias}
+        return {"watts": float(watts), "alias": dev.alias}
+    finally:
+        # Without this, aiohttp warns "Unclosed client session" on interpreter
+        # exit — cosmetic, but gpu_monitor.sh's tapo_poll() treats ANY non-empty
+        # captured output as a failure (confirmed live on Zappa3, 2026-07-20:
+        # logged a misleading "TAPO: ..." error every 5-minute cycle despite the
+        # poll actually succeeding every time). Closing the connection here
+        # removes the warning at its source instead of filtering it downstream.
+        await dev.disconnect()
 
 
 def main():
