@@ -119,11 +119,20 @@ GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
 
 # --- Workload-based power throttle (runs every THERMAL_CHECK_INTERVAL) ---------
 # Low-value rentals (hash-cracking, mining) aren't worth full power/heat, but we
-# don't want to kick the renter. When a GPU compute process currently running on
-# the rig classifies (via classify_workload) into one of WORKLOAD_THROTTLE_TYPES,
-# cap EVERY GPU to WORKLOAD_THROTTLE_WATTS. The cap composes with the thermal
-# curve (whichever is lower wins) and lifts automatically the instant the
-# workload changes or the rental ends — no manual reset.
+# don't want to kick the renter. When a GPU compute process classifies (via
+# classify_workload) into one of WORKLOAD_THROTTLE_TYPES, cap THAT GPU (and any
+# other GPU running an offending workload) to WORKLOAD_THROTTLE_WATTS. The cap
+# composes with the thermal curve (whichever is lower wins) and lifts
+# automatically the instant the workload changes or the rental ends — no manual
+# reset.
+#
+# Per-GPU on purpose, NOT rig-wide: this used to cap EVERY GPU whenever any one
+# of them ran a miner, which silently penalized the *other* tenant on a
+# multi-GPU machine — confirmed live on zappa1 (2026-07-20): GPU0's long-term
+# miner kept GPU1 capped at 400W (vs. its 500W curve), so every fresh renter of
+# the spare 5090 got ~20% less power than the card advertises, benchmarked
+# poorly, and churned out within hours. A renter must never inherit another
+# renter's throttle.
 #
 # Default: cracking + mining → 400W. This only pulls down cards whose curve is
 # above 400W (the RTX 5090s); a lower-TDP card (e.g. RTX 5080 at 300W) is already
@@ -528,7 +537,21 @@ set_power_limits() {
 _WORKLOAD_THROTTLE_STATE=0   # edge-tracking so we log the transition, not every tick
 _MINING_RATE_BYPASS_STATE=0  # edge-tracking for the "mining detected but rate confirmed high" case
 _PROFIT_THROTTLE_LAST_TIER=""   # edge-tracking for the profit throttle below (empty = not capping)
+# Space-separated GPU indexes whose CURRENT workload triggered the throttle —
+# repopulated by workload_throttle_active()/mining_heuristic_active() every
+# detection pass, consumed by thermal_adjust()'s per-GPU loop so the cap lands
+# only on the GPUs actually running the offending workload (see the
+# WORKLOAD_THROTTLE_WATTS comment block for why this must not be rig-wide).
+_WORKLOAD_OFFENDER_GPUS=""
+_is_workload_offender() {
+    local needle="$1" gi
+    for gi in $_WORKLOAD_OFFENDER_GPUS; do
+        [[ "$gi" == "$needle" ]] && return 0
+    done
+    return 1
+}
 workload_throttle_active() {
+    _WORKLOAD_OFFENDER_GPUS=""
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[0-9]+$ ]] && (( WORKLOAD_THROTTLE_WATTS > 0 )) || return 1
     [[ -n "$WORKLOAD_THROTTLE_TYPES" ]] || return 1
     local -A _procs; build_gpu_proc_map _procs
@@ -536,10 +559,11 @@ workload_throttle_active() {
     for gi in "${!_procs[@]}"; do
         cat=$(classify_workload "${_procs[$gi]}")
         for t in $WORKLOAD_THROTTLE_TYPES; do
-            [[ "$cat" == "$t" ]] && return 0
+            [[ "$cat" == "$t" ]] && _WORKLOAD_OFFENDER_GPUS="$_WORKLOAD_OFFENDER_GPUS $gi"
         done
     done
-    return 1
+    _WORKLOAD_OFFENDER_GPUS="${_WORKLOAD_OFFENDER_GPUS# }"
+    [[ -n "$_WORKLOAD_OFFENDER_GPUS" ]]
 }
 
 # Behavioral fallback for an UNNAMED miner/cracker — see the MINING_HEURISTIC_*
@@ -556,10 +580,10 @@ mining_heuristic_active() {
     _profit_currently_rented || { _MINING_HEURISTIC_STREAK=0; _MINING_HEURISTIC_PREV_MEM=""; return 1; }
 
     local -A _procs; build_gpu_proc_map _procs
-    local gi cat any_unknown=0
+    local gi cat any_unknown=0 unknown_gpus=""
     for gi in "${!_procs[@]}"; do
         cat=$(classify_workload "${_procs[$gi]}")
-        [[ "$cat" == "unknown" ]] && any_unknown=1
+        [[ "$cat" == "unknown" ]] && { any_unknown=1; unknown_gpus="$unknown_gpus $gi"; }
     done
     # Nothing unclassified running (idle, or already a named match) — this
     # fallback has nothing to add.
@@ -592,7 +616,13 @@ mining_heuristic_active() {
     else
         _MINING_HEURISTIC_STREAK=0
     fi
-    (( _MINING_HEURISTIC_STREAK >= MINING_HEURISTIC_SUSTAIN_SECONDS ))
+    if (( _MINING_HEURISTIC_STREAK >= MINING_HEURISTIC_SUSTAIN_SECONDS )); then
+        # The suspected miners are the unknown-classified processes the streak
+        # was judged on — cap those GPUs, not their neighbors' rentals.
+        _WORKLOAD_OFFENDER_GPUS="${unknown_gpus# }"
+        return 0
+    fi
+    return 1
 }
 
 # True (0) if this host's confirmed live per-GPU rate is at/above the most
@@ -841,12 +871,12 @@ thermal_adjust() {
     if (( throttle_cap > 0 )) && (( _WORKLOAD_THROTTLE_STATE == 0 )); then
         _WORKLOAD_THROTTLE_STATE=1
         if [[ "$throttle_src" == "heuristic" ]]; then
-            log "  WORKLOAD THROTTLE: unnamed process behaves like mining (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ util, ~0% encode/decode, stable VRAM for ${MINING_HEURISTIC_SUSTAIN_SECONDS}s) → capping all GPUs to ${throttle_cap}W"
-            write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"source\":\"heuristic\"}"
-            tg_send "⚠️ $(hostname): suspected UNNAMED miner (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ GPU util, ~0% encode/decode, stable VRAM) — auto-capped to ${throttle_cap}W. Check nvidia-smi / use profit-override if this is wrong."
+            log "  WORKLOAD THROTTLE: unnamed process behaves like mining (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ util, ~0% encode/decode, stable VRAM for ${MINING_HEURISTIC_SUSTAIN_SECONDS}s) → capping GPU(s) ${_WORKLOAD_OFFENDER_GPUS} to ${throttle_cap}W (other GPUs unaffected)"
+            write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"source\":\"heuristic\",\"gpus\":\"$_WORKLOAD_OFFENDER_GPUS\"}"
+            tg_send "⚠️ $(hostname): suspected UNNAMED miner (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ GPU util, ~0% encode/decode, stable VRAM) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS} — auto-capped those to ${throttle_cap}W. Check nvidia-smi / use profit-override if this is wrong."
         else
-            log "  WORKLOAD THROTTLE: not-ideal workload (${WORKLOAD_THROTTLE_TYPES}) running → capping all GPUs to ${throttle_cap}W"
-            write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"types\":\"$WORKLOAD_THROTTLE_TYPES\"}"
+            log "  WORKLOAD THROTTLE: not-ideal workload (${WORKLOAD_THROTTLE_TYPES}) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS} → capping those to ${throttle_cap}W (other GPUs unaffected)"
+            write_event "workload_throttle" "{\"state\":\"on\",\"watts\":$throttle_cap,\"types\":\"$WORKLOAD_THROTTLE_TYPES\",\"gpus\":\"$_WORKLOAD_OFFENDER_GPUS\"}"
         fi
     elif (( throttle_cap == 0 )) && (( _WORKLOAD_THROTTLE_STATE == 1 )); then
         _WORKLOAD_THROTTLE_STATE=0
@@ -879,8 +909,13 @@ thermal_adjust() {
         curlimit=$(printf "%.0f" "$(echo "$curlimit" | xargs)" 2>/dev/null || echo 0)
         [[ "$temp" =~ ^[0-9]+$ ]] || continue
         target=$(thermal_target_power "$name" "$temp" "$curlimit" "$idx")
-        # Not-ideal workload: clamp to the throttle ceiling (never raise above it).
-        if (( throttle_cap > 0 )) && [[ "$target" =~ ^[0-9]+$ ]] && (( target > throttle_cap )); then
+        # Not-ideal workload: clamp to the throttle ceiling (never raise above
+        # it) — but ONLY the GPU(s) actually running the offending workload.
+        # A neighbor GPU's renter must never inherit this cap (see the
+        # WORKLOAD_THROTTLE_WATTS comment block: rig-wide capping was silently
+        # starving the innocent tenant on zappa1's spare 5090 and churning
+        # renters).
+        if (( throttle_cap > 0 )) && _is_workload_offender "$idx" && [[ "$target" =~ ^[0-9]+$ ]] && (( target > throttle_cap )); then
             target="$throttle_cap"
         fi
         # Low-paying rental: clamp to the profit-tier ceiling (never raise above it).

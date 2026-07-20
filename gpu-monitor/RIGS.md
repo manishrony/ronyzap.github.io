@@ -674,9 +674,21 @@ actually being targeted.
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU
-workload classifies as **cracking** (hashcat/john) or **mining**, every GPU is
-capped to **400W**; the cap lifts automatically when the rental flips to
-anything else or ends. Defaults live in `gpu_monitor.sh`:
+workload classifies as **cracking** (hashcat/john) or **mining**, the GPU(s)
+actually running that workload are capped to **400W**; the cap lifts
+automatically when the rental flips to anything else or ends.
+
+**Per-GPU since 2026-07-20, and this matters a lot on partially-rented
+machines.** The original version capped EVERY GPU whenever any one of them ran
+a miner — which meant the *other* tenant on a multi-GPU machine silently
+inherited the mining tenant's punishment. Confirmed live on Zappa1: GPU0's
+long-term `matador-miner` rental kept the spare GPU1 capped at 400W (vs. its
+500W curve), so every fresh renter of that 5090 got ~20% less power than the
+card advertises, benchmarked below expectations, and churned out within
+hours — a ~2-day streak of rapid rent/unrent cycles on the spare GPU that
+stopped being mysterious the moment the rig-wide cap was noticed. A renter
+must never inherit another renter's throttle. Defaults live in
+`gpu_monitor.sh`:
 
 ```bash
 WORKLOAD_THROTTLE_WATTS=400
