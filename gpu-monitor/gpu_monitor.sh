@@ -2978,8 +2978,17 @@ main() {
     log "======================================"
 
     # Restore automatic fan control if we exit (stop/restart/crash) so a card is
-    # never left pinned to a fixed fan speed by a dead monitor.
-    trap _restore_gpu_fans EXIT INT TERM
+    # never left pinned to a fixed fan speed by a dead monitor. EXIT alone
+    # covers every case (normal return, INT/TERM, or an explicit exit) since
+    # bash always runs the EXIT trap on process exit — but a *trapped*
+    # INT/TERM does NOT exit the script by itself, it just resumes execution
+    # where it was interrupted. Without this second trap, `systemctl stop`/
+    # `restart` never terminates the process on its own: the script silently
+    # absorbs SIGTERM and keeps looping until systemd's TimeoutStopSec (90s
+    # default) expires and force-kills it with SIGKILL — confirmed live
+    # 2026-07-20, every restart took the full 90s and needed a hard kill.
+    trap _restore_gpu_fans EXIT
+    trap 'exit 0' INT TERM
 
     touch "$JSONL_FILE" && chmod 644 "$JSONL_FILE"
     enable_persistence_mode
