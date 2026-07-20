@@ -128,6 +128,21 @@ just creates additional blocks; duplicate/overlapping samples are harmless
 (Prometheus dedupes identical points, and re-importing doesn't erase
 anything already scraped live).
 
+⚠️ **Backfilled and live-scraped data are DIFFERENT series** even for the
+"same" metric+labels: Prometheus attaches `instance`/`job` labels to
+everything it scrapes, while promtool-created blocks carry only the labels
+in the `.om` file. So a backfill that includes samples for the day it was
+generated leaves two parallel series for that (rig, date) — the backfilled
+one frozen at whatever the running total was at `.om`-generation time, and
+the live one continuing to the real end-of-day value. Any consumer that
+groups by (rig, date) must merge duplicates with max() (a daily running
+total's larger value is by definition the more complete one), never
+last-write-wins — confirmed live 2026-07-20: the Previous Day Summary
+showed zappa2 at $38.09 (backfill frozen mid-day) instead of the real
+$77.43 because the stale series happened to be processed last. Fixed in
+`profit_api._earnings_by_rig_date()`, which both the profit and daily
+summary endpoints flow through.
+
 ## Live Profit Metrics (hub only)
 
 The combined dashboard's "Live Profit" row (`/api/profit`, `profit_api.py`) —

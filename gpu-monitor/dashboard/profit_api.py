@@ -110,9 +110,24 @@ def _earnings_by_rig_date(prom_url, start_ts, now_ts):
         if not values:
             continue
         try:
-            out[(rig, date)] = float(values[-1][1])
+            v = float(values[-1][1])
         except (ValueError, TypeError, IndexError):
             continue
+        # max(), never last-write-wins: the same (rig, date) can exist as TWO
+        # Prometheus series — the live-scraped one (carries instance/job
+        # labels, added by Prometheus at scrape time) and a backfilled one
+        # (promtool-created blocks have no scrape labels). The backfilled
+        # series freezes at whatever the running total was when the .om file
+        # was generated, while the live one keeps climbing to the real
+        # end-of-day total. Since daily_earnings is a running accumulator
+        # within a date, the larger value is by definition the more complete
+        # one. Confirmed live (2026-07-20): zappa2's 2026-07-19 showed $38.09
+        # (backfill frozen mid-day) instead of $77.43 (live final) on the
+        # Previous Day Summary because the backfilled series happened to be
+        # processed last and overwrote the live one.
+        key = (rig, date)
+        if key not in out or v > out[key]:
+            out[key] = v
     return out
 
 
