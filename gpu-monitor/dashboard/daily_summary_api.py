@@ -36,6 +36,16 @@ def _previous_day_bounds(now_ts=None):
     return day_start, today_start
 
 
+def _day_bounds(date_str=None, now_ts=None):
+    """Bounds for an explicit YYYY-MM-DD (full UTC calendar day), or the
+    previous day relative to now_ts when date_str is omitted — same default
+    behavior as before this got a date param."""
+    if date_str:
+        day_start = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
+        return day_start, day_start + datetime.timedelta(days=1)
+    return _previous_day_bounds(now_ts)
+
+
 def _revenue_by_rig(prom_url, day_start, day_end, date_str):
     earnings = profit_api._earnings_by_rig_date(prom_url, day_start.timestamp(), day_end.timestamp())
     return {rig: v for (rig, date), v in earnings.items() if date == date_str}
@@ -114,8 +124,8 @@ def _price_changes_by_rig(prom_url, day_start_ts, day_end_ts):
     return out
 
 
-def get_previous_day_summary(prom_url, now_ts=None):
-    day_start, day_end = _previous_day_bounds(now_ts)
+def get_previous_day_summary(prom_url, now_ts=None, date_str=None):
+    day_start, day_end = _day_bounds(date_str, now_ts)
     date_str = day_start.strftime("%Y-%m-%d")
     day_start_ts, day_end_ts = day_start.timestamp(), day_end.timestamp()
 
@@ -175,5 +185,5 @@ def get_previous_day_summary(prom_url, now_ts=None):
     }
 
 
-def handle_daily_summary_request(prom_url, now_ts=None):
-    return get_previous_day_summary(prom_url, now_ts)
+def handle_daily_summary_request(prom_url, now_ts=None, date_str=None):
+    return get_previous_day_summary(prom_url, now_ts, date_str)

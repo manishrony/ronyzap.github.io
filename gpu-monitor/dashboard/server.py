@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """GPU Monitor dashboard server — serves UI + /api/data from JSONL log."""
-import http.server, json, os, socket, urllib.request, urllib.error, urllib.parse
+import datetime, http.server, json, os, socket, urllib.request, urllib.error, urllib.parse
 from pathlib import Path
 import assistant
 import prom_exporter
@@ -159,11 +159,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass
 
     def _serve_daily_summary(self):
-        """Previous full UTC calendar day's revenue/electricity/profit,
-        occupancy, temps, and price-change activity (hub only — see
-        daily_summary_api.py). No query params."""
+        """Full UTC calendar day's revenue/electricity/profit, occupancy,
+        temps, and price-change activity (hub only — see
+        daily_summary_api.py). Defaults to the previous day; pass
+        ?date=YYYY-MM-DD for a specific past day (e.g. cross-checking a
+        metered PDU/Tapo reading against a particular day's estimate)."""
         try:
-            result = daily_summary_api.handle_daily_summary_request(PROMETHEUS_URL, time.time())
+            qs = urllib.parse.urlparse(self.path).query
+            date_str = urllib.parse.parse_qs(qs).get("date", [None])[0]
+            if date_str is not None:
+                datetime.datetime.strptime(date_str, "%Y-%m-%d")  # raises on bad input
+            result = daily_summary_api.handle_daily_summary_request(PROMETHEUS_URL, time.time(), date_str)
             body = json.dumps(result).encode()
             status = 200
         except Exception as e:
