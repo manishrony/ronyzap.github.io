@@ -29,6 +29,25 @@ a different, less-proven claim, so this suggests raising toward the
 market MEDIAN when the evidence is favorable, never straight to p75,
 and says so explicitly rather than overstating the case.
 
+Two things this got wrong on the first pass, fixed here after checking
+against a rig with a KNOWN, confirmed-live mining rental (Zappa2's
+hashcat, 2026-07-20):
+  1. It trusted rental_start's `workload_type` field to decide "is this
+     mining/cracking" -- that field classifies the renter's DOCKER IMAGE
+     name, not the actual process running inside it. Zappa2's hashcat
+     rental showed workload_type='unknown' despite gpu_monitor.sh's own
+     THERMAL/WORKLOAD-THROTTLE logs confirming hashcat.bin capped to
+     400W all night -- a generic/custom image name doesn't have to
+     mention hashcat even when that's what's running. Now uses the
+     live workload_throttle on/off/bypassed state instead (the same
+     ground truth workload_throttle_active() itself acts on), applied
+     to whichever machine has the freshest market_snapshot.
+  2. It analyzed the latest market_snapshot for EVERY machine_id ever
+     seen in the log, including machines deleted from Vast weeks ago
+     (stale snapshots, some 10-17 days old) -- producing wildly
+     misleading "way overpriced" numbers for listings that don't exist
+     anymore. Now skips any snapshot older than STALE_SNAPSHOT_HOURS.
+
 Usage:
     python3 mining-pricing-suggestions.py [--file /var/log/gpu_monitor_data.jsonl]
 """
@@ -37,7 +56,7 @@ import datetime
 import json
 import sys
 
-MINING_TYPES = {"mining", "cracking"}
+STALE_SNAPSHOT_HOURS = 4  # market_snapshot older than this = probably a deleted/inactive machine
 
 
 def _parse_ts(ts):
@@ -59,6 +78,7 @@ def load_events(path):
     rental_starts = []         # (dt, event dict)
     rental_ends = []           # (dt, machine_id)
     bypass_events = []         # (dt,)
+    throttle_states = []       # (dt, "on"|"off"|"bypassed") -- chronological, no machine_id (see module docstring)
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -78,13 +98,39 @@ def load_events(path):
                 rental_starts.append((dt, e))
             elif etype == "rental_end":
                 rental_ends.append((dt, e.get("machine_id")))
-            elif etype == "workload_throttle" and e.get("state") == "bypassed":
-                bypass_events.append((dt,))
+            elif etype == "workload_throttle":
+                state = e.get("state")
+                if state in ("on", "off", "bypassed"):
+                    throttle_states.append((dt, state))
+                if state == "bypassed":
+                    bypass_events.append((dt,))
     market_snapshots.sort(key=lambda x: x[0])
     rental_starts.sort(key=lambda x: x[0])
     rental_ends.sort(key=lambda x: x[0])
     bypass_events.sort()
-    return market_snapshots, rental_starts, rental_ends, bypass_events
+    throttle_states.sort(key=lambda x: x[0])
+    return market_snapshots, rental_starts, rental_ends, bypass_events, throttle_states
+
+
+def is_currently_mining(throttle_states, now):
+    """True if the LATEST workload_throttle state (on or bypassed) is more
+    recent than the latest "off" -- i.e. something is classified mining/
+    cracking right now, whether or not the rate bypass is currently
+    suppressing the actual power cap. No machine_id on these events (see
+    module docstring), so this applies to whichever machine currently has
+    the freshest market_snapshot -- a reasonable proxy since a rig
+    practically has one live machine at a time."""
+    latest_on, latest_off = None, None
+    for dt, state in throttle_states:
+        if dt > now:
+            break
+        if state in ("on", "bypassed"):
+            latest_on = dt
+        elif state == "off":
+            latest_off = dt
+    if latest_on is None:
+        return False
+    return latest_off is None or latest_on > latest_off
 
 
 def baseline_median_hours(rental_starts, rental_ends):
@@ -112,7 +158,7 @@ def main():
     args = ap.parse_args()
 
     try:
-        market_snapshots, rental_starts, rental_ends, bypass_events = load_events(args.file)
+        market_snapshots, rental_starts, rental_ends, bypass_events, throttle_states = load_events(args.file)
     except FileNotFoundError:
         print(f"error: {args.file} not found", file=sys.stderr)
         sys.exit(1)
@@ -149,7 +195,15 @@ def main():
     print(f"Loaded: {len(market_snapshots)} market_snapshot, {len(rental_starts)} rental_start, "
           f"{len(rental_ends)} rental_end, {len(bypass_events)} rate-confirmed-bypass events\n")
 
+    stale_cutoff = datetime.timedelta(hours=STALE_SNAPSHOT_HOURS)
+
     for mid, (snap_dt, snap) in sorted(latest_by_machine.items()):
+        age = now - snap_dt
+        if age > stale_cutoff:
+            print(f"Machine {mid}: latest market_snapshot is {age.total_seconds()/3600:.0f}h old "
+                  f"(>{STALE_SNAPSHOT_HOURS}h) -- likely deleted/inactive, skipping.\n")
+            continue
+
         my_price = _to_float(snap.get("my_price"))
         median = _to_float(snap.get("median"))
         p25 = _to_float(snap.get("p25"))
@@ -168,15 +222,18 @@ def main():
               f"p75=${p75:.3f}  mean=${mean:.3f}" if p25 is not None and p75 is not None and mean is not None
               else f"  my_price=${my_price:.3f}  median=${median:.3f}")
 
-        start = latest_start_by_machine.get(mid)
-        workload_type = start[1].get("workload_type") if start else None
-        is_mining_now = workload_type in MINING_TYPES
-
         deviation_pct = (my_price - median) / median * 100 if median else None
+        if deviation_pct is not None and abs(deviation_pct) >= 100:
+            print(f"  NOTE: priced {deviation_pct:+.0f}% vs. median -- that's an extreme gap, worth "
+                  f"double-checking this listing is actually live/intentional before anything else.")
+
+        start = latest_start_by_machine.get(mid)
+        is_mining_now = is_currently_mining(throttle_states, now)
 
         if not is_mining_now:
-            print(f"  Current/most recent rental workload_type={workload_type!r} -- not "
-                  f"mining/cracking, this analysis doesn't apply to it. Use the dashboard's "
+            workload_type = start[1].get("workload_type") if start else None
+            print(f"  Not currently classified mining/cracking (last known rental workload_type="
+                  f"{workload_type!r}) -- this analysis doesn't apply right now. Use the dashboard's "
                   f"general Pricing Advisor instead.\n")
             continue
 
@@ -188,7 +245,7 @@ def main():
             if still_open:
                 rental_age_h = (now - s_dt).total_seconds() / 3600.0
 
-        print(f"  Current rental: workload_type=mining/cracking, "
+        print(f"  Currently classified mining/cracking (live workload_throttle state), rental "
               f"{'still active, ' + format(rental_age_h, '.1f') + 'h so far' if rental_age_h is not None else 'not currently open in this log'}")
         if baseline_h:
             print(f"  Baseline median rental duration on this rig: {baseline_h:.1f}h")
