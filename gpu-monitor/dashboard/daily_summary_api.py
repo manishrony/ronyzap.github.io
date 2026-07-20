@@ -42,33 +42,11 @@ def _revenue_by_rig(prom_url, day_start, day_end, date_str):
 
 
 def _electricity_by_rig(prom_url, day_start_ts, day_end_ts):
-    hours = (day_end_ts - day_start_ts) / 3600.0
-    window_s = int(day_end_ts - day_start_ts)
-    try:
-        power_results = prom_client.query_instant(prom_url, f"avg_over_time(gpu_power_draw_watts[{window_s}s])", at=day_end_ts)
-    except Exception:
-        power_results = []
-    power_by_rig = {}
-    for r in power_results:
-        rig = r.get("metric", {}).get("rig")
-        if rig is None:
-            continue
-        try:
-            power_by_rig[rig] = power_by_rig.get(rig, 0.0) + float(r["value"][1])
-        except (KeyError, ValueError, TypeError, IndexError):
-            continue
-
-    try:
-        rate_by_rig = prom_client.group_by_label(
-            prom_client.query_instant(prom_url, "rig_energy_rate_dollars_per_kwh", at=day_end_ts), "rig")
-    except Exception:
-        rate_by_rig = {}
-
-    out = {}
-    for rig, avg_watts in power_by_rig.items():
-        rate = rate_by_rig.get(rig, 0.25)  # matches gpu_monitor.sh's own PDU_ENERGY_RATE default
-        out[rig] = avg_watts / 1000.0 * hours * rate
-    return out
+    """Delegates to profit_api's shared time-integral — this used to be its
+    own avg_over_time x full-window-hours copy, which carried the same two
+    bugs fixed there 2026-07-20 (partial-coverage rigs billed for the whole
+    window, and backfill/live duplicate series double-counting each GPU)."""
+    return profit_api._electricity_cost_by_rig(prom_url, day_start_ts, day_end_ts)
 
 
 def _temps_by_rig(prom_url, day_start_ts, day_end_ts):

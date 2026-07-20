@@ -131,40 +131,66 @@ def _earnings_by_rig_date(prom_url, start_ts, now_ts):
     return out
 
 
-def _estimate_electricity_cost(prom_url, start_ts, now_ts):
-    """Estimated total electricity $ over [start_ts, now_ts]: each rig's
-    average total GPU power draw over the window (bare avg_over_time, no
-    nested aggregation — summed per rig in Python instead of via a subquery)
-    x hours elapsed x that rig's own configured rate."""
-    hours = (now_ts - start_ts) / 3600.0
-    if hours <= 0:
-        return 0.0
-    window_s = int(now_ts - start_ts)
+def _electricity_cost_by_rig(prom_url, start_ts, end_ts):
+    """{rig: estimated electricity $} over [start_ts, end_ts], as a real
+    time-integral of GPU power draw — NOT avg_over_time x full-window-hours.
+    That shortcut had two confirmed live bugs (2026-07-20, MTD showed
+    $815.66 when reality was far lower):
+
+    1. avg_over_time only averages samples that EXIST, but the old code
+       multiplied by the FULL window's hours — so a rig that came online
+       mid-month (zappa2: July 10, zappa3: July 13) was billed its
+       average-while-alive draw for the entire month, roughly doubling its
+       share.
+    2. gpu_power_draw_watts is a backfilled metric, so each GPU exists as
+       TWO series (backfilled without instance/job labels + live-scraped
+       with them — see RIGS.md's backfill warning), and summing every
+       returned series counted each GPU's watts twice wherever both exist.
+
+    The range-integral fixes both at once: `max by (rig, gpu_idx)` collapses
+    the backfill/live duplicates to one reading per physical GPU, `sum by
+    (rig)` totals a rig's GPUs, and integrating point-by-point over the
+    range means grid points where a rig has no data contribute exactly $0 —
+    a rig is only billed for time it actually reported power draw."""
+    window_s = int(end_ts - start_ts)
+    if window_s <= 0:
+        return {}
+    # Bound the point count regardless of window size (day vs. month), and
+    # keep the last_over_time sub-window at 2x step so a scrape gap smaller
+    # than the step can't punch a hole in the integral.
+    step = max(300, min(3600, window_s // 500))
+    subwin = step * 2
+    query = f"sum by (rig) (max by (rig, gpu_idx) (last_over_time(gpu_power_draw_watts[{subwin}s])))"
     try:
-        power_results = prom_client.query_instant(prom_url, f"avg_over_time(gpu_power_draw_watts[{window_s}s])", at=now_ts)
+        data = prom_client.query_range(prom_url, query, start_ts, end_ts, step)
     except Exception:
-        return 0.0
-    power_by_rig = {}
-    for r in power_results:
-        rig = r.get("metric", {}).get("rig")
-        if rig is None:
-            continue
-        try:
-            power_by_rig[rig] = power_by_rig.get(rig, 0.0) + float(r["value"][1])
-        except (KeyError, ValueError, TypeError, IndexError):
-            continue
+        return {}
 
     try:
         rate_by_rig = prom_client.group_by_label(prom_client.query_instant(prom_url, "rig_energy_rate_dollars_per_kwh"), "rig")
     except Exception:
         rate_by_rig = {}
 
-    total_cost = 0.0
-    for rig, avg_watts in power_by_rig.items():
+    out = {}
+    for series in data.get("result", []):
+        rig = series.get("metric", {}).get("rig")
+        if rig is None:
+            continue
+        watt_sum = 0.0
+        for _, v in series.get("values") or []:
+            try:
+                watt_sum += float(v)
+            except (ValueError, TypeError):
+                continue
+        kwh = watt_sum / 1000.0 * (step / 3600.0)
         rate = rate_by_rig.get(rig, 0.25)  # matches gpu_monitor.sh's own PDU_ENERGY_RATE default
-        kwh = avg_watts / 1000.0 * hours
-        total_cost += kwh * rate
-    return total_cost
+        out[rig] = out.get(rig, 0.0) + kwh * rate
+    return out
+
+
+def _estimate_electricity_cost(prom_url, start_ts, now_ts):
+    """Fleet-total electricity $ over the window — see _electricity_cost_by_rig."""
+    return sum(_electricity_cost_by_rig(prom_url, start_ts, now_ts).values())
 
 
 def get_period_profit(prom_url, now_ts=None):
