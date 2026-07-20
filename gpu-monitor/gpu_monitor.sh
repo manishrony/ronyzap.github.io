@@ -162,15 +162,18 @@ WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
 
 # --- New-rental grace period before the throttle engages (named-match only) ---
 # A brand-new rental deserves a fair first look before losing power on a
-# process-name match alone — cap the SAME renter's GPU only once the
-# offending process has actually been running this long. Measured from the
-# process's own age (ps etimes on the PID nvidia-smi/pmon reports for that
-# GPU), not the rental_start event: rental_start is machine-level, so an
-# incremental 2nd/3rd GPU renting on an already-rented multi-GPU box
-# wouldn't get its own timer from that alone. If the process's age can't be
-# determined (PID gone, ps unavailable), throttle immediately rather than
-# silently skipping protection forever — unknown age fails toward capping,
-# not away from it.
+# process-name match alone — cap the SAME renter's GPU only once it's been
+# continuously busy (some compute process, not idle) for this long. Measured
+# via a persistent per-GPU state file (_gpu_busy_age_secs/_gpu_busy_clear_idle
+# — one file per physical GPU index, created the first time that GPU is seen
+# busy, removed the moment it goes idle), deliberately NOT the age of any one
+# PID: confirmed live on Zappa2 (2026-07-20), hashcat's own process restarted
+# mid-rental (job chunking/reconnect — same continuous cracking rental, new
+# PID), which would silently reset a PID-age-based clock to zero every time,
+# letting a persistent miner dodge the cap forever just by relaunching its
+# own binary periodically. Also not the machine-level rental_start event: an
+# incremental 2nd/3rd GPU renting on an already-rented multi-GPU box wouldn't
+# get its own timer from that alone.
 WORKLOAD_THROTTLE_GRACE_SECS="${WORKLOAD_THROTTLE_GRACE_SECS:-3600}"  # 60 min
 
 # --- Rate-confirmed bypass: don't throttle a mining/cracking rental that's
@@ -596,7 +599,7 @@ workload_throttle_active() {
     _WORKLOAD_OFFENDER_GPUS=""
     [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[0-9]+$ ]] && (( WORKLOAD_THROTTLE_WATTS > 0 )) || return 1
     [[ -n "$WORKLOAD_THROTTLE_TYPES" ]] || return 1
-    local -A _procs _pids; build_gpu_proc_map _procs _pids
+    local -A _procs; build_gpu_proc_map _procs
     local gi cat t age
     for gi in "${!_procs[@]}"; do
         cat=$(classify_workload "${_procs[$gi]}")
@@ -605,15 +608,20 @@ workload_throttle_active() {
             # Grace period: a brand-new rental gets WORKLOAD_THROTTLE_GRACE_SECS
             # before this GPU is added to the offender list, even on a named
             # match — see the WORKLOAD_THROTTLE_GRACE_SECS comment block for why
-            # (and why unknown age fails toward capping, not away from it).
-            age=$(_proc_age_secs "${_pids[$gi]:-}")
-            if [[ -n "$age" ]] && (( age < WORKLOAD_THROTTLE_GRACE_SECS )); then
+            # (and why this is keyed off the GPU's own busy streak, not any one
+            # process's PID age).
+            age=$(_gpu_busy_age_secs "$gi")
+            if [[ "$age" =~ ^[0-9]+$ ]] && (( age < WORKLOAD_THROTTLE_GRACE_SECS )); then
                 continue
             fi
             _WORKLOAD_OFFENDER_GPUS="$_WORKLOAD_OFFENDER_GPUS $gi"
         done
     done
     _WORKLOAD_OFFENDER_GPUS="${_WORKLOAD_OFFENDER_GPUS# }"
+    # Any GPU with no active compute process right now is idle — drop its
+    # busy-streak file so the next process to appear on it starts the
+    # grace-period clock at zero, not wherever a stale file left off.
+    _gpu_busy_clear_idle _procs
     [[ -n "$_WORKLOAD_OFFENDER_GPUS" ]]
 }
 
@@ -1215,18 +1223,9 @@ Check chassis airflow / CPU cooler under the current workload."
 # nvidia-smi. This reveals what's ACTUALLY running (e.g. FahCore_27 =
 # Folding@home, SRBMiner = mining, python3 = ML) even when the rental's base
 # image (e.g. linux-desktop) doesn't. Populates the associative array named by
-# the first arg: <idx> -> <process name>. An optional second arg names an
-# associative array to also populate <idx> -> <pid> (used by the workload
-# throttle's grace period to check how long that process has been running;
-# omit it and only the name map is filled, same as before this existed).
+# the first arg: <idx> -> <process name>.
 build_gpu_proc_map() {
     local -n _map="$1"
-    local -A _pid_sink
-    if [[ -n "${2:-}" ]]; then
-        local -n _pidmap="$2"
-    else
-        local -n _pidmap="_pid_sink"
-    fi
     local -A _uuid_idx _best_mem
     local gi guuid pid pname pmem
     # uuid -> index
@@ -1236,14 +1235,14 @@ build_gpu_proc_map() {
     done < <(nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null)
     # compute apps: keep the highest-memory process per GPU (the workload)
     while IFS=',' read -r guuid pid pname pmem; do
-        guuid="$(echo "$guuid" | xargs)"; pid="$(echo "$pid" | xargs)"; pname="$(echo "$pname" | xargs)"; pmem="$(echo "$pmem" | xargs)"
+        guuid="$(echo "$guuid" | xargs)"; pname="$(echo "$pname" | xargs)"; pmem="$(echo "$pmem" | xargs)"
         [[ -z "$guuid" ]] && continue
         gi="${_uuid_idx[$guuid]:-}"
         [[ -z "$gi" ]] && continue
         pmem="${pmem//[^0-9]/}"; [[ -z "$pmem" ]] && pmem=0
         pname="$(basename "$pname" 2>/dev/null || echo "$pname")"
         if (( pmem >= ${_best_mem[$gi]:-0} )); then
-            _best_mem["$gi"]="$pmem"; _map["$gi"]="$pname"; _pidmap["$gi"]="$pid"
+            _best_mem["$gi"]="$pmem"; _map["$gi"]="$pname"
         fi
     done < <(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null)
 
@@ -1265,19 +1264,49 @@ build_gpu_proc_map() {
             local pcmd; pcmd="$(awk '{print $NF}' <<< "$pgi $ppid $ptype $_rest")"
             [[ -z "$pcmd" || "$pcmd" == "-" ]] && continue
             # only fill if compute-apps didn't already name this GPU
-            if [[ -z "${_map[$pgi]:-}" ]]; then
-                _map["$pgi"]="$pcmd"
-                _pidmap["$pgi"]="$ppid"
-            fi
+            [[ -z "${_map[$pgi]:-}" ]] && _map["$pgi"]="$pcmd"
         done < <(timeout 15 nvidia-smi pmon -c 1 2>/dev/null)
     fi
 }
-# Seconds since PID <pid> started (via ps etimes), or empty if it can't be
-# determined (PID gone, ps unavailable, not a plain integer PID).
-_proc_age_secs() {
-    local pid="$1"
-    [[ "$pid" =~ ^[0-9]+$ ]] || { echo ""; return; }
-    ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' '
+# Seconds this GPU index has been continuously busy with SOME compute
+# process, tracked via a persistent per-GPU state file rather than any one
+# PID's own age. Deliberately NOT tied to a specific PID — confirmed live on
+# Zappa2 (2026-07-20): hashcat's own process restarted mid-rental (PID
+# 2452920 -> 2466579, same continuous cracking rental), which reset a
+# PID-age-based grace-period clock to zero every time, indefinitely evading
+# the cap. This clock only resets when the GPU actually goes idle (no
+# compute process at all — see _gpu_busy_clear_idle), which is immune to the
+# workload's own process bouncing.
+_gpu_busy_age_secs() {
+    local idx="$1"
+    # NOT combined into the local statement above: a single `local a=X b=$a`
+    # evaluates every right-hand side against pre-statement values, so $idx
+    # would be empty here regardless of the "$1" just assigned above — every
+    # GPU silently wrote to the same file-name-with-no-suffix as a result.
+    # Confirmed live via `bash -x`: `local idx=0 statef=..._since_${idx}`
+    # produced statef=".../gpu_monitor_gpu_busy_since_" (idx missing).
+    local statef="/var/tmp/gpu_monitor_gpu_busy_since_${idx}" now since
+    now=$(date +%s)
+    if [[ -f "$statef" ]]; then
+        since=$(cat "$statef" 2>/dev/null)
+    fi
+    if [[ ! "$since" =~ ^[0-9]+$ ]]; then
+        echo "$now" > "$statef" 2>/dev/null
+        echo 0
+        return
+    fi
+    echo $(( now - since ))
+}
+# Drop the busy-since file for any GPU NOT in the given proc-map (idle right
+# now) so its next compute process starts the grace-period clock fresh.
+_gpu_busy_clear_idle() {
+    local -n _busy_procs="$1"
+    local f idx
+    for f in /var/tmp/gpu_monitor_gpu_busy_since_*; do
+        [[ -e "$f" ]] || continue
+        idx="${f##*gpu_monitor_gpu_busy_since_}"
+        [[ -n "${_busy_procs[$idx]:-}" ]] || rm -f "$f"
+    done
 }
 
 check_gpus() {
