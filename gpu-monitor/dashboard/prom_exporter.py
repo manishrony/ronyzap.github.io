@@ -189,7 +189,21 @@ def render_metrics(data_file, state_file):
         m.add("machine_rented_gpus", "gauge", "Number of GPUs on this machine currently rented.", labels, s["rented_count"])
         m.add("machine_earn_day_dollars", "gauge", "Vast's own live running total for today (earn_day).", labels, s["earn_day"])
 
+    # latest_market/latest_price are the LAST-EVER-SEEN event per machine_id
+    # from the full JSONL history — a machine deleted from Vast simply stops
+    # getting new price_change/market_snapshot events, but its last one
+    # never goes away on its own, so without this check a deleted machine
+    # would keep re-emitting the same stale price/market gauges on every
+    # single scrape forever, looking perpetually "live" to Prometheus (a
+    # fresh sample every scrape never goes stale). `state` (this scrape's
+    # snapshot of vastai_check()'s live /machines/ response) only ever
+    # contains machines that currently exist on the account, so it's the
+    # right filter. Confirmed live on zappa2 (2026-07-20): two machine_ids
+    # deleted from Vast were still showing up in the Pricing Advisor with
+    # their last-known (now meaningless) price.
     for mid, ev in latest_market.items():
+        if mid not in state:
+            continue
         labels_base = {"rig": rig, "machine_id": mid}
         for stat in ("p25", "median", "p75", "mean"):
             v = ev.get(stat)
@@ -198,6 +212,8 @@ def render_metrics(data_file, state_file):
                 m.add("market_price_dollars_per_hour", "gauge", "Comparable-listing market stat for this GPU model, fee-discounted.", labels, _to_float(v))
 
     for mid, ev in latest_price.items():
+        if mid not in state:
+            continue
         labels = {"rig": rig, "machine_id": mid}
         if ev.get("new_price") is not None:
             m.add("listing_price_dollars_per_hour", "gauge", "This machine's current listing (ask) price.", labels, _to_float(ev.get("new_price")))
