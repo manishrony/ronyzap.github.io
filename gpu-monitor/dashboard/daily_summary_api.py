@@ -46,8 +46,26 @@ def _day_bounds(date_str=None, now_ts=None):
     return _previous_day_bounds(now_ts)
 
 
-def _revenue_by_rig(prom_url, day_start, day_end, date_str):
-    earnings = profit_api._earnings_by_rig_date(prom_url, day_start.timestamp(), day_end.timestamp())
+def _revenue_by_rig(prom_url, day_start, day_end, date_str, now_ts=None):
+    """Query past day_end for this date's earnings, not just up to it.
+
+    Vast's own daily total for a date keeps climbing for roughly an hour
+    into the next UTC day before settling (confirmed live 2026-07-21:
+    zappa1/zappa2/zappa3's synced totals for 2026-07-20 kept increasing
+    hour-by-hour from ~00:43 UTC through ~01:04-01:23 UTC on 07-21, then
+    stopped changing). prom_exporter.py keeps exposing
+    rig_daily_earnings_dollars{date="2026-07-20"} at every scrape as long as
+    that date stays in its last-5-synced-dates window, so those settling
+    samples exist in Prometheus with the correct final value — but they're
+    timestamped after midnight, i.e. after day_end. Querying only up to
+    day_end (as this used to) silently picks up the earlier, still-climbing
+    total instead of the settled one. Extend the query's end bound a few
+    hours past day_end (never past "now") to catch the settling window;
+    filtering on date_str afterward means the wider range can't leak in
+    another date's data."""
+    now = datetime.datetime.fromtimestamp(now_ts, tz=datetime.timezone.utc) if now_ts else datetime.datetime.now(datetime.timezone.utc)
+    query_end = min(day_end + datetime.timedelta(hours=6), now)
+    earnings = profit_api._earnings_by_rig_date(prom_url, day_start.timestamp(), query_end.timestamp())
     return {rig: v for (rig, date), v in earnings.items() if date == date_str}
 
 
@@ -129,7 +147,7 @@ def get_previous_day_summary(prom_url, now_ts=None, date_str=None):
     date_str = day_start.strftime("%Y-%m-%d")
     day_start_ts, day_end_ts = day_start.timestamp(), day_end.timestamp()
 
-    revenue = _revenue_by_rig(prom_url, day_start, day_end, date_str)
+    revenue = _revenue_by_rig(prom_url, day_start, day_end, date_str, now_ts)
     electricity = _electricity_by_rig(prom_url, day_start_ts, day_end_ts)
     temps = _temps_by_rig(prom_url, day_start_ts, day_end_ts)
     price_changes = _price_changes_by_rig(prom_url, day_start_ts, day_end_ts)
