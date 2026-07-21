@@ -132,9 +132,22 @@ def render_metrics(data_file, state_file):
     latest_market = {}
     # --- Latest price_change per machine (target/floor/listing price) ---
     latest_price = {}
-    # --- Latest daily_earnings (by ts) ---
-    latest_earnings = None
-    latest_earnings_ts = ""
+    # --- Latest daily_earnings PER DATE (not a single global latest) ---
+    # A single global "latest by ts" pointer looked right but silently broke
+    # yesterday's own figure every single day: vastai_sync_earnings() always
+    # refreshes the last 3 days each cycle (so a still-settling "yesterday"
+    # keeps climbing toward its true total for ~an hour past midnight — Vast's
+    # own daily totals aren't finalized at day-end), but it ALSO writes
+    # today's first (tiny, partial) entry in that same cycle. Once today's ts
+    # became the new global max, this stopped exposing ANY value for
+    # yesterday's date at all -- Prometheus never got scraped with yesterday's
+    # later, correct updates, so its last recorded sample stayed frozen at
+    # whatever total existed the moment before the switchover. Confirmed live
+    # 2026-07-21: dashboard showed zappa1/zappa2/zappa3's PREVIOUS day revenue
+    # frozen at ~23:00 UTC values ($10.34/$74.18/$4.23) while the JSONL (and
+    # Vast's own API, queried directly with the same UTC day window) already
+    # had the true settled totals ($11.27/$78.62/$4.49) from an hour later.
+    latest_earnings_by_date = {}
 
     for ev in _read_jsonl(data_file):
         t = ev.get("type")
@@ -153,10 +166,10 @@ def render_metrics(data_file, state_file):
             if mid:
                 latest_price[mid] = ev
         elif t == "daily_earnings" and ev.get("source") == "vast_api":
+            d = ev.get("date")
             ts = ev.get("ts", "")
-            if ts >= latest_earnings_ts:
-                latest_earnings_ts = ts
-                latest_earnings = ev
+            if d and ts >= latest_earnings_by_date.get(d, {}).get("ts", ""):
+                latest_earnings_by_date[d] = ev
 
     if latest_gpu_status:
         for g in latest_gpu_status.get("gpus", []):
@@ -241,8 +254,16 @@ def render_metrics(data_file, state_file):
                 target_labels = dict(labels, target_stat=price_ev.get("target_stat", "median"))
                 m.add("listing_target_dollars_per_hour", "gauge", "The market stat value vastai_pricing() is targeting (see target_stat label).", target_labels, _to_float(price_ev.get("target_value")))
 
-    if latest_earnings:
-        m.add("rig_daily_earnings_dollars", "gauge", "Vast's own daily_earnings total for the most recently synced date.", {"rig": rig, "date": latest_earnings.get("date", "")}, _to_float(latest_earnings.get("total")))
+    # Expose the last few calendar dates seen, not just the single most
+    # recent one — see the latest_earnings_by_date comment above for why
+    # that broke "yesterday" every day at midnight. 5 days comfortably
+    # covers vastai_sync_earnings()'s own 3-day active-refresh window with
+    # margin; older dates have already settled and their last-exposed value
+    # (from when they WERE within that window) stays correct in Prometheus's
+    # own storage without needing re-exposure every scrape.
+    for d in sorted(latest_earnings_by_date)[-5:]:
+        ev = latest_earnings_by_date[d]
+        m.add("rig_daily_earnings_dollars", "gauge", "Vast's own daily_earnings total for this date (last 5 synced dates exposed each scrape).", {"rig": rig, "date": d}, _to_float(ev.get("total")))
 
     # Configured $/kWh, exposed as its own gauge regardless of gpu_status
     # presence — lets anything computing HISTORICAL electricity cost (see
