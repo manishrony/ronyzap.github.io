@@ -96,8 +96,19 @@ def _earnings_by_rig_date(prom_url, start_ts, now_ts):
     hourly grid point — a bare selector query_range at 1h steps found ZERO
     of 7 known-good test samples. last_over_time(...[window]) with window >=
     step guarantees every real sample falls inside at least one evaluated
-    window regardless of its exact timestamp."""
-    step = 3600
+    window regardless of its exact timestamp.
+
+    step is adaptive (same formula as _electricity_cost_by_rig below), NOT a
+    fixed 3600s — confirmed live (2026-07-21) that a fixed 1h step, evaluated
+    only at exact hour-boundary grid points, can miss a real sample that
+    landed in the same partial hour as `now_ts`: a sample scraped at 02:45
+    fell strictly between the 02:00 and 03:00 grid points, so the query's
+    last evaluated instant (02:00, since 03:00 is still in the future) never
+    saw it and returned an hour-old value instead. A finer step keeps the
+    last grid point within minutes of now_ts regardless of where in the hour
+    now_ts falls."""
+    window_s_total = max(int(now_ts - start_ts), 1)
+    step = max(300, min(3600, window_s_total // 500))
     window_s = step * 2  # generous overlap margin beyond just matching the step
     data = prom_client.query_range(prom_url, f"last_over_time(rig_daily_earnings_dollars[{window_s}s])", start_ts, now_ts, step)
     out = {}
