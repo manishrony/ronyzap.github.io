@@ -154,9 +154,20 @@ WORKLOAD_THROTTLE_LIMITS=(
     "5090:400"
     "5080:250"
 )
-# Override per-rig in /etc/gpu_monitor.conf: set WORKLOAD_THROTTLE_WATTS=0 to
-# disable entirely, change the type list, or override the fallback watts for a
-# model not listed above.
+# RIG-SPECIFIC like GPU_POWER_OVERRIDE: the whole array can be overridden per
+# rig by simply re-declaring it in that rig's own /etc/gpu_monitor.conf (e.g.
+# WORKLOAD_THROTTLE_LIMITS=("5090:500")) — main() sources that file once at
+# startup, before this array is ever read, so the conf's assignment wins for
+# that rig only. Confirmed live 2026-07-23: zappa1 raised to 500W for its
+# 5090s (renters there churn in 24h-2 days regardless of throttle, so the
+# extra headroom is worth more than the electricity margin) while zappa2 —
+# whose long-running hashcat rental earns steadily at 400W — was deliberately
+# left untouched to avoid disturbing income from an active rental.
+#
+# Override just the flat fallback watts (for a model not listed above) via
+# WORKLOAD_THROTTLE_WATTS=0 to disable entirely, or change the type list via
+# WORKLOAD_THROTTLE_TYPES below — both already support the ${VAR:-default}
+# env-style override without touching this array.
 WORKLOAD_THROTTLE_WATTS="${WORKLOAD_THROTTLE_WATTS:-400}"
 WORKLOAD_THROTTLE_TYPES="${WORKLOAD_THROTTLE_TYPES:-cracking mining}"
 
