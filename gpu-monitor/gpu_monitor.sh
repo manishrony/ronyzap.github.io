@@ -3030,18 +3030,29 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             # same low entry point a fresh listing gets, once per vacancy
             # (idle_reset_file prevents re-anchoring every cycle, which would
             # pin the price at the anchor instead of climbing back up). From
-            # the next cycle on, this machine falls through to the normal
-            # below-target step below and climbs back toward ${target_label}
-            # the same way any other below-target machine does.
+            # the next cycle on, this machine falls through to the below-target
+            # check below — but that only climbs once $rented confirms the
+            # discount actually attracted someone (see that branch).
             touch "$idle_reset_file" 2>/dev/null || true
             new_price="$start_price"
             direction="↓/↑ (idle ${vacancy_hours}h+ unrented — re-anchored to median-${START_PRICE_DISCOUNT} \$$start_price to re-attract)"
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
             direction="↓ ${down_cents}¢ (above ${target_label})"
-        elif (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
+        elif [[ "$rented" == "True" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
             direction="↑ ${up_cents}¢ (below ${target_label})"
+        elif (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
+            # Below target but currently vacant (no GPU on this machine is
+            # rented) — hold instead of climbing. Confirmed live 2026-07-23:
+            # a machine re-anchored to an attractive discount after an idle
+            # streak would otherwise creep back up 1-2¢/cycle purely from
+            # elapsed time, with zero evidence the discount ever attracted a
+            # renter — undoing the point of the re-anchor before it had a
+            # chance to work. Climbing back toward ${target_label} now only
+            # resumes once $rented confirms demand at the current price.
+            log "  Machine $mid: below ${target_label} (\$$target) but vacant — holding at \$$cur_bid (climb resumes once rented)"
+            continue
         else
             log "  Machine $mid: within 2¢ of ${target_label} (\$$target) — no change"
             continue
