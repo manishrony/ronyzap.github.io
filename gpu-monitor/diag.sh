@@ -85,7 +85,7 @@ else
   echo "  $LOG not readable"
 fi
 
-# ── 6. Monitor service health ───────────────────────────────
+# ── 6. Monitor service health ────────────────────────────────
 sec "6. Monitor service / process health"
 if have systemctl; then
   for u in gpu-monitor gpu-dashboard; do
@@ -96,7 +96,10 @@ if have systemctl; then
   done
 fi
 echo "  -- running processes --"
-ps -eo pid,etime,cmd 2>/dev/null | grep -i -E "gpu[-_]monitor|gpu[-_]dashboard|vast" | grep -v grep | sed 's/^/  /' || echo "  (none matched)"
+# redact secrets that leak through argv (Vast API key, bearer tokens, turn creds)
+ps -eo pid,etime,cmd 2>/dev/null | grep -i -E "gpu[-_]monitor|gpu[-_]dashboard|vast" | grep -v grep \
+  | sed -E 's/(api_key=|[Bb]earer +|token=|password=|--user=[^:]*:)[A-Za-z0-9._:-]+/\1<redacted>/g' \
+  | sed 's/^/  /' || echo "  (none matched)"
 
 # ── 7. Deploy targets + repo git state (for cross-rig sync) ───
 sec "7. Deploy targets + repo git state"
@@ -104,7 +107,7 @@ for p in /usr/local/bin/gpu_monitor.sh /opt/gpu-monitor/dashboard; do
   [ -e "$p" ] && ls -la "$p" 2>/dev/null | sed 's/^/  /'
 done
 echo "  -- config override (/etc/gpu_monitor.conf) --"
-grep -a -E "WORKLOAD_THROTTLE_LIMITS|GPU_POWER_OVERRIDE" /etc/gpu_monitor.conf 2>/dev/null | sed 's/^/  /' || echo "  (no throttle/power override in conf — using script defaults)"
+grep -a -E "WORKLOAD_THROTTLE_LIMITS|GPU_POWER_OVERRIDE|POWER_LIMITS" /etc/gpu_monitor.conf 2>/dev/null | sed 's/^/  /' || echo "  (no throttle/power override in conf — using script defaults)"
 echo "  -- repo HEAD (compare across rigs) --"
 REPO=/home/ronyzap/ronyzap.github.io
 if [ -d "$REPO/.git" ]; then

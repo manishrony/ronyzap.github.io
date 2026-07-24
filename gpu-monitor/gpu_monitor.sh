@@ -285,7 +285,7 @@ PROFIT_OVERRIDE_FILE="/var/tmp/gpu_monitor_profit_override"
 PRICE_INTERVAL=1800      # 30 minutes in seconds (pricing check)
 
 # --- Telegram config ---
-TELEGRAM_TOKEN="8930785275:AAGFwVssjqAe5EW0e3quosU4u_D9M0XXrCo"
+TELEGRAM_TOKEN=""   # real token set per-rig in /etc/gpu_monitor.conf (sourced at startup, overrides this)
 TELEGRAM_CHAT_ID=""      # Auto-populated from /etc/gpu_monitor.conf
 
 # --- Vast.ai config ---
