@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# diagnostics — one-word RonyZap rig health check.
+#
+# Pulls the latest diag.sh from the repo (as the ronyzap user, to keep .git
+# ownership clean and dodge the root-owned-.git pull error), then runs it as
+# root. Works whether you invoke it as ronyzap or root.
+#
+# Install once per rig:
+#   sudo ln -sf /home/ronyzap/ronyzap.github.io/gpu-monitor/diagnostics /usr/local/bin/diagnostics
+# Then just run:  diagnostics
+#
+REPO=/home/ronyzap/ronyzap.github.io
+
+if [ -d "$REPO/.git" ]; then
+  if id ronyzap >/dev/null 2>&1 && [ "$(id -un)" != "ronyzap" ]; then
+    sudo -u ronyzap git -C "$REPO" pull -q origin main 2>/dev/null || true
+  else
+    git -C "$REPO" pull -q origin main 2>/dev/null || true
+  fi
+fi
+
+exec sudo bash "$REPO/gpu-monitor/diag.sh" "$@"
