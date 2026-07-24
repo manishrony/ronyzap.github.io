@@ -16,6 +16,7 @@ import time
 DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
 STATE_FILE = os.environ.get("GPU_STATE_FILE", "/var/tmp/gpu_monitor_vastai_state")
 PORT      = int(os.environ.get("DASHBOARD_PORT", "8080"))
+BIND      = os.environ.get("DASHBOARD_BIND", "0.0.0.0")   # 127.0.0.1 = localhost-only (Cloudflare)
 DASH_DIR  = Path(__file__).parent
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9090")
 
@@ -468,6 +469,6 @@ if __name__ == "__main__":
     # finishes. Confirmed live 2026-07-19: a ~20-minute request stall took
     # the whole dashboard down (502 at the edge) even though every
     # individual upstream call already has its own bounded timeout.
-    srv = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    srv = http.server.ThreadingHTTPServer((BIND, PORT), Handler)
     print(f"[gpu-dashboard] http://localhost:{PORT}  (data: {DATA_FILE})")
     srv.serve_forever()
