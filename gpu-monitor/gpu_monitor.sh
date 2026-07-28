@@ -414,6 +414,22 @@ START_PRICE_DISCOUNT="${START_PRICE_DISCOUNT:-0.20}"
 IDLE_LISTING_THRESHOLD="${IDLE_LISTING_THRESHOLD:-7200}"  # 2 hours
 VACANCY_STATE_DIR="/var/tmp/gpu_monitor_vacancy"
 
+# Timed step-down on vacancy: once a slot has sat UNRENTED and below target
+# for at least STEPDOWN_DELAY_SECS (default 3000s = 50min — between the
+# 45-60min a human would wait before manually nudging price down), pricing
+# starts nudging the ask DOWN a small step every cycle instead of holding
+# flat indefinitely (the "below target but vacant — holding" branch below),
+# same automated instinct as hand-dropping a stale listing but gradual —
+# a small step per cycle toward the hard floor, never a lump jump straight
+# to it. Composes with IDLE_LISTING_THRESHOLD's own (much longer, one-time)
+# re-anchor: that re-anchor sets a fresh starting point when it fires, and
+# this step-down just keeps nudging down from wherever cur_bid sits if the
+# slot is still vacant past STEPDOWN_DELAY_SECS afterward too. Never goes
+# below the per-GPU-model floor (get_price_floor) — settles there and holds.
+STEPDOWN_DELAY_SECS="${STEPDOWN_DELAY_SECS:-3000}"  # ~50 min
+STEPDOWN_CENTS_MIN=1
+STEPDOWN_CENTS_MAX=2
+
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
 EXPECTED_GPU_COUNT=0
@@ -2982,16 +2998,21 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             log "  Machine $mid: not listed — skipping price adjustment"
             continue
         fi
-        # Skip pricing only when FULLY rented (no free GPUs — Vast auto-unlists
-        # those anyway). A PARTIAL rental keeps pricing the still-free GPUs toward
-        # the market median so they get filled; the already-rented GPU keeps its
-        # locked-in rate regardless (lowering the listing can't touch an open
-        # contract), so there's no bait-and-switch on the free GPUs.
+        # FULLY rented (no free GPUs) no longer skips pricing outright — it
+        # still can't touch the open contract's locked-in rate, but the
+        # LISTED ask matters for whenever this contract ends and the machine
+        # re-lists, so it's worth ratcheting UP toward target while full
+        # instead of sitting frozen at whatever price attracted the renter
+        # (previously this branch just skipped entirely, so the ask could
+        # never rise into demand). Deliberately one-directional: below, the
+        # down-adjustment branch explicitly excludes fully_rented, since
+        # there's no free inventory a lower ask would even attract right
+        # now — only the below-target up-ratchet applies while full.
+        local fully_rented=0
         if [[ "$rented" == "True" && "${free_count:-0}" -le 0 ]]; then
-            log "  Machine $mid: fully rented — skipping price adjustment"
-            continue
-        fi
-        if [[ "$rented" == "True" ]]; then
+            fully_rented=1
+            log "  Machine $mid: fully rented — ratcheting toward ${target_label} only (no downward moves while full)"
+        elif [[ "$rented" == "True" ]]; then
             log "  Machine $mid: partially rented — ${free_count} free GPU(s), pricing them toward ${target_label}"
         fi
 
@@ -3047,6 +3068,13 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             touch "$idle_reset_file" 2>/dev/null || true
             new_price="$start_price"
             direction="↓/↑ (idle ${vacancy_hours}h+ unrented — re-anchored to median-${START_PRICE_DISCOUNT} \$$start_price to re-attract)"
+        elif (( fully_rented )) && (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
+            # Fully rented and above target — hold rather than lower. There's
+            # no free inventory a lower ask would attract right now, so a
+            # downward move here would only give away margin on the eventual
+            # re-list for no reason; see the fully_rented set-up above.
+            log "  Machine $mid: fully rented and above ${target_label} (\$$target) — holding at \$$cur_bid (no downward moves while full)"
+            continue
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
             direction="↓ ${down_cents}¢ (above ${target_label})"
@@ -3062,8 +3090,21 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             # renter — undoing the point of the re-anchor before it had a
             # chance to work. Climbing back toward ${target_label} now only
             # resumes once $rented confirms demand at the current price.
-            log "  Machine $mid: below ${target_label} (\$$target) but vacant — holding at \$$cur_bid (climb resumes once rented)"
-            continue
+            #
+            # But holding FLAT forever isn't right either once it's been
+            # vacant a while past STEPDOWN_DELAY_SECS — same instinct as
+            # manually nudging a stale listing down, just automated and
+            # gradual (a small step per cycle, not a lump jump to floor).
+            if (( vacancy_secs >= STEPDOWN_DELAY_SECS )) && (( $(echo "$cur_bid > $floor" | bc -l) )); then
+                local stepdown_cents=$(( RANDOM % (STEPDOWN_CENTS_MAX - STEPDOWN_CENTS_MIN + 1) + STEPDOWN_CENTS_MIN ))
+                local stepdown_amt
+                stepdown_amt=$(printf "%.4f" "$(echo "scale=4; $stepdown_cents / 100" | bc)")
+                new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $stepdown_amt" | bc)")
+                direction="↓ ${stepdown_cents}¢ (vacant ${vacancy_hours}h+ — stepping toward floor \$$floor)"
+            else
+                log "  Machine $mid: below ${target_label} (\$$target) but vacant — holding at \$$cur_bid (climb resumes once rented)"
+                continue
+            fi
         else
             log "  Machine $mid: within 2¢ of ${target_label} (\$$target) — no change"
             continue
