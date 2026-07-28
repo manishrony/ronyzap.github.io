@@ -52,7 +52,7 @@
     <div>
       <label class="block text-xs text-slate-500 mb-1">Metric</label>
       <select id="f-metric" class="w-64">
-        <option value="gpu_temp_celsius">GPU Temp (°F)</option>
+        <option value="gpu_temp_celsius">GPU Temp (°C)</option>
         <option value="gpu_power_draw_watts">GPU Power Draw (W)</option>
         <option value="gpu_power_limit_watts">GPU Power Cap (W)</option>
         <option value="gpu_fan_percent">GPU Fan (%)</option>
@@ -189,11 +189,6 @@ async function load() {
   document.getElementById('btn-newer').style.opacity = data.page === 0 ? '0.4' : '1';
 
   const series = (data.result && data.result.result) || [];
-  // Prometheus/gpu_monitor.sh store this metric in Celsius — converted to
-  // Fahrenheit here (display only) to match the rest of the dashboard.
-  if (metric === 'gpu_temp_celsius') {
-    series.forEach(s => { s.values = s.values.map(([t, v]) => [t, String(parseFloat(v) * 9 / 5 + 32)]); });
-  }
   document.getElementById('status-line').textContent =
     series.length + ' series, window ' + hours + 'h';
 
@@ -210,7 +205,7 @@ async function load() {
 // metric dropdown may be scrolled out of view and "56.000" alone doesn't
 // say whether that's °C, W, or $.
 const METRIC_UNITS = {
-  gpu_temp_celsius: '°F', // stored in Celsius; converted to °F at render time above
+  gpu_temp_celsius: '°C',
   gpu_power_draw_watts: 'W',
   gpu_power_limit_watts: 'W',
   gpu_fan_percent: '%',

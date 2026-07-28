@@ -29,10 +29,6 @@ CPU_TEMP_RISE_C = 80.0
 CPU_TEMP_FALL_C = 75.0
 
 
-def _c_to_f(c):
-    return c * 9 / 5 + 32
-
-
 def _iso(ts):
     return datetime.datetime.utcfromtimestamp(ts).isoformat() + "Z"
 
@@ -55,13 +51,13 @@ def _temp_alerts(series_by_key, label_keys, rise_at, fall_at, event_type, badge)
             if not above and v >= rise_at:
                 events.append({
                     "ts": _iso(ts), "rig": rig, "type": event_type, "severity": "warning",
-                    "badge": badge, "detail": f"{who} hit {_c_to_f(v):.0f}°F (≥ {_c_to_f(rise_at):.0f}°F)",
+                    "badge": badge, "detail": f"{who} hit {v:.0f}°C (≥ {rise_at:.0f}°C)",
                 })
                 above = True
             elif above and v <= fall_at:
                 events.append({
                     "ts": _iso(ts), "rig": rig, "type": event_type, "severity": "info",
-                    "badge": badge, "detail": f"{who} back to {_c_to_f(v):.0f}°F (≤ {_c_to_f(fall_at):.0f}°F)",
+                    "badge": badge, "detail": f"{who} back to {v:.0f}°C (≤ {fall_at:.0f}°C)",
                 })
                 above = False
     return events
