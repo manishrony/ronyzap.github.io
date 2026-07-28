@@ -50,11 +50,28 @@ class CloudlineClient:
         self.timeout = timeout
         self.token = None
 
+    @staticmethod
+    def _serialize_field(value):
+        """addDevMode's params re-submit the full settings blob from
+        get_port_settings(), which includes nested objects/lists (e.g.
+        devSetting, fieldSet) — urlencode() would otherwise call Python's
+        str() on those and send a broken value like "{'setId': None, ...}"
+        that isn't valid JSON and silently fails validation server-side."""
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return str(value)
+
     def _request(self, url, fields, auth=True, in_query=False):
         """in_query=True puts `fields` in the URL's query string with an
         empty body — that's how addDevMode expects to receive its
         parameters (unlike every other endpoint here, which takes a normal
         form-encoded POST body)."""
+        if in_query:
+            fields = {k: self._serialize_field(v) for k, v in fields.items()}
         qs = urllib.parse.urlencode(fields)
         if in_query:
             req = urllib.request.Request(url + "?" + qs, data=b"", method="POST")
@@ -123,9 +140,13 @@ class CloudlineClient:
         get_port_settings) are left at their old values untouched."""
         speed = max(0, min(10, int(speed)))
         settings = dict(self.get_port_settings(device_id, port))
+        # Top-level response has no "port" key at all — the port number
+        # lives in "externalPort" (get_port_settings already carries the
+        # right value there; devId/externalPort are set here mostly for
+        # clarity, not because they'd otherwise be missing).
         settings.update({
             "devId": device_id,
-            "port": port,
+            "externalPort": port,
             "atType": AT_TYPE_MANUAL,
             "onSpead": speed,
             "offSpead": 0,
