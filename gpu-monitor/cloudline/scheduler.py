@@ -30,9 +30,26 @@ proportional room-temp response. Outdoor reading comes from the same free/
 keyless Open-Meteo source as the dashboard's Cooling card
 (gpu-monitor/dashboard/outdoor_weather_api.py) but fetched independently
 here to keep this script standalone/decoupled from the dashboard process.
+
+Optional Tapo power metering: if CLOUDLINE_TAPO_HOST is set, this loop also
+polls a TP-Link Tapo energy-monitoring smart plug (P110/P115/P100) powering
+the Cloudline fans and logs a pdu_power event into the SAME JSONL
+gpu_monitor.sh writes to — reusing ../tapo-poll.py exactly as-is (no edits,
+no gpu_monitor.sh changes) via a plain subprocess call. Deliberately tagged
+with a DIFFERENT `rig` value than the real hostname (default
+"<hostname>-cloudline") rather than reusing gpu_monitor.sh's own
+tapo_poll()/pdu_poll(), which always tags events with the real hostname —
+if the fans' Tapo readings landed under that same tag as zappa1's actual
+rack PDU, the two meters' events would interleave and "Power Now" would
+flip-flop between full-rack wattage and fan wattage instead of showing
+either correctly. combined.html's renderPower() already sums multiple
+distinctly-tagged meters together correctly, so a separate tag is all this
+needs to show up in the fleet's power/energy totals as its own line.
 """
 import json
 import os
+import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -41,6 +58,46 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from client import CloudlineClient  # noqa: E402
+
+TAPO_HOST = os.environ.get("CLOUDLINE_TAPO_HOST", "")
+TAPO_EMAIL = os.environ.get("CLOUDLINE_TAPO_EMAIL", "")
+TAPO_PASSWORD = os.environ.get("CLOUDLINE_TAPO_PASSWORD", "")
+TAPO_JSONL = os.environ.get("CLOUDLINE_TAPO_JSONL", "/var/log/gpu_monitor_data.jsonl")
+TAPO_RIG_NAME = os.environ.get("CLOUDLINE_TAPO_RIG_NAME", f"{socket.gethostname()}-cloudline")
+TAPO_RATE = os.environ.get("CLOUDLINE_TAPO_RATE", "0.25")
+TAPO_BASELINE_KWH = os.environ.get("CLOUDLINE_TAPO_BASELINE_KWH", "0")
+TAPO_POLL_INTERVAL = int(os.environ.get("CLOUDLINE_TAPO_POLL_INTERVAL", "300"))
+# Default assumes tapo-poll.py sits next to this repo's cloudline/ dir (i.e.
+# gpu-monitor/tapo-poll.py) -- but gpu_monitor.sh's own tapo_poll() expects
+# it alongside gpu_monitor.sh itself (typically /usr/local/bin/tapo-poll.py),
+# which may be the only copy actually deployed on a given host. Override with
+# CLOUDLINE_TAPO_POLL_SCRIPT if the default path doesn't exist there.
+TAPO_POLL_SCRIPT = os.environ.get(
+    "CLOUDLINE_TAPO_POLL_SCRIPT",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tapo-poll.py"),
+)
+_last_tapo_poll = 0
+
+
+def poll_tapo():
+    global _last_tapo_poll
+    if not TAPO_HOST:
+        return
+    now = time.time()
+    if now - _last_tapo_poll < TAPO_POLL_INTERVAL:
+        return
+    _last_tapo_poll = now
+    try:
+        subprocess.run([
+            sys.executable, TAPO_POLL_SCRIPT,
+            "--host", TAPO_HOST, "--email", TAPO_EMAIL, "--password", TAPO_PASSWORD,
+            "--jsonl", TAPO_JSONL, "--rig", TAPO_RIG_NAME, "--rate", TAPO_RATE,
+            "--baseline-kwh", TAPO_BASELINE_KWH,
+        ], check=True, capture_output=True, text=True, timeout=30)
+    except subprocess.CalledProcessError as e:
+        print(f"[cloudline-scheduler] tapo poll failed: {e.stderr.strip()}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[cloudline-scheduler] tapo poll error: {e}", file=sys.stderr, flush=True)
 
 POLL_SECONDS = int(os.environ.get("CLOUDLINE_POLL_SECONDS", "60"))
 MIN_TEMP_C = float(os.environ.get("CLOUDLINE_MIN_TEMP_C", "30"))
@@ -114,9 +171,16 @@ def main():
     client = CloudlineClient(email, password)
     client.login()
     print("[cloudline-scheduler] logged in, polling every", POLL_SECONDS, "s", flush=True)
+    if TAPO_HOST and not os.path.exists(TAPO_POLL_SCRIPT):
+        print(f"[cloudline-scheduler] WARNING: CLOUDLINE_TAPO_HOST is set but {TAPO_POLL_SCRIPT} "
+              f"doesn't exist — set CLOUDLINE_TAPO_POLL_SCRIPT to the real path (e.g. /usr/local/bin/tapo-poll.py)",
+              file=sys.stderr, flush=True)
+    elif TAPO_HOST:
+        print(f"[cloudline-scheduler] Tapo metering enabled: {TAPO_HOST} -> rig={TAPO_RIG_NAME}, every {TAPO_POLL_INTERVAL}s", flush=True)
 
     last_speed = {}
     while True:
+        poll_tapo()
         try:
             outdoor_c = get_outdoor_temp_c()
             for dev in client.list_devices():

@@ -68,6 +68,33 @@ hot or hotter outside imports heat instead of removing it. Every other
 port (e.g. an exhaust/return fan) isn't outside-air-facing and just follows the plain
 room-temp curve above.
 
+### Metering the fans' own electricity use
+
+The Cloudline fans aren't on the same PDU circuit as the GPUs, and the
+AC Infinity API has no real wattage reporting (only speed 0-10) — so if you
+want their actual power draw reflected in the dashboard's Power & Energy
+totals, plug them into a TP-Link Tapo energy-monitoring smart plug (P110/
+P115/P100) and point the scheduler at it:
+
+```bash
+CLOUDLINE_TAPO_HOST=192.168.1.x       # the plug's local IP
+CLOUDLINE_TAPO_EMAIL=you@example.com  # TP-Link account (local-auth handshake only)
+CLOUDLINE_TAPO_PASSWORD=yourpassword
+CLOUDLINE_TAPO_RATE=0.25              # $/kWh, match your PDU's rate
+```
+
+Needs `pip3 install python-kasa` (same dependency `tapo-poll.py` already
+uses for gpu_monitor.sh's own Tapo support). This reuses `tapo-poll.py`
+completely unmodified — no gpu_monitor.sh changes — just calls it on its
+own schedule (`CLOUDLINE_TAPO_POLL_INTERVAL`, default 300s) tagged with a
+distinct rig name (`CLOUDLINE_TAPO_RIG_NAME`, default `<hostname>-cloudline`)
+so its readings add to the fleet's power totals as their own meter instead
+of colliding with the real rack PDU's own "zappa1"-tagged readings.
+**Don't also set gpu_monitor.sh's own `TAPO_HOST` to this same plug** — that
+would tag its events with the real hostname and mix fan wattage into the
+rack PDU's own numbers, which is exactly what the distinct rig name above
+avoids.
+
 ## Thresholds (edit gpu_monitor.sh to change)
 
 | Variable | Default | Meaning |
