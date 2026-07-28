@@ -5,11 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/opt/gpu-monitor/cloudline/.env
 ExecStart=/usr/bin/python3 /opt/gpu-monitor/cloudline/scheduler.py
 Restart=on-failure
 RestartSec=15
-User=nobody
+User=cloudline
+DynamicUser=yes
 
 [Install]
 WantedBy=multi-user.target

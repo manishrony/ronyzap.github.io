@@ -61,7 +61,7 @@ def main():
     password = os.environ["AC_INFINITY_PASSWORD"]
     client = CloudlineClient(email, password)
     client.login()
-    print("[cloudline-scheduler] logged in, polling every", POLL_SECONDS, "s")
+    print("[cloudline-scheduler] logged in, polling every", POLL_SECONDS, "s", flush=True)
 
     last_speed = {}
     while True:
@@ -71,12 +71,14 @@ def main():
                 if speed is None:
                     continue  # no sensor reading for this device yet — leave its fans alone
                 for port in dev["ports"]:
+                    if not port.get("online"):
+                        continue  # nothing physically connected — AC Infinity rejects writes to it
                     key = (dev["device_id"], port["port"])
                     if last_speed.get(key) == speed:
                         continue
                     client.set_speed(dev["device_id"], port["port"], speed)
                     last_speed[key] = speed
-                    print(f"[cloudline-scheduler] {dev['name']} ({dev.get('temp_c')}°C) port {port['port']} -> speed {speed}")
+                    print(f"[cloudline-scheduler] {dev['name']} ({dev.get('temp_c')}°C) port {port['port']} -> speed {speed}", flush=True)
         except Exception as e:
             print(f"[cloudline-scheduler] error: {e}", file=sys.stderr)
             try:
