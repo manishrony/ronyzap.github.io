@@ -579,6 +579,19 @@ function renderPowerRow() {
   document.getElementById("stat-power-life-sub").textContent = "≈ " + fmtUSD(lifeKwh * rate) + " to date";
 }
 
+// Outdoor temp/humidity for this rig's location — see
+// outdoor_weather_api.py. Free/keyless (Open-Meteo), cached server-side
+// 10 min. Returns "" (not shown) on any failure rather than an error card,
+// since this is just context for the Cooling section, not a monitored metric.
+async function fetchOutdoorWeatherText() {
+  try {
+    const r = await fetch("/api/outdoor-weather?" + Date.now(), { signal: AbortSignal.timeout(8000) });
+    const data = await r.json();
+    if (!data.enabled || data.error || data.temp_f == null) return "";
+    return `Outside: ${Math.round(data.temp_f)}°F${data.humidity_pct != null ? ' / ' + Math.round(data.humidity_pct) + '% RH' : ''}`;
+  } catch { return ""; }
+}
+
 // Cloudline fan status + manual speed control (this rig only — see
 // cooling_api.py). Independent of STATE/events.jsonl on purpose: it's its
 // own read from AC Infinity's API, polled on the same cadence as the rest
@@ -603,10 +616,11 @@ async function fetchCooling() {
     ambientEl.textContent = "";
     return;
   }
-  ambientEl.textContent = (data.devices || [])
+  const roomReadings = (data.devices || [])
     .filter(dev => dev.temp_c != null)
-    .map(dev => `${dev.name}: ${dev.temp_c}°C${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`)
-    .join(" · ");
+    .map(dev => `${dev.name}: ${dev.temp_c}°C${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`);
+  const outdoor = await fetchOutdoorWeatherText();
+  ambientEl.textContent = [...roomReadings, outdoor].filter(Boolean).join(" · ");
   const cards = [];
   (data.devices || []).forEach(dev => {
     (dev.ports || []).forEach(p => {

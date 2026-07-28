@@ -12,6 +12,7 @@ import events_api
 import health_api
 import pricing_advisor_api
 import cooling_api
+import outdoor_weather_api
 import time
 
 DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
@@ -75,6 +76,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_pricing_advisor()
         elif self.path.startswith("/api/cooling"):
             self._serve_cooling()
+        elif self.path.startswith("/api/outdoor-weather"):
+            self._serve_outdoor_weather()
         elif path_only in ("/history", "/history.html"):
             self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
         elif path_only in ("/", "/index.html"):
@@ -270,6 +273,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         AC_INFINITY_EMAIL/AC_INFINITY_PASSWORD set."""
         try:
             result = cooling_api.handle_cooling_get()
+            status = 200
+        except Exception as e:
+            result = {"error": str(e)}
+            status = 400
+        body = json.dumps(result).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _serve_outdoor_weather(self):
+        """Outdoor temp/humidity for this rig's location (see
+        outdoor_weather_api.py) — free, keyless, cached 10 min."""
+        try:
+            result = outdoor_weather_api.handle_outdoor_weather_get()
             status = 200
         except Exception as e:
             result = {"error": str(e)}

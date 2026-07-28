@@ -155,6 +155,21 @@
       </div>
     </div>
     <p id="power-no-pdu" class="px-6 pb-6 text-slate-600 text-sm hidden">No PDU is reporting power data yet — see RIGS.md's "APC PDU power metering" section to configure one.</p>
+
+    <!-- Cooling — AC Infinity Cloudline (this host only, see cooling_api.py;
+         the controller is physically attached to zappa1, not per-rig, so
+         this always reads /api/cooling on self, never proxied through a
+         peer). Hidden unless AC_INFINITY_EMAIL/PASSWORD are configured.
+         Lives here rather than the main dashboard view since fan/cooling
+         control is an energy-management concern, same bucket as rack
+         power. -->
+    <div id="c-cooling-row" class="px-6 pb-4 hidden">
+      <div class="flex items-center justify-between mb-3">
+        <p class="text-xs text-slate-500 uppercase tracking-wider">Cooling — AC Infinity Cloudline</p>
+        <p class="text-xs text-slate-400" id="c-cooling-ambient"></p>
+      </div>
+      <div id="c-cooling-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
+    </div>
   </div>
 
   <div id="dashboard-main-content">
@@ -181,18 +196,6 @@
       <p class="text-2xl font-bold text-violet-400" id="c-prices">—</p>
       <p class="text-xs text-slate-500 mt-1" id="c-prices-sub"></p>
     </div>
-  </div>
-
-  <!-- Cooling — AC Infinity Cloudline (this host only, see cooling_api.py;
-       the controller is physically attached to zappa1, not per-rig, so
-       this always reads /api/cooling on self, never proxied through a
-       peer). Hidden unless AC_INFINITY_EMAIL/PASSWORD are configured. -->
-  <div id="c-cooling-row" class="px-6 pb-4 hidden">
-    <div class="flex items-center justify-between mb-3">
-      <p class="text-xs text-slate-500 uppercase tracking-wider">Cooling — AC Infinity Cloudline</p>
-      <p class="text-xs text-slate-400" id="c-cooling-ambient"></p>
-    </div>
-    <div id="c-cooling-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
   </div>
 
   <!-- Live Profit Metrics (Prometheus-backed: revenue vs. estimated GPU
@@ -789,6 +792,19 @@ async function fetchAll() {
 // Cloudline fan status + manual speed control — see cooling_api.py.
 // Always reads /api/cooling on self (this host), never through /api/peer,
 // since the AC Infinity controller is physically attached to zappa1 only.
+// Outdoor temp/humidity for this rig's location — see
+// outdoor_weather_api.py. Free/keyless (Open-Meteo), cached server-side
+// 10 min. Returns "" (not shown) on any failure rather than an error card,
+// since this is just context for the Cooling section, not a monitored metric.
+async function fetchOutdoorWeatherText() {
+  try {
+    const r = await fetch("/api/outdoor-weather?" + Date.now(), { signal: AbortSignal.timeout(8000) });
+    const data = await r.json();
+    if (!data.enabled || data.error || data.temp_f == null) return "";
+    return `Outside: ${Math.round(data.temp_f)}°F${data.humidity_pct != null ? ' / ' + Math.round(data.humidity_pct) + '% RH' : ''}`;
+  } catch { return ""; }
+}
+
 async function fetchCooling() {
   const row = document.getElementById("c-cooling-row");
   let data;
@@ -811,10 +827,11 @@ async function fetchCooling() {
   }
   // Room temp/humidity from the controller's own sensor — not a GPU
   // reading — shown once per device since it's ambient, not per-port.
-  ambientEl.textContent = (data.devices || [])
+  const roomReadings = (data.devices || [])
     .filter(dev => dev.temp_c != null)
-    .map(dev => `${dev.name}: ${dev.temp_c}°C${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`)
-    .join(" · ");
+    .map(dev => `${dev.name}: ${dev.temp_c}°C${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`);
+  const outdoor = await fetchOutdoorWeatherText();
+  ambientEl.textContent = [...roomReadings, outdoor].filter(Boolean).join(" · ");
   const cards = [];
   (data.devices || []).forEach(dev => {
     (dev.ports || []).forEach(p => {
