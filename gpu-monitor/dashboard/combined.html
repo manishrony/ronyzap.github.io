@@ -183,6 +183,15 @@
     </div>
   </div>
 
+  <!-- Cooling — AC Infinity Cloudline (this host only, see cooling_api.py;
+       the controller is physically attached to zappa1, not per-rig, so
+       this always reads /api/cooling on self, never proxied through a
+       peer). Hidden unless AC_INFINITY_EMAIL/PASSWORD are configured. -->
+  <div id="c-cooling-row" class="px-6 pb-4 hidden">
+    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Cooling — AC Infinity Cloudline</p>
+    <div id="c-cooling-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
+  </div>
+
   <!-- Live Profit Metrics (Prometheus-backed: revenue vs. estimated GPU
        electricity cost, works on every rig with no PDU required — hub only,
        since Prometheus itself only runs there). -->
@@ -770,7 +779,60 @@ async function fetchAll() {
   fetchDailySummary();
   fetchHealth();
   fetchMajorEvents();
+  fetchCooling();
   if (activeRig !== -1) fetchRigMajorEvents(activeRig);
+}
+
+// Cloudline fan status + manual speed control — see cooling_api.py.
+// Always reads /api/cooling on self (this host), never through /api/peer,
+// since the AC Infinity controller is physically attached to zappa1 only.
+async function fetchCooling() {
+  const row = document.getElementById("c-cooling-row");
+  let data;
+  try {
+    const r = await fetch("/api/cooling?" + Date.now(), { signal: AbortSignal.timeout(8000) });
+    data = await r.json();
+  } catch {
+    row.classList.add("hidden");
+    return;
+  }
+  if (!data.enabled) { row.classList.add("hidden"); return; }
+  row.classList.remove("hidden");
+
+  const container = document.getElementById("c-cooling-cards");
+  if (data.error) {
+    container.innerHTML = `<div class="card p-4 text-sm text-red-400">Cloudline error: ${data.error}</div>`;
+    return;
+  }
+  const cards = [];
+  (data.devices || []).forEach(dev => {
+    (dev.ports || []).forEach(p => {
+      const speed = p.speed ?? 0;
+      const pct = Math.round((speed / 10) * 100);
+      cards.push(`<div class="card p-4 space-y-2">
+        <div class="flex justify-between items-start">
+          <div><p class="text-xs text-slate-500">${dev.name || 'Cloudline'}</p><p class="text-sm font-semibold text-white">${p.name}</p></div>
+          <span class="text-xs px-2 py-0.5 rounded-full ${p.online ? 'badge-green' : 'badge-red'}">${p.online ? 'ONLINE' : 'OFFLINE'}</span>
+        </div>
+        <div class="flex items-center justify-between text-xs text-slate-500"><span>Speed</span><span class="font-mono text-slate-200">${speed} / 10</span></div>
+        <div class="w-full bg-slate-800 rounded-full h-1.5"><div class="bar-fill bg-blue-400 h-1.5 rounded-full" style="width:${pct}%"></div></div>
+        <input type="range" min="0" max="10" step="1" value="${speed}" class="w-full accent-blue-400"
+          onchange="setCoolingSpeed('${dev.device_id}', '${p.port}', this.value)">
+      </div>`);
+    });
+  });
+  container.innerHTML = cards.join("") || '<div class="card p-4 text-slate-500 text-sm">No Cloudline ports found</div>';
+}
+
+async function setCoolingSpeed(deviceId, port, speed) {
+  try {
+    await fetch("/api/cooling/speed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: deviceId, port: port, speed: Number(speed) }),
+    });
+  } catch {}
+  fetchCooling();
 }
 
 function fmtMoney(v) {
