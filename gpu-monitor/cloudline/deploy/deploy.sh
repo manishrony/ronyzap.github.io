@@ -31,4 +31,4 @@ ssh "$HOST" "sudo mv /tmp/cloudline-scheduler.service /etc/systemd/system/cloudl
 
 echo "Deployed. To enable the automatic temp-based scheduler:"
 echo "  ssh $HOST 'sudo systemctl enable --now cloudline-scheduler'"
-echo "Note: read_temp_c() in scheduler.py is still a stub — wire it to a real sensor before enabling, or the loop stays a no-op."
+echo "Note: adjust CLOUDLINE_MIN_TEMP_C/CLOUDLINE_MAX_TEMP_C/CLOUDLINE_MIN_SPEED in $REMOTE_DIR/.env to taste before enabling — defaults are conservative."

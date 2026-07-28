@@ -51,10 +51,13 @@ AC_INFINITY_PASSWORD=yourpassword
 ```
 
 Without them the card just stays hidden (`GET /api/cooling` returns
-`{"enabled": false}`). Optional automatic temp-based speed control is a
-separate systemd service — see `cloudline/deploy/deploy.sh` — and needs
-`cloudline/scheduler.py`'s `read_temp_c()` wired to a real sensor before
-enabling it.
+`{"enabled": false}`). Optional automatic temp-based speed control
+(`cloudline/scheduler.py`) is a separate systemd service — see
+`cloudline/deploy/deploy.sh` — that reads each Cloudline controller's own
+ambient temperature (the same reading shown on the Cooling card) and
+proportionally adjusts fan speed between `CLOUDLINE_MIN_TEMP_C` (fans at
+`CLOUDLINE_MIN_SPEED`) and `CLOUDLINE_MAX_TEMP_C` (fans at 10), so they
+throttle down automatically instead of running flat-out all the time.
 
 ## Thresholds (edit gpu_monitor.sh to change)
 

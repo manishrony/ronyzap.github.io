@@ -5,10 +5,18 @@ untouched). Run this as its own systemd service (see deploy/) if you want
 automatic speed control; the dashboard's Cooling card and manual speed
 control work fine without it.
 
+Temperature source is the Cloudline controller's own ambient sensor
+(list_devices()' temp_c — the same reading shown on the dashboard's Cooling
+card), not an external probe: it's exactly what the fans are meant to be
+responding to, and needs no extra wiring. Each device is controlled off its
+own reading (not a fleet-wide average), so a multi-controller setup adjusts
+each room/device independently.
+
 Proportional control: fan speed scales linearly between MIN_TEMP_C (fans at
 MIN_SPEED) and MAX_TEMP_C (fans at 10), clamped at both ends. NIGHT_SPEED_CAP
 (if set) limits the max speed during NIGHT_START_HOUR-NIGHT_END_HOUR local
-time, for a quieter house overnight.
+time, for a quieter house overnight. MIN_SPEED > 0 keeps some airflow moving
+even when it's cool rather than letting fans sit fully off.
 """
 import os
 import sys
@@ -24,14 +32,6 @@ MIN_SPEED = int(os.environ.get("CLOUDLINE_MIN_SPEED", "2"))
 NIGHT_SPEED_CAP = os.environ.get("CLOUDLINE_NIGHT_SPEED_CAP")
 NIGHT_START_HOUR = int(os.environ.get("CLOUDLINE_NIGHT_START_HOUR", "23"))
 NIGHT_END_HOUR = int(os.environ.get("CLOUDLINE_NIGHT_END_HOUR", "7"))
-
-
-def read_temp_c():
-    """Stub — wire this to a real sensor (e.g. the GPU/CPU temps already
-    collected by gpu_monitor.sh's JSONL log, or a dedicated ambient probe)
-    before enabling automation. Returns None until it's wired up, which
-    keeps the loop a no-op (fans left alone) rather than guessing."""
-    return None
 
 
 def target_speed(temp_c):
@@ -66,19 +66,17 @@ def main():
     last_speed = {}
     while True:
         try:
-            temp_c = read_temp_c()
-            speed = target_speed(temp_c)
-            if speed is None:
-                time.sleep(POLL_SECONDS)
-                continue
             for dev in client.list_devices():
+                speed = target_speed(dev.get("temp_c"))
+                if speed is None:
+                    continue  # no sensor reading for this device yet — leave its fans alone
                 for port in dev["ports"]:
                     key = (dev["device_id"], port["port"])
                     if last_speed.get(key) == speed:
                         continue
                     client.set_speed(dev["device_id"], port["port"], speed)
                     last_speed[key] = speed
-                    print(f"[cloudline-scheduler] {dev['name']} port {port['port']} -> speed {speed}")
+                    print(f"[cloudline-scheduler] {dev['name']} ({dev.get('temp_c')}°C) port {port['port']} -> speed {speed}")
         except Exception as e:
             print(f"[cloudline-scheduler] error: {e}", file=sys.stderr)
             try:
