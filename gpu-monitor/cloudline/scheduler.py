@@ -72,11 +72,12 @@ def get_outdoor_temp_c():
     if _outdoor_cache["temp_c"] is not None and now - _outdoor_cache["ts"] < 600:
         return _outdoor_cache["temp_c"]
     try:
+        # No temperature_unit param -> Open-Meteo's default is already
+        # Celsius, so this is used as-is (no F->C conversion needed/wanted).
         qs = urllib.parse.urlencode({"latitude": OUTDOOR_LAT, "longitude": OUTDOOR_LON, "current": "temperature_2m"})
         with urllib.request.urlopen(f"https://api.open-meteo.com/v1/forecast?{qs}", timeout=8) as resp:
             data = json.loads(resp.read())
-        temp_f = data.get("current", {}).get("temperature_2m")
-        temp_c = (temp_f - 32) * 5 / 9 if temp_f is not None else None
+        temp_c = data.get("current", {}).get("temperature_2m")
         _outdoor_cache.update(ts=now, temp_c=temp_c)
         return temp_c
     except (urllib.error.URLError, ValueError, KeyError):
@@ -140,7 +141,8 @@ def main():
                         continue
                     client.set_speed(dev["device_id"], port["port"], speed)
                     last_speed[key] = speed
-                    print(f"[cloudline-scheduler] {dev['name']} ({room_c}°C, outside {outdoor_c}°C) port {port['port']} -> speed {speed}", flush=True)
+                    outdoor_str = f"{outdoor_c:.1f}°C" if outdoor_c is not None else "unknown"
+                    print(f"[cloudline-scheduler] {dev['name']} ({room_c}°C, outside {outdoor_str}) port {port['port']} -> speed {speed}", flush=True)
         except Exception as e:
             print(f"[cloudline-scheduler] error: {e}", file=sys.stderr)
             try:
