@@ -31,21 +31,35 @@ keyless Open-Meteo source as the dashboard's Cooling card
 (gpu-monitor/dashboard/outdoor_weather_api.py) but fetched independently
 here to keep this script standalone/decoupled from the dashboard process.
 
-Optional Tapo power metering: if CLOUDLINE_TAPO_HOST is set, this loop also
-polls a TP-Link Tapo energy-monitoring smart plug (P110/P115/P100) powering
-the Cloudline fans and logs a pdu_power event into the SAME JSONL
-gpu_monitor.sh writes to — reusing ../tapo-poll.py exactly as-is (no edits,
-no gpu_monitor.sh changes) via a plain subprocess call. Deliberately tagged
-with a DIFFERENT `rig` value than the real hostname (default
-"<hostname>-cloudline") rather than reusing gpu_monitor.sh's own
-tapo_poll()/pdu_poll(), which always tags events with the real hostname —
-if the fans' Tapo readings landed under that same tag as zappa1's actual
-rack PDU, the two meters' events would interleave and "Power Now" would
-flip-flop between full-rack wattage and fan wattage instead of showing
-either correctly. combined.html's renderPower() already sums multiple
-distinctly-tagged meters together correctly, so a separate tag is all this
-needs to show up in the fleet's power/energy totals as its own line.
+Power metering — Tapo when available, speed-based estimate otherwise: if
+CLOUDLINE_TAPO_HOST is set, this loop polls a TP-Link Tapo energy-
+monitoring smart plug (P110/P115/P100) powering the Cloudline fans and
+logs a pdu_power event into the SAME JSONL gpu_monitor.sh writes to —
+reusing ../tapo-poll.py exactly as-is (no edits, no gpu_monitor.sh changes)
+via a plain subprocess call. Whenever that real reading isn't available
+(CLOUDLINE_TAPO_HOST unset, or the plug's unreachable/offline), this loop
+falls back to a SPEED-BASED ESTIMATE instead: each port's current draw is
+approximated as (speed/10) * that port's rated max watts
+(CLOUDLINE_PORT_MAX_WATTS, per port name; CLOUDLINE_DEFAULT_MAX_WATTS for
+any port not listed), summed across all online ports and integrated into
+its own cumulative-kWh state file exactly like tapo-poll.py does for a
+real meter. Either way — real reading or estimate — the event is written
+under the SAME rig tag (CLOUDLINE_TAPO_RIG_NAME, default
+"<hostname>-cloudline") so the dashboard's existing per-host power summing
+picks it up identically; an "estimate" flag on the event just lets the UI
+note it's approximate rather than metered.
+
+That distinct rig tag (rather than reusing gpu_monitor.sh's own
+tapo_poll()/pdu_poll(), which always tags events with the real hostname)
+is deliberate either way: if the fans' readings landed under the same tag
+as zappa1's actual rack PDU, the two meters' events would interleave and
+"Power Now" would flip-flop between full-rack wattage and fan wattage
+instead of showing either correctly. combined.html's renderPower() already
+sums multiple distinctly-tagged meters together correctly, so a separate
+tag is all this needs to show up in the fleet's power/energy totals as its
+own line.
 """
+import datetime
 import json
 import os
 import socket
@@ -76,17 +90,86 @@ TAPO_POLL_SCRIPT = os.environ.get(
     "CLOUDLINE_TAPO_POLL_SCRIPT",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tapo-poll.py"),
 )
-_last_tapo_poll = 0
+
+# Speed-based fallback estimate, used whenever a real Tapo reading isn't
+# available. "name:watts" pairs, matched against each port's name the same
+# case-insensitive-substring way as CLOUDLINE_INTAKE_PORT_NAMES. Defaults
+# assume two ~20W fans (a T6 and an "S6") until told otherwise per port.
+def _parse_port_watts(raw):
+    out = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        name, watts = pair.rsplit(":", 1)
+        try:
+            out[name.strip().lower()] = float(watts)
+        except ValueError:
+            continue
+    return out
+
+
+PORT_MAX_WATTS = _parse_port_watts(os.environ.get("CLOUDLINE_PORT_MAX_WATTS", "intake:20,return:20"))
+DEFAULT_MAX_WATTS = float(os.environ.get("CLOUDLINE_DEFAULT_MAX_WATTS", "20"))
+ESTIMATE_STATE_FILE = os.environ.get("CLOUDLINE_ESTIMATE_STATE_FILE", "/var/tmp/gpu_monitor_cloudline_estimate_energy")
+
+_last_power_poll = 0
+
+
+def port_max_watts(port_name):
+    name = (port_name or "").lower()
+    for tag, watts in PORT_MAX_WATTS.items():
+        if tag in name:
+            return watts
+    return DEFAULT_MAX_WATTS
+
+
+def _write_power_event(watts, is_estimate):
+    """Same event shape tapo-poll.py writes, integrated the same way (our
+    own cumulative-kWh state file, not the device's own lifetime counter —
+    see tapo-poll.py's docstring for why). A separate state file from
+    tapo-poll.py's own so switching between real/estimate readings across
+    restarts doesn't corrupt either one's running total."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    now_epoch = now.timestamp()
+    cum, last = 0.0, now_epoch
+    if os.path.exists(ESTIMATE_STATE_FILE):
+        try:
+            parts = open(ESTIMATE_STATE_FILE).read().split()
+            cum, last = float(parts[0]), float(parts[1])
+        except Exception:
+            cum, last = 0.0, now_epoch
+    dt = now_epoch - last
+    if dt <= 0 or dt > 900:
+        dt = TAPO_POLL_INTERVAL
+    kwh_interval = watts * dt / 3_600_000.0
+    cum += kwh_interval
+    tmp = ESTIMATE_STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("%f %f" % (cum, now_epoch))
+    os.replace(tmp, ESTIMATE_STATE_FILE)
+
+    ev = {
+        "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "type": "pdu_power",
+        "host": TAPO_RIG_NAME,
+        "amps": None,
+        "watts": round(watts),
+        "kwh_interval": round(kwh_interval, 5),
+        "cumulative_kwh": round(cum, 3),
+        "cumulative_kwh_total": round(cum + float(TAPO_BASELINE_KWH), 3),
+        "rate": float(TAPO_RATE),
+        "source": "estimate" if is_estimate else "tapo",
+    }
+    with open(TAPO_JSONL, "a") as f:
+        f.write(json.dumps(ev) + "\n")
 
 
 def poll_tapo():
-    global _last_tapo_poll
+    """Real Tapo reading if configured and reachable; returns True on
+    success so the caller knows whether to fall back to the estimate."""
     if not TAPO_HOST:
-        return
-    now = time.time()
-    if now - _last_tapo_poll < TAPO_POLL_INTERVAL:
-        return
-    _last_tapo_poll = now
+        return False
     try:
         subprocess.run([
             sys.executable, TAPO_POLL_SCRIPT,
@@ -94,10 +177,32 @@ def poll_tapo():
             "--jsonl", TAPO_JSONL, "--rig", TAPO_RIG_NAME, "--rate", TAPO_RATE,
             "--baseline-kwh", TAPO_BASELINE_KWH,
         ], check=True, capture_output=True, text=True, timeout=30)
+        return True
     except subprocess.CalledProcessError as e:
-        print(f"[cloudline-scheduler] tapo poll failed: {e.stderr.strip()}", file=sys.stderr, flush=True)
+        print(f"[cloudline-scheduler] tapo poll failed, falling back to speed-based estimate: {e.stderr.strip()}", file=sys.stderr, flush=True)
+        return False
     except Exception as e:
-        print(f"[cloudline-scheduler] tapo poll error: {e}", file=sys.stderr, flush=True)
+        print(f"[cloudline-scheduler] tapo poll error, falling back to speed-based estimate: {e}", file=sys.stderr, flush=True)
+        return False
+
+
+def poll_power(current_total_watts):
+    """Called every CLOUDLINE_TAPO_POLL_INTERVAL regardless of whether
+    Tapo is configured at all — an estimate is written even with no Tapo
+    plug set up, so the dashboard always has *something* for Cloudline's
+    power draw, real or approximate. `current_total_watts` is the caller's
+    own live sum of (speed/10)*rated-max-watts across every online port —
+    computed in the main loop, where the just-applied speeds are already
+    known, rather than re-derived from a possibly-stale API read here."""
+    global _last_power_poll
+    now = time.time()
+    if now - _last_power_poll < TAPO_POLL_INTERVAL:
+        return
+    _last_power_poll = now
+    if poll_tapo():
+        return  # real reading written by tapo-poll.py itself
+    _write_power_event(current_total_watts, is_estimate=True)
+    print(f"[cloudline-scheduler] no Tapo reading available — logged estimate: {current_total_watts:.1f} W -> rig={TAPO_RIG_NAME}", flush=True)
 
 POLL_SECONDS = int(os.environ.get("CLOUDLINE_POLL_SECONDS", "60"))
 MIN_TEMP_C = float(os.environ.get("CLOUDLINE_MIN_TEMP_C", "30"))
@@ -180,20 +285,18 @@ def main():
 
     last_speed = {}
     while True:
-        poll_tapo()
         try:
             outdoor_c = get_outdoor_temp_c()
+            total_watts = 0.0
             for dev in client.list_devices():
                 room_c = dev.get("temp_c")
                 base_speed = target_speed(room_c)
-                if base_speed is None:
-                    continue  # no sensor reading for this device yet — leave its fans alone
                 for port in dev["ports"]:
                     if not port.get("online"):
                         continue  # nothing physically connected — AC Infinity rejects writes to it
 
                     speed = base_speed
-                    if is_intake_port(port.get("name")):
+                    if base_speed is not None and is_intake_port(port.get("name")):
                         # Pulling in outside air only helps if it's
                         # meaningfully cooler than the room — otherwise
                         # ramping up an intake fan just imports heat,
@@ -204,13 +307,26 @@ def main():
                         if not outdoor_helps:
                             speed = INTAKE_MIN_SPEED
 
+                    # Wattage estimate uses the port's actual current speed
+                    # (whatever we just decided it should be, or its last
+                    # known value if this device has no sensor reading yet
+                    # and base_speed is None), not just the ones we issue a
+                    # fresh API call for — a port left unchanged this cycle
+                    # is still drawing power.
                     key = (dev["device_id"], port["port"])
+                    effective_speed = speed if speed is not None else last_speed.get(key, port.get("speed") or 0)
+                    total_watts += (effective_speed / 10.0) * port_max_watts(port.get("name"))
+
+                    if base_speed is None:
+                        continue  # no sensor reading for this device yet — leave its fans alone
                     if last_speed.get(key) == speed:
                         continue
                     client.set_speed(dev["device_id"], port["port"], speed)
                     last_speed[key] = speed
                     outdoor_str = f"{outdoor_c:.1f}°C" if outdoor_c is not None else "unknown"
                     print(f"[cloudline-scheduler] {dev['name']} ({room_c}°C, outside {outdoor_str}) port {port['port']} -> speed {speed}", flush=True)
+
+            poll_power(total_watts)
         except Exception as e:
             print(f"[cloudline-scheduler] error: {e}", file=sys.stderr)
             try:

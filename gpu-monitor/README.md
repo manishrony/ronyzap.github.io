@@ -95,6 +95,19 @@ would tag its events with the real hostname and mix fan wattage into the
 rack PDU's own numbers, which is exactly what the distinct rig name above
 avoids.
 
+No Tapo plug yet, or it's temporarily offline? The scheduler falls back to
+a **speed-based estimate** automatically — each online port's draw is
+approximated as `(speed / 10) * rated max watts` for that port and logged
+under the same rig tag, so the dashboard's power totals always have
+*something* for the fans, real or approximate (an `"source": "estimate"`
+vs `"tapo"` field on the underlying event marks which). Configure the
+rated wattage per port name (falls back to `CLOUDLINE_DEFAULT_MAX_WATTS`,
+default 20W, for anything not listed):
+
+```bash
+CLOUDLINE_PORT_MAX_WATTS=intake:20,return:20   # match your actual fans' rated wattage
+```
+
 ## Thresholds (edit gpu_monitor.sh to change)
 
 | Variable | Default | Meaning |
