@@ -11,6 +11,7 @@ import daily_summary_api
 import events_api
 import health_api
 import pricing_advisor_api
+import cooling_api
 import time
 
 DATA_FILE  = os.environ.get("GPU_DATA", "/var/log/gpu_monitor_data.jsonl")
@@ -72,6 +73,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_health()
         elif self.path.startswith("/api/pricing-advisor"):
             self._serve_pricing_advisor()
+        elif self.path.startswith("/api/cooling"):
+            self._serve_cooling()
         elif path_only in ("/history", "/history.html"):
             self._serve_file(DASH_DIR / "history.html", "text/html; charset=utf-8")
         elif path_only in ("/", "/index.html"):
@@ -94,6 +97,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/api/chat"):
             self._serve_chat()
+        elif self.path.startswith("/api/cooling/speed"):
+            self._serve_cooling_set_speed()
         else:
             self.send_error(404)
 
@@ -248,6 +253,56 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             body = json.dumps({"error": str(e)}).encode()
             status = 400
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _serve_cooling(self):
+        """AC Infinity Cloudline fan status (this rig only — see
+        cooling_api.py). Read-only; {"enabled": false} on hosts without
+        AC_INFINITY_EMAIL/AC_INFINITY_PASSWORD set."""
+        try:
+            result = cooling_api.handle_cooling_get()
+            status = 200
+        except Exception as e:
+            result = {"error": str(e)}
+            status = 400
+        body = json.dumps(result).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def _serve_cooling_set_speed(self):
+        """Manual fan speed control (this rig only — see cooling_api.py).
+        Body: {"device_id": ..., "port": ..., "speed": 0-10}."""
+        status = 200
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 4096:
+                raise ValueError("bad request size")
+            payload = json.loads(self.rfile.read(length))
+            result = cooling_api.handle_cooling_set_speed(
+                payload.get("device_id"), payload.get("port"), payload.get("speed"))
+            if "error" in result:
+                status = 400
+        except Exception as e:
+            status = 400
+            result = {"error": str(e)}
+        body = json.dumps(result).encode()
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")

@@ -37,6 +37,25 @@ nvidia-smi --query-gpu=index,name,temperature.gpu,power.draw,power.limit,fan.spe
   --format=csv,noheader,nounits
 ```
 
+## Cooling card (AC Infinity Cloudline)
+
+Separate from gpu_monitor.sh/gpu-monitor.service — see `cloudline/`. The
+dashboard's Cooling card (status + manual 0-10 speed control) turns on as
+soon as the `gpu-dashboard` service has these env vars set (e.g. via a
+systemd `Environment=` override or an EnvironmentFile), no restart of
+gpu-monitor.service required:
+
+```bash
+AC_INFINITY_EMAIL=you@example.com
+AC_INFINITY_PASSWORD=yourpassword
+```
+
+Without them the card just stays hidden (`GET /api/cooling` returns
+`{"enabled": false}`). Optional automatic temp-based speed control is a
+separate systemd service — see `cloudline/deploy/deploy.sh` — and needs
+`cloudline/scheduler.py`'s `read_temp_c()` wired to a real sensor before
+enabling it.
+
 ## Thresholds (edit gpu_monitor.sh to change)
 
 | Variable | Default | Meaning |
