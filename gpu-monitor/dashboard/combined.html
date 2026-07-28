@@ -998,7 +998,7 @@ async function fetchDailySummary() {
   occEl.className = "text-2xl font-bold " + (fleet.occupancy_pct != null ? occupancyColorClass(fleet.occupancy_pct) : "");
   document.getElementById("ds-occupancy-sub").textContent = fleet.idle_hours != null ? fleet.idle_hours + " idle GPU-hours" : "";
   document.getElementById("ds-lost").textContent = fmtMoney(fleet.estimated_lost_revenue);
-  document.getElementById("ds-temp").textContent = fleet.max_temp_c != null ? fleet.max_temp_c + "°C" : "—";
+  document.getElementById("ds-temp").textContent = fleet.max_temp_c != null ? cToF(fleet.max_temp_c) + "°F" : "—";
   document.getElementById("ds-prices").textContent = fleet.price_changes ?? "—";
   document.getElementById("ds-gpus").textContent = fleet.gpus ?? "—";
 
@@ -1013,7 +1013,7 @@ async function fetchDailySummary() {
                     <td class="py-1.5 pr-4 text-right font-mono text-orange-400">${fmtMoney(r.electricity)}</td>
                     <td class="py-1.5 pr-4 text-right font-mono ${profitColorClass(r.profit)}">${fmtMoney(r.profit)}</td>
                     <td class="py-1.5 pr-4 text-right font-mono ${r.occupancy_pct != null ? occupancyColorClass(r.occupancy_pct) : ''}">${r.occupancy_pct != null ? r.occupancy_pct + '%' : '—'}</td>
-                    <td class="py-1.5 pr-4 text-right font-mono text-slate-300">${r.max_temp_c != null ? r.max_temp_c + '°C' : '—'}</td>
+                    <td class="py-1.5 pr-4 text-right font-mono text-slate-300">${r.max_temp_c != null ? cToF(r.max_temp_c) + '°F' : '—'}</td>
                     <td class="py-1.5 text-right font-mono text-violet-400">${r.price_changes ?? '—'}</td>`;
     tbody.appendChild(tr);
   });
@@ -1140,6 +1140,10 @@ function showRigTab(name) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
+// All temps stored/collected in Celsius (gpu_monitor.sh, Prometheus) —
+// converted to Fahrenheit only at display time so thresholds/comparisons
+// elsewhere in this file keep working against the original Celsius values.
+const cToF = c => Math.round(c * 9 / 5 + 32);
 const fmtUSD  = v => "$" + Number(v).toFixed(2);
 const fmtTS   = ts => new Date(ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
 const fmtDate = ts => new Date(ts).toLocaleDateString([],{month:"short",day:"numeric"});
@@ -1634,9 +1638,9 @@ function renderCombined() {
   if (allTemps.length) {
     const avg = Math.round(allTemps.reduce((a,b)=>a+b,0)/allTemps.length);
     const el = document.getElementById("c-temp");
-    el.textContent = avg+"°C";
+    el.textContent = cToF(avg)+"°F";
     el.className = "text-2xl font-bold "+tempClass(avg);
-    document.getElementById("c-temp-sub").textContent = "Max: "+Math.max(...allTemps)+"°C";
+    document.getElementById("c-temp-sub").textContent = "Max: "+cToF(Math.max(...allTemps))+"°F";
   }
 
   const priceChanges = todayEvs.filter(e=>e.type==="price_change");
@@ -1659,12 +1663,16 @@ function renderCombined() {
       const gpuCount = ev[0].gpus?.length||0;
       return Array.from({length:gpuCount},(_,gi)=>({
         label: rigName(ri)+" GPU"+gi,
-        data: allTempEvs.map(e=>e._rig===ri?ev.find(x=>x.ts===e.ts)?.gpus?.[gi]?.temp??null:null),
+        data: allTempEvs.map(e=>{
+          if (e._rig!==ri) return null;
+          const t = ev.find(x=>x.ts===e.ts)?.gpus?.[gi]?.temp;
+          return t!=null ? cToF(t) : null;
+        }),
         borderColor: RIG_COLORS[(ri*4+gi)%RIG_COLORS.length],
         backgroundColor:"transparent", fill:false,
       }));
     });
-    lineChart("chart-c-temp", labels, datasets, {suggestedMin:40,suggestedMax:90});
+    lineChart("chart-c-temp", labels, datasets, {suggestedMin:cToF(40),suggestedMax:cToF(90)});
   }
 
   // Combined revenue bar chart (7d)
@@ -1756,7 +1764,7 @@ function renderRigCard(idx, d) {
     const totalPow = powers.reduce((a,b)=>a+b,0);
     const tEl = document.getElementById("rc"+idx+"-temp");
     const cpuT = lastCpuTemp(d.events||[]);
-    tEl.innerHTML = avg+"°C" + (cpuT!==null ? ` <span class="text-xs font-normal ${cpuTempClass(cpuT)}">· CPU ${cpuT}°</span>` : "");
+    tEl.innerHTML = cToF(avg)+"°F" + (cpuT!==null ? ` <span class="text-xs font-normal ${cpuTempClass(cpuT)}">· CPU ${cToF(cpuT)}°F</span>` : "");
     tEl.className = "text-lg font-bold "+tempClass(avg);
     document.getElementById("rc"+idx+"-power").textContent = totalPow.toFixed(1)+"W";
 
@@ -1772,7 +1780,7 @@ function renderRigCard(idx, d) {
         <span class="text-slate-500 w-10">GPU${g.idx}</span>
         ${rentedDot}
         <div class="flex-1 bg-slate-800 rounded-full h-1"><div class="h-1 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div>
-        <span class="${tempClass(g.temp)} w-8 text-right">${g.temp}°C</span>
+        <span class="${tempClass(g.temp)} w-8 text-right">${cToF(g.temp)}°F</span>
         <span class="text-slate-500 w-14 text-right">${Number(g.power_draw).toFixed(1)}W</span>
       </div>`;
     }).join("");
@@ -1839,8 +1847,8 @@ function renderRig(idx) {
       const avg = Math.round(last.gpus.reduce((a,g)=>a+g.temp,0)/last.gpus.length);
       const tEl = document.getElementById("r-temp");
       const cpuT = lastCpuTemp(events);
-      tEl.innerHTML = avg+"°C <span class=\"text-slate-500 text-sm font-normal\">GPU</span>"
-        + (cpuT!==null ? ` <span class="text-lg font-bold ${cpuTempClass(cpuT)}">${cpuT}°C</span> <span class="text-slate-500 text-sm font-normal">CPU</span>` : "");
+      tEl.innerHTML = cToF(avg)+"°F <span class=\"text-slate-500 text-sm font-normal\">GPU</span>"
+        + (cpuT!==null ? ` <span class="text-lg font-bold ${cpuTempClass(cpuT)}">${cToF(cpuT)}°F</span> <span class="text-slate-500 text-sm font-normal">CPU</span>` : "");
       tEl.className = "text-2xl font-bold "+tempClass(avg);
       const tempWarns = todayEvs.filter(e=>e.type==="temp_warning").length;
       const cpuWarns = todayEvs.filter(e=>e.type==="cpu_temp_warning").length;
@@ -1857,9 +1865,9 @@ function renderRig(idx) {
         <div class="card p-4 space-y-3">
           <div class="flex justify-between items-start">
             <div><p class="text-xs text-slate-500">GPU ${g.idx}</p><p class="text-sm font-semibold">${g.name}</p></div>
-            <div class="flex flex-col items-end gap-1"><span class="text-xl font-bold ${tempClass(g.temp)}">${g.temp}°C</span>${rentalBadge}</div>
+            <div class="flex flex-col items-end gap-1"><span class="text-xl font-bold ${tempClass(g.temp)}">${cToF(g.temp)}°F</span>${rentalBadge}</div>
           </div>
-          <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Temp</span><span>${g.temp}°C</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div></div>
+          <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Temp</span><span>${cToF(g.temp)}°F</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(g.temp,100)}%"></div></div></div>
           <div><div class="flex justify-between text-xs text-slate-500 mb-1"><span>Power</span><span>${Number(g.power_draw).toFixed(1)}W / ${Number(g.power_limit).toFixed(0)}W</span></div><div class="w-full bg-slate-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bar-fill bg-blue-500" style="width:${Math.min(Math.round(g.power_draw/g.power_limit*100),100)}%"></div></div></div>
           <div class="flex justify-between text-xs text-slate-400"><span>Fan <b>${g.fan}%</b></span><span class="${tempClass(g.temp)}">${g.temp>75?"HOT":g.temp>65?"WARM":"OK"}</span></div>
         </div>`;
@@ -1871,8 +1879,8 @@ function renderRig(idx) {
     if (tempEvs.length) {
       const gpuCount = tempEvs[0].gpus?.length||0;
       lineChart("chart-r-temp24", tempEvs.map(e=>fmtTS(e.ts)),
-        Array.from({length:gpuCount},(_,i)=>({label:"GPU "+i, data:tempEvs.map(e=>e.gpus?.[i]?.temp??null), borderColor:colors[i], backgroundColor:"transparent", fill:false})),
-        {suggestedMin:40,suggestedMax:90});
+        Array.from({length:gpuCount},(_,i)=>({label:"GPU "+i, data:tempEvs.map(e=>e.gpus?.[i]?.temp!=null?cToF(e.gpus[i].temp):null), borderColor:colors[i], backgroundColor:"transparent", fill:false})),
+        {suggestedMin:cToF(40),suggestedMax:cToF(90)});
     }
     const priceEvs = eventsIn(events,7).filter(e=>e.type==="price_change");
     if (priceEvs.length) lineChart("chart-r-price7", priceEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts)),
@@ -1940,7 +1948,7 @@ function renderRig(idx) {
     if (tempEvs.length) {
       const gc = tempEvs[0].gpus?.length||0;
       lineChart("chart-rw-temp", tempEvs.map(e=>fmtDate(e.ts)+" "+fmtTS(e.ts)),
-        Array.from({length:gc},(_,i)=>({label:"GPU "+i,data:tempEvs.map(e=>e.gpus?.[i]?.temp??null),borderColor:colors[i],backgroundColor:"transparent",fill:false})));
+        Array.from({length:gc},(_,i)=>({label:"GPU "+i,data:tempEvs.map(e=>e.gpus?.[i]?.temp!=null?cToF(e.gpus[i].temp):null),borderColor:colors[i],backgroundColor:"transparent",fill:false})));
     }
 
     const summary = days.map(d=>{
@@ -2472,7 +2480,7 @@ function tempAnswer(rigs) {
     if (!g.length) return `${rigName(i)}: no temp data yet`;
     const temps=g.map(x=>x.temp); const avg=Math.round(temps.reduce((a,b)=>a+b,0)/temps.length); const max=Math.max(...temps);
     const hot=g.filter(x=>x.temp>75).length;
-    return `${rigName(i)}: avg <b>${avg}°C</b>, hottest ${max}°C${hot?` — ⚠️ ${hot} GPU(s) over 75°C`:""}`;
+    return `${rigName(i)}: avg <b>${cToF(avg)}°F</b>, hottest ${cToF(max)}°F${hot?` — ⚠️ ${hot} GPU(s) over ${cToF(75)}°F`:""}`;
   }).join("<br>");
 }
 function powerAnswer(rigs) {
@@ -2516,7 +2524,7 @@ function summaryAnswer(rigs) {
     const evs=DATA[i].events||[]; const s=isRented(i);
     const rev=computeRevenue(evs, today(), new Date());
     const st=lastGPUStatus(evs);
-    const temp=(st?.gpus?.length)?Math.round(st.gpus.reduce((a,g)=>a+g.temp,0)/st.gpus.length)+"°C":"–";
+    const temp=(st?.gpus?.length)?cToF(Math.round(st.gpus.reduce((a,g)=>a+g.temp,0)/st.gpus.length))+"°F":"–";
     const online=DATA[i].online!==false;
     return `<b>${rigName(i)}</b> ${online?"🟢":"🔴"} — ${s?"rented ("+(s.gpus||"")+" @ "+(s.rate||"?")+")":"free"} · ${fmtUSD(rev)} today · ${temp}`;
   }).join("<br>");

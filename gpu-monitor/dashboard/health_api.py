@@ -140,7 +140,7 @@ def get_active_alerts(prom_url, now_ts=None):
         if v >= GPU_TEMP_RISE_C:
             alerts.append({
                 "rig": rig, "type": "gpu_temp", "severity": "warning",
-                "detail": f"GPU {m.get('gpu_idx')} at {v:.0f}°C",
+                "detail": f"GPU {m.get('gpu_idx')} at {v * 9 / 5 + 32:.0f}°F",
             })
 
     try:
@@ -159,7 +159,7 @@ def get_active_alerts(prom_url, now_ts=None):
         if v >= CPU_TEMP_RISE_C:
             alerts.append({
                 "rig": rig, "type": "cpu_temp", "severity": "warning",
-                "detail": f"CPU at {v:.0f}°C",
+                "detail": f"CPU at {v * 9 / 5 + 32:.0f}°F",
             })
 
     alerts.sort(key=lambda a: a["rig"])

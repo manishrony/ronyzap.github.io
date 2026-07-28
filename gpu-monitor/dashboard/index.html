@@ -281,6 +281,10 @@ function showTab(name) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
+// All temps stored/collected in Celsius (gpu_monitor.sh, Prometheus) —
+// converted to Fahrenheit only at display time so thresholds/comparisons
+// elsewhere in this file keep working against the original Celsius values.
+const cToF = c => Math.round(c * 9 / 5 + 32);
 const fmtUSD  = v => "$" + Number(v).toFixed(2);
 const fmtTS   = ts => { const d = new Date(ts); return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); };
 const fmtDate = ts => new Date(ts).toLocaleDateString([], {month:"short",day:"numeric"});
@@ -501,7 +505,7 @@ function renderOverview() {
   if (last && last.gpus && last.gpus.length) {
     const avg = Math.round(last.gpus.reduce((a,g) => a + g.temp, 0) / last.gpus.length);
     const el = document.getElementById("stat-avg-temp");
-    el.textContent = avg + "°C";
+    el.textContent = cToF(avg) + "°F";
     el.className = "text-2xl font-bold " + (avg > 75 ? "temp-hot" : avg > 65 ? "temp-warn" : "temp-ok");
     document.getElementById("stat-temp-sub").textContent = todayEvs.filter(e=>e.type==="temp_warning").length + " warning(s) today";
   } else {
@@ -523,9 +527,9 @@ function renderOverview() {
     const colors = ["#4ade80","#60a5fa","#f59e0b","#c084fc","#f87171","#34d399","#818cf8","#fb923c"];
     lineChart("chart-temp-24h", tempEvs.map(e => fmtTS(e.ts)),
       Array.from({length: gpuCount}, (_, i) => ({
-        label: "GPU " + i, data: tempEvs.map(e => e.gpus?.[i]?.temp ?? null),
+        label: "GPU " + i, data: tempEvs.map(e => e.gpus?.[i]?.temp != null ? cToF(e.gpus[i].temp) : null),
         borderColor: colors[i % colors.length], backgroundColor: colors[i % colors.length] + "20", fill: false,
-      })), { y: { suggestedMin: 40, suggestedMax: 90 } });
+      })), { y: { suggestedMin: cToF(40), suggestedMax: cToF(90) } });
   }
 
   const priceEvs = eventsIn(7).filter(e => e.type === "price_change");
@@ -539,12 +543,12 @@ function renderOverview() {
   const tbody = document.getElementById("events-table");
   tbody.innerHTML = recentEvs.map(e => {
     let detail = "";
-    if (e.type === "gpu_status" && e.gpus) detail = e.gpus.map(g => `GPU${g.idx} ${g.temp}°C ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ");
+    if (e.type === "gpu_status" && e.gpus) detail = e.gpus.map(g => `GPU${g.idx} ${cToF(g.temp)}°F ${Number(g.power_draw).toFixed(1)}W Fan:${g.fan}%`).join(" | ");
     else if (e.type === "price_change") detail = `${e.gpu_name} x${e.num_gpus} | $${e.old_price} → $${e.new_price}/hr (market $${e.market_price})`;
     else if (e.type === "rental_start") detail = `${e.gpus} @ ${e.rate}`;
     else if (e.type === "rental_end")   detail = `${e.gpus} ended`;
-    else if (e.type === "temp_warning") detail = `GPU${e.gpu_idx} ${e.gpu_name} at ${e.temp}°C`;
-    else if (e.type === "startup")      detail = `Power ${e.power_limit}W | Threshold ${e.temp_threshold}°C`;
+    else if (e.type === "temp_warning") detail = `GPU${e.gpu_idx} ${e.gpu_name} at ${cToF(e.temp)}°F`;
+    else if (e.type === "startup")      detail = `Power ${e.power_limit}W | Threshold ${cToF(e.temp_threshold)}°F`;
     return `<tr class="hover:bg-slate-800/30">
       <td class="py-2 pr-4 text-xs text-slate-500 whitespace-nowrap">${fmtDate(e.ts)} ${fmtTS(e.ts)}</td>
       <td class="py-2 pr-4">${eventBadge(e.type)}</td>
@@ -662,10 +666,10 @@ function renderGPUCards(last) {
     return `<div class="card p-4 space-y-3">
       <div class="flex justify-between items-start">
         <div><p class="text-xs text-slate-500">GPU ${g.idx}</p><p class="text-sm font-semibold text-white">${g.name}</p></div>
-        <span class="text-xl font-bold ${tClass}">${g.temp}°C</span>
+        <span class="text-xl font-bold ${tClass}">${cToF(g.temp)}°F</span>
       </div>
       <div>
-        <div class="flex justify-between text-xs text-slate-500 mb-1"><span>Temp</span><span>${g.temp}°C</span></div>
+        <div class="flex justify-between text-xs text-slate-500 mb-1"><span>Temp</span><span>${cToF(g.temp)}°F</span></div>
         <div class="w-full bg-slate-800 rounded-full h-1.5">
           <div class="h-1.5 rounded-full bar-fill ${g.temp>75?'bg-red-500':g.temp>65?'bg-amber-400':'bg-emerald-400'}" style="width:${Math.min(tempPct,100)}%"></div>
         </div>
