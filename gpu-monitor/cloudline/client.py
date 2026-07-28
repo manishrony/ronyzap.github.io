@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """Client for AC Infinity's unofficial cloud API (Cloudline fan controllers).
 
-Reverse-engineered — not an official/documented API — matching the shape
-used by the community's Home Assistant AC Infinity integration. Login sends
-the password in plaintext, truncated to 25 characters (the API's own
-limit, not a client-side choice) — no hashing. Endpoints and field names may
-need further adjusting on other firmware versions; the code paths most
-likely to need tweaking are called out inline. Stdlib-only (urllib),
-matching the rest of this repo's dashboard/*_api.py modules — no
-`requests` dependency.
+Reverse-engineered — not an official/documented API — matching the request
+shape used by the community's Home Assistant AC Infinity integration
+(dalinicus/homeassistant-acinfinity), confirmed working against a real
+account on 2026-07-28. Two things about this API are easy to get wrong and
+worth calling out explicitly since they cost real debugging time:
+
+  - Every request needs a `User-Agent: okhttp/4.12.0` header (mimicking the
+    Android app's HTTP client) or the server rejects it with a generic
+    {"code": 999999, "msg": "Operation failed, please try again"} that
+    looks exactly like a bad-credentials error but isn't.
+  - Login sends the password in plaintext, truncated to 25 characters (the
+    API's own limit, not a client-side choice) — no hashing.
+
+Stdlib-only (urllib), matching the rest of this repo's dashboard/*_api.py
+modules — no `requests` dependency.
 """
 import json
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +27,8 @@ LOGIN_URL = BASE_URL + "/api/user/appUserLogin"
 DEVICE_LIST_URL = BASE_URL + "/api/user/devInfoListAll"
 MODE_SETTINGS_URL = BASE_URL + "/api/dev/getdevModeSettingList"
 ADD_MODE_URL = BASE_URL + "/api/dev/addDevMode"
+
+USER_AGENT = "okhttp/4.12.0"
 
 # AC Infinity's manual "On" mode — set a fixed fan speed 0 (off) - 10 (max),
 # no temperature/humidity/schedule logic involved.
@@ -42,10 +50,18 @@ class CloudlineClient:
         self.timeout = timeout
         self.token = None
 
-    def _post(self, url, fields, auth=True):
-        body = urllib.parse.urlencode(fields).encode()
-        req = urllib.request.Request(url, data=body, method="POST")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    def _request(self, url, fields, auth=True, in_query=False):
+        """in_query=True puts `fields` in the URL's query string with an
+        empty body — that's how addDevMode expects to receive its
+        parameters (unlike every other endpoint here, which takes a normal
+        form-encoded POST body)."""
+        qs = urllib.parse.urlencode(fields)
+        if in_query:
+            req = urllib.request.Request(url + "?" + qs, data=b"", method="POST")
+        else:
+            req = urllib.request.Request(url, data=qs.encode(), method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        req.add_header("User-Agent", USER_AGENT)
         if auth:
             if not self.token:
                 raise CloudlineError("not logged in")
@@ -60,17 +76,9 @@ class CloudlineClient:
         return data.get("data")
 
     def login(self):
-        """Password goes over the wire as plaintext, truncated to 25 chars
-        — that's the API's own (weak) scheme, not something we chose. No
-        hashing: the server only ever sees (and only ever accepts) the
-        first 25 characters of the real password."""
-        data = self._post(LOGIN_URL, {
+        data = self._request(LOGIN_URL, {
             "appEmail": self.email,
             "appPasswordl": self.password[:25],
-            "appType": 1,
-            "osType": 2,
-            "clientType": 1,
-            "clientVersion": "1.0",
         }, auth=False)
         self.token = data.get("appId") or data.get("token")
         if not self.token:
@@ -79,7 +87,7 @@ class CloudlineClient:
 
     def list_devices(self):
         """[{device_id, device_name, ports: [{port, port_name, online, ...}]}]"""
-        data = self._post(DEVICE_LIST_URL, {}, auth=True) or []
+        data = self._request(DEVICE_LIST_URL, {"userId": self.token}, auth=True) or []
         devices = []
         for dev in data:
             ports = []
@@ -102,7 +110,7 @@ class CloudlineClient:
         """Current mode settings for one port — set_speed() must resubmit
         this whole dict (minus the fields it overrides), since addDevMode
         appears to replace the full mode config rather than patch it."""
-        return self._post(MODE_SETTINGS_URL, {"devId": device_id, "port": port}, auth=True) or {}
+        return self._request(MODE_SETTINGS_URL, {"devId": device_id, "port": port}, auth=True) or {}
 
     def set_speed(self, device_id, port, speed):
         """speed: 0 (off) - 10 (max), manual mode."""
@@ -115,7 +123,7 @@ class CloudlineClient:
             "onSpeed": speed,
             "offSpeed": 0,
         })
-        self._post(ADD_MODE_URL, settings, auth=True)
+        self._request(ADD_MODE_URL, settings, auth=True, in_query=True)
         return speed
 
     def turn_off(self, device_id, port):
