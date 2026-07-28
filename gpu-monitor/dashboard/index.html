@@ -587,8 +587,8 @@ async function fetchOutdoorWeatherText() {
   try {
     const r = await fetch("/api/outdoor-weather?" + Date.now(), { signal: AbortSignal.timeout(8000) });
     const data = await r.json();
-    if (!data.enabled || data.error || data.temp_c == null) return "";
-    return `Outside: ${data.temp_c}°C${data.humidity_pct != null ? ' / ' + Math.round(data.humidity_pct) + '% RH' : ''}`;
+    if (!data.enabled || data.error || data.temp_f == null) return "";
+    return `Outside: ${Math.round(data.temp_f)}°F${data.humidity_pct != null ? ' / ' + Math.round(data.humidity_pct) + '% RH' : ''}`;
   } catch { return ""; }
 }
 
@@ -618,7 +618,7 @@ async function fetchCooling() {
   }
   const roomReadings = (data.devices || [])
     .filter(dev => dev.temp_c != null)
-    .map(dev => `${dev.name}: ${dev.temp_c}°C${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`);
+    .map(dev => `${dev.name}: ${Math.round(dev.temp_c * 9 / 5 + 32)}°F${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`);
   const outdoor = await fetchOutdoorWeatherText();
   ambientEl.textContent = [...roomReadings, outdoor].filter(Boolean).join(" · ");
   const cards = [];
