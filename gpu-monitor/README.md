@@ -37,6 +37,37 @@ nvidia-smi --query-gpu=index,name,temperature.gpu,power.draw,power.limit,fan.spe
   --format=csv,noheader,nounits
 ```
 
+## Cooling card (AC Infinity Cloudline)
+
+Separate from gpu_monitor.sh/gpu-monitor.service — see `cloudline/`. The
+dashboard's Cooling card (status + manual 0-10 speed control) turns on as
+soon as the `gpu-dashboard` service has these env vars set (e.g. via a
+systemd `Environment=` override or an EnvironmentFile), no restart of
+gpu-monitor.service required:
+
+```bash
+AC_INFINITY_EMAIL=you@example.com
+AC_INFINITY_PASSWORD=yourpassword
+```
+
+Without them the card just stays hidden (`GET /api/cooling` returns
+`{"enabled": false}`). Optional automatic temp-based speed control
+(`cloudline/scheduler.py`) is a separate systemd service — see
+`cloudline/deploy/deploy.sh` — that reads each Cloudline controller's own
+ambient temperature (the same reading shown on the Cooling card) and
+proportionally adjusts fan speed between `CLOUDLINE_MIN_TEMP_C` (fans at
+`CLOUDLINE_MIN_SPEED`) and `CLOUDLINE_MAX_TEMP_C` (fans at 10), so they
+throttle down automatically instead of running flat-out all the time.
+
+Any port named per `CLOUDLINE_INTAKE_PORT_NAMES` (default `intake`, case-
+insensitive substring match) is treated as pulling outside air in — that
+port idles at `CLOUDLINE_INTAKE_MIN_SPEED` (default `0`, fully off) unless
+outdoor temp is at least `CLOUDLINE_OUTDOOR_MARGIN_C` degrees cooler than
+the room (default 4°C), since ramping up an intake fan when it's just as
+hot or hotter outside imports heat instead of removing it. Every other
+port (e.g. an exhaust/return fan) isn't outside-air-facing and just follows the plain
+room-temp curve above.
+
 ## Thresholds (edit gpu_monitor.sh to change)
 
 | Variable | Default | Meaning |

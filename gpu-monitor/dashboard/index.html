@@ -107,6 +107,13 @@
       </div>
     </div>
   </div>
+  <div id="cooling-row" class="hidden">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-slate-400">Cooling — AC Infinity Cloudline</h2>
+      <p class="text-xs text-slate-400" id="cooling-ambient"></p>
+    </div>
+    <div id="cooling-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
+  </div>
   <div>
     <h2 class="text-sm font-semibold text-slate-400 mb-3">GPU Status</h2>
     <div id="gpu-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -570,6 +577,79 @@ function renderPowerRow() {
   document.getElementById("stat-power-cost-sub").textContent = "at $" + rate.toFixed(2) + "/kWh (all rigs on PDU)";
   document.getElementById("stat-power-life").textContent = lifeKwh.toLocaleString(undefined,{maximumFractionDigits:0}) + " kWh";
   document.getElementById("stat-power-life-sub").textContent = "≈ " + fmtUSD(lifeKwh * rate) + " to date";
+}
+
+// Outdoor temp/humidity for this rig's location — see
+// outdoor_weather_api.py. Free/keyless (Open-Meteo), cached server-side
+// 10 min. Returns "" (not shown) on any failure rather than an error card,
+// since this is just context for the Cooling section, not a monitored metric.
+async function fetchOutdoorWeatherText() {
+  try {
+    const r = await fetch("/api/outdoor-weather?" + Date.now(), { signal: AbortSignal.timeout(8000) });
+    const data = await r.json();
+    if (!data.enabled || data.error || data.temp_f == null) return "";
+    return `Outside: ${Math.round(data.temp_f)}°F${data.humidity_pct != null ? ' / ' + Math.round(data.humidity_pct) + '% RH' : ''}`;
+  } catch { return ""; }
+}
+
+// Cloudline fan status + manual speed control (this rig only — see
+// cooling_api.py). Independent of STATE/events.jsonl on purpose: it's its
+// own read from AC Infinity's API, polled on the same cadence as the rest
+// of the overview tab rather than tied to gpu_monitor.sh's data.
+async function fetchCooling() {
+  const row = document.getElementById("cooling-row");
+  let data;
+  try {
+    const r = await fetch("/api/cooling?" + Date.now(), { signal: AbortSignal.timeout(8000) });
+    data = await r.json();
+  } catch {
+    row.classList.add("hidden");
+    return;
+  }
+  if (!data.enabled) { row.classList.add("hidden"); return; }
+  row.classList.remove("hidden");
+
+  const container = document.getElementById("cooling-cards");
+  const ambientEl = document.getElementById("cooling-ambient");
+  if (data.error) {
+    container.innerHTML = `<div class="card p-4 text-sm text-red-400">Cloudline error: ${data.error}</div>`;
+    ambientEl.textContent = "";
+    return;
+  }
+  const roomReadings = (data.devices || [])
+    .filter(dev => dev.temp_c != null)
+    .map(dev => `${dev.name}: ${Math.round(dev.temp_c * 9 / 5 + 32)}°F${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`);
+  const outdoor = await fetchOutdoorWeatherText();
+  ambientEl.textContent = [...roomReadings, outdoor].filter(Boolean).join(" · ");
+  const cards = [];
+  (data.devices || []).forEach(dev => {
+    (dev.ports || []).forEach(p => {
+      const speed = p.speed ?? 0;
+      const pct = Math.round((speed / 10) * 100);
+      cards.push(`<div class="card p-4 space-y-2">
+        <div class="flex justify-between items-start">
+          <div><p class="text-xs text-slate-500">${dev.name || 'Cloudline'}</p><p class="text-sm font-semibold text-white">${p.name}</p></div>
+          <span class="text-xs px-2 py-0.5 rounded-full ${p.online ? 'badge-green' : 'badge-red'}">${p.online ? 'ONLINE' : 'OFFLINE'}</span>
+        </div>
+        <div class="flex items-center justify-between text-xs text-slate-500"><span>Speed</span><span class="font-mono text-slate-200">${speed} / 10</span></div>
+        <div class="w-full bg-slate-800 rounded-full h-1.5"><div class="bar-fill bg-blue-400 h-1.5 rounded-full" style="width:${pct}%"></div></div>
+        <input type="range" min="0" max="10" step="1" value="${speed}" class="w-full accent-blue-400"
+          onchange="setCoolingSpeed('${dev.device_id}', '${p.port}', this.value)">
+      </div>`);
+    });
+  });
+  container.innerHTML = cards.join("") || '<div class="card p-4 text-slate-500 text-sm">No Cloudline ports found</div>';
+}
+
+async function setCoolingSpeed(deviceId, port, speed) {
+  try {
+    await fetch("/api/cooling/speed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: deviceId, port: port, speed: Number(speed) }),
+    });
+  } catch {}
+  fetchCooling();
 }
 
 function renderGPUCards(last) {
@@ -1036,11 +1116,12 @@ function render() {
 setInterval(() => {
   countdown--;
   document.getElementById("countdown").textContent = countdown + "s";
-  if (countdown <= 0) { countdown = 60; fetchData(); }
+  if (countdown <= 0) { countdown = 60; fetchData(); fetchCooling(); }
 }, 1000);
 
 // ── Boot ───────────────────────────────────────────────────────────
 fetchData();
+fetchCooling();
 </script>
 </body>
 </html>
