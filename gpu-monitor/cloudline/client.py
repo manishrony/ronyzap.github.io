@@ -103,22 +103,31 @@ class CloudlineClient:
         return self.token
 
     def list_devices(self):
-        """[{device_id, device_name, ports: [{port, port_name, online, ...}]}]"""
+        """[{device_id, device_name, temp_c, humidity_pct, ports: [{port, port_name, online, ...}]}]"""
         data = self._request(DEVICE_LIST_URL, {"userId": self.token}, auth=True) or []
         devices = []
         for dev in data:
+            info = dev.get("deviceInfo", {}) or {}
             ports = []
-            for p in dev.get("deviceInfo", {}).get("ports", dev.get("ports", [])) or []:
+            for p in info.get("ports", dev.get("ports", [])) or []:
                 ports.append({
                     "port": p.get("port"),
                     "name": p.get("portName") or p.get("name") or f"Port {p.get('port')}",
                     "online": bool(p.get("online", p.get("loadState"))),
                     "speed": p.get("speak", p.get("speed")),
                 })
+            # The controller's own ambient sensor, not a GPU reading —
+            # temperature/humidity come back scaled by 100 (e.g. 2709 ->
+            # 27.09°C; cross-checked against the parallel *F field, which
+            # only lines up at that scale).
+            raw_temp = info.get("temperature")
+            raw_humidity = info.get("humidity")
             devices.append({
                 "device_id": dev.get("devId") or dev.get("deviceId"),
                 "name": dev.get("devName") or dev.get("deviceName"),
                 "online": bool(dev.get("online", dev.get("devOnline", True))),
+                "temp_c": round(raw_temp / 100.0, 1) if raw_temp is not None else None,
+                "humidity_pct": round(raw_humidity / 100.0, 1) if raw_humidity is not None else None,
                 "ports": ports,
             })
         return devices

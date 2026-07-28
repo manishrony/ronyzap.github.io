@@ -188,7 +188,10 @@
        this always reads /api/cooling on self, never proxied through a
        peer). Hidden unless AC_INFINITY_EMAIL/PASSWORD are configured. -->
   <div id="c-cooling-row" class="px-6 pb-4 hidden">
-    <p class="text-xs text-slate-500 mb-3 uppercase tracking-wider">Cooling — AC Infinity Cloudline</p>
+    <div class="flex items-center justify-between mb-3">
+      <p class="text-xs text-slate-500 uppercase tracking-wider">Cooling — AC Infinity Cloudline</p>
+      <p class="text-xs text-slate-400" id="c-cooling-ambient"></p>
+    </div>
     <div id="c-cooling-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
   </div>
 
@@ -800,10 +803,18 @@ async function fetchCooling() {
   row.classList.remove("hidden");
 
   const container = document.getElementById("c-cooling-cards");
+  const ambientEl = document.getElementById("c-cooling-ambient");
   if (data.error) {
     container.innerHTML = `<div class="card p-4 text-sm text-red-400">Cloudline error: ${data.error}</div>`;
+    ambientEl.textContent = "";
     return;
   }
+  // Room temp/humidity from the controller's own sensor — not a GPU
+  // reading — shown once per device since it's ambient, not per-port.
+  ambientEl.textContent = (data.devices || [])
+    .filter(dev => dev.temp_c != null)
+    .map(dev => `${dev.name}: ${dev.temp_c}°C${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`)
+    .join(" · ");
   const cards = [];
   (data.devices || []).forEach(dev => {
     (dev.ports || []).forEach(p => {

@@ -108,7 +108,10 @@
     </div>
   </div>
   <div id="cooling-row" class="hidden">
-    <h2 class="text-sm font-semibold text-slate-400 mb-3">Cooling — AC Infinity Cloudline</h2>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-slate-400">Cooling — AC Infinity Cloudline</h2>
+      <p class="text-xs text-slate-400" id="cooling-ambient"></p>
+    </div>
     <div id="cooling-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
   </div>
   <div>
@@ -594,10 +597,16 @@ async function fetchCooling() {
   row.classList.remove("hidden");
 
   const container = document.getElementById("cooling-cards");
+  const ambientEl = document.getElementById("cooling-ambient");
   if (data.error) {
     container.innerHTML = `<div class="card p-4 text-sm text-red-400">Cloudline error: ${data.error}</div>`;
+    ambientEl.textContent = "";
     return;
   }
+  ambientEl.textContent = (data.devices || [])
+    .filter(dev => dev.temp_c != null)
+    .map(dev => `${dev.name}: ${dev.temp_c}°C${dev.humidity_pct != null ? ' / ' + dev.humidity_pct + '% RH' : ''}`)
+    .join(" · ");
   const cards = [];
   (data.devices || []).forEach(dev => {
     (dev.ports || []).forEach(p => {
