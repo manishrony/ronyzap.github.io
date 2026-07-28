@@ -61,11 +61,11 @@ throttle down automatically instead of running flat-out all the time.
 
 Any port named per `CLOUDLINE_INTAKE_PORT_NAMES` (default `intake`, case-
 insensitive substring match) is treated as pulling outside air in — that
-port is capped at `CLOUDLINE_MIN_SPEED` whenever outdoor temp isn't at
-least `CLOUDLINE_OUTDOOR_MARGIN_C` degrees cooler than the room (default
-1°C), since ramping up an intake fan when it's just as hot or hotter
-outside imports heat instead of removing it. Every other port (e.g. an
-exhaust/return fan) isn't outside-air-facing and just follows the plain
+port idles at `CLOUDLINE_INTAKE_MIN_SPEED` (default `0`, fully off) unless
+outdoor temp is at least `CLOUDLINE_OUTDOOR_MARGIN_C` degrees cooler than
+the room (default 4°C), since ramping up an intake fan when it's just as
+hot or hotter outside imports heat instead of removing it. Every other
+port (e.g. an exhaust/return fan) isn't outside-air-facing and just follows the plain
 room-temp curve above.
 
 ## Thresholds (edit gpu_monitor.sh to change)

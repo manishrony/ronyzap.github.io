@@ -21,12 +21,13 @@ even when it's cool rather than letting fans sit fully off.
 Outdoor-air awareness: any port whose name matches CLOUDLINE_INTAKE_PORT_NAMES
 (comma-separated, case-insensitive substring match — default "intake") is
 assumed to pull outside air INTO the room. Ramping that fan up only helps
-when outside is actually cooler than the room; if outside is as hot or
-hotter, doing so just imports heat, so that port is capped at MIN_SPEED
-regardless of how hot the room is. Every other port (e.g. an exhaust/return
-fan moving air within or out of the room) isn't outside-air-facing and
-keeps the plain proportional room-temp response. Outdoor reading comes from
-the same free/keyless Open-Meteo source as the dashboard's Cooling card
+once outside is at least CLOUDLINE_OUTDOOR_MARGIN_C degrees cooler than the
+room (default 4°C); short of that, doing so just imports heat, so that port
+idles at CLOUDLINE_INTAKE_MIN_SPEED (default 0 — fully off) rather than the
+general MIN_SPEED floor. Every other port (e.g. an exhaust/return fan moving
+air within or out of the room) isn't outside-air-facing and keeps the plain
+proportional room-temp response. Outdoor reading comes from the same free/
+keyless Open-Meteo source as the dashboard's Cooling card
 (gpu-monitor/dashboard/outdoor_weather_api.py) but fetched independently
 here to keep this script standalone/decoupled from the dashboard process.
 """
@@ -52,9 +53,10 @@ NIGHT_END_HOUR = int(os.environ.get("CLOUDLINE_NIGHT_END_HOUR", "7"))
 INTAKE_PORT_NAMES = [
     s.strip().lower() for s in os.environ.get("CLOUDLINE_INTAKE_PORT_NAMES", "intake").split(",") if s.strip()
 ]
+INTAKE_MIN_SPEED = int(os.environ.get("CLOUDLINE_INTAKE_MIN_SPEED", "0"))  # intake specifically idles at 0 (off), not the general MIN_SPEED floor
 OUTDOOR_LAT = float(os.environ.get("OUTDOOR_WEATHER_LAT", "39.8467"))
 OUTDOOR_LON = float(os.environ.get("OUTDOOR_WEATHER_LON", "-75.7057"))
-OUTDOOR_MARGIN_C = float(os.environ.get("CLOUDLINE_OUTDOOR_MARGIN_C", "1"))  # require outside to be at least this much cooler before rewarding intake speed
+OUTDOOR_MARGIN_C = float(os.environ.get("CLOUDLINE_OUTDOOR_MARGIN_C", "4"))  # outside must be at least this many °C cooler than the room before intake is allowed to ramp up (~3-5°C requested)
 _outdoor_cache = {"ts": 0, "temp_c": None}
 
 
@@ -128,13 +130,15 @@ def main():
 
                     speed = base_speed
                     if is_intake_port(port.get("name")):
-                        # Pulling in outside air only helps if it's actually
-                        # cooler than the room — otherwise ramping up an
-                        # intake fan just imports heat, working against the
-                        # very thing this loop is trying to do.
+                        # Pulling in outside air only helps if it's
+                        # meaningfully cooler than the room — otherwise
+                        # ramping up an intake fan just imports heat,
+                        # working against the very thing this loop is
+                        # trying to do, so it idles at INTAKE_MIN_SPEED
+                        # (off, by default) rather than the general floor.
                         outdoor_helps = outdoor_c is not None and room_c is not None and outdoor_c <= room_c - OUTDOOR_MARGIN_C
                         if not outdoor_helps:
-                            speed = MIN_SPEED
+                            speed = INTAKE_MIN_SPEED
 
                     key = (dev["device_id"], port["port"])
                     if last_speed.get(key) == speed:
