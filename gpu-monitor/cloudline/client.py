@@ -2,13 +2,14 @@
 """Client for AC Infinity's unofficial cloud API (Cloudline fan controllers).
 
 Reverse-engineered — not an official/documented API — matching the shape
-used by the community's Home Assistant AC Infinity integration. Endpoints
-and field names may need adjusting the first time this runs against a real
-account/firmware version; the code paths most likely to need tweaking are
-called out inline. Stdlib-only (urllib), matching the rest of this repo's
-dashboard/*_api.py modules — no `requests` dependency.
+used by the community's Home Assistant AC Infinity integration. Login sends
+the password in plaintext, truncated to 25 characters (the API's own
+limit, not a client-side choice) — no hashing. Endpoints and field names may
+need further adjusting on other firmware versions; the code paths most
+likely to need tweaking are called out inline. Stdlib-only (urllib),
+matching the rest of this repo's dashboard/*_api.py modules — no
+`requests` dependency.
 """
-import hashlib
 import json
 import time
 import urllib.error
@@ -59,12 +60,13 @@ class CloudlineClient:
         return data.get("data")
 
     def login(self):
-        """Password goes over the wire as a plain MD5 hex digest — that's
-        the API's own (weak) scheme, not something we chose."""
-        pw_hash = hashlib.md5(self.password.encode()).hexdigest()
+        """Password goes over the wire as plaintext, truncated to 25 chars
+        — that's the API's own (weak) scheme, not something we chose. No
+        hashing: the server only ever sees (and only ever accepts) the
+        first 25 characters of the real password."""
         data = self._post(LOGIN_URL, {
             "appEmail": self.email,
-            "appPasswordl": pw_hash,
+            "appPasswordl": self.password[:25],
             "appType": 1,
             "osType": 2,
             "clientType": 1,
