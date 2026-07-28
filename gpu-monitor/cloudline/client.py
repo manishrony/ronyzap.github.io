@@ -113,15 +113,22 @@ class CloudlineClient:
         return self._request(MODE_SETTINGS_URL, {"devId": device_id, "port": port}, auth=True) or {}
 
     def set_speed(self, device_id, port, speed):
-        """speed: 0 (off) - 10 (max), manual mode."""
+        """speed: 0 (off) - 10 (max), manual mode.
+
+        The API's own field names for these two settings are misspelled
+        ("onSpead"/"offSpead", not "onSpeed"/"offSpeed") — sending the
+        correctly-spelled version doesn't error, it just gets ignored,
+        since the server only recognizes its own typo'd key and the real
+        onSpead/offSpead fields (already present in `settings` from
+        get_port_settings) are left at their old values untouched."""
         speed = max(0, min(10, int(speed)))
         settings = dict(self.get_port_settings(device_id, port))
         settings.update({
             "devId": device_id,
             "port": port,
             "atType": AT_TYPE_MANUAL,
-            "onSpeed": speed,
-            "offSpeed": 0,
+            "onSpead": speed,
+            "offSpead": 0,
         })
         self._request(ADD_MODE_URL, settings, auth=True, in_query=True)
         return speed
