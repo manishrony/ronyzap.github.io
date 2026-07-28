@@ -800,8 +800,8 @@ async function fetchOutdoorWeatherText() {
   try {
     const r = await fetch("/api/outdoor-weather?" + Date.now(), { signal: AbortSignal.timeout(8000) });
     const data = await r.json();
-    if (!data.enabled || data.error || data.temp_f == null) return "";
-    return `Outside: ${Math.round(data.temp_f)}°F${data.humidity_pct != null ? ' / ' + Math.round(data.humidity_pct) + '% RH' : ''}`;
+    if (!data.enabled || data.error || data.temp_c == null) return "";
+    return `Outside: ${data.temp_c}°C${data.humidity_pct != null ? ' / ' + Math.round(data.humidity_pct) + '% RH' : ''}`;
   } catch { return ""; }
 }
 
