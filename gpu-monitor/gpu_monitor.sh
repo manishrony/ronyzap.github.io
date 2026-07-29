@@ -430,6 +430,35 @@ STEPDOWN_DELAY_SECS="${STEPDOWN_DELAY_SECS:-3000}"  # ~50 min
 STEPDOWN_CENTS_MIN=1
 STEPDOWN_CENTS_MAX=2
 
+# Continuous vacancy-decay pricing — an alternative to the
+# START_PRICE_DISCOUNT/IDLE_LISTING_THRESHOLD/STEPDOWN_* machinery above,
+# opt-in per rig (off by default; every other rig keeps its current,
+# already-working behavior untouched). Set DECAY_PRICING=1 in
+# /etc/gpu_monitor.conf to try it on a specific rig.
+#
+# Confirmed live on zappa1 (a 1-free-GPU, low-occupancy rig): the old model
+# parks price at target(mean) for the whole vacancy and holds it there for
+# hours regardless of how long nothing sells, only dropping via a much
+# slower, coarser 1-2c/cycle stepdown. This replaces that for any listing
+# with a free slot (partial or fully vacant — matches zappa1's actual
+# 1-of-2-GPUs-free case) with a straight linear decay from target down to
+# the floor:
+#   t     = clamp((vacancy_hours - DECAY_GRACE_HOURS) / DECAY_HOURS, 0, 1)
+#   price = max(floor, target - (target - floor) * t)
+# i.e. holds near target for DECAY_GRACE_HOURS (still fishing for a
+# premium buyer), then walks linearly down to the floor over the next
+# DECAY_HOURS — crossing the p25 band where the actual renters are within
+# an hour or two instead of after half a day parked at mean. Monotonic
+# while vacant: DECAY_STATE_DIR remembers the last decayed price and this
+# mode never raises it again mid-vacancy even if a fresh market pull would
+# otherwise justify a higher number — only an actual rental (which clears
+# the state file above) resets it back to target. FULLY rented machines
+# are unaffected either way — that's the separate ratchet-up-only logic.
+DECAY_PRICING="${DECAY_PRICING:-0}"
+DECAY_GRACE_HOURS="${DECAY_GRACE_HOURS:-1.0}"
+DECAY_HOURS="${DECAY_HOURS:-4.0}"
+DECAY_STATE_DIR="/var/tmp/gpu_monitor_decay"
+
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
 EXPECTED_GPU_COUNT=0
@@ -2885,7 +2914,7 @@ PYEOF
             vacant_since=$(cat "$vacancy_file" 2>/dev/null || echo "$now_epoch")
             vacancy_secs=$(( now_epoch - vacant_since ))
         else
-            rm -f "$vacancy_file" "$idle_reset_file" 2>/dev/null || true
+            rm -f "$vacancy_file" "$idle_reset_file" "$DECAY_STATE_DIR/$mid" 2>/dev/null || true
         fi
 
         # Fetch market stats; parse p25/median/p75/mean in one Python call
@@ -3051,7 +3080,32 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
         fi
 
         local new_price direction
-        if (( $(echo "${cur_bid:-0} < 0.01" | bc -l) )); then
+        if [[ "${DECAY_PRICING:-0}" == "1" ]] && [[ "${free_count:-0}" -gt 0 ]] && (( ! fully_rented )); then
+            # Continuous vacancy-decay (opt-in — see DECAY_PRICING's setup
+            # comment above). Replaces the whole start_price/idle_mode/
+            # stepdown chain below for any listing with a free slot: hold
+            # near target for DECAY_GRACE_HOURS, then walk linearly down to
+            # floor over the next DECAY_HOURS. Monotonic while vacant — never
+            # ticks back up mid-vacancy even if this cycle's fresh market
+            # pull moved target higher than last cycle's.
+            mkdir -p "$DECAY_STATE_DIR" 2>/dev/null || true
+            local decay_file="$DECAY_STATE_DIR/$mid"
+            local vacancy_hours_f decay_t decay_price
+            vacancy_hours_f=$(printf "%.4f" "$(echo "scale=4; $vacancy_secs / 3600" | bc)")
+            decay_t=$(printf "%.6f" "$(echo "scale=6; ($vacancy_hours_f - $DECAY_GRACE_HOURS) / $DECAY_HOURS" | bc)")
+            (( $(echo "$decay_t < 0" | bc -l) )) && decay_t="0"
+            (( $(echo "$decay_t > 1" | bc -l) )) && decay_t="1"
+            decay_price=$(printf "%.4f" "$(echo "scale=4; $target - ($target - $floor) * $decay_t" | bc)")
+            (( $(echo "$decay_price < $floor" | bc -l) )) && decay_price="$floor"
+            if [[ -f "$decay_file" ]]; then
+                local last_decay
+                last_decay=$(cat "$decay_file" 2>/dev/null || echo "$decay_price")
+                (( $(echo "$decay_price > $last_decay" | bc -l) )) && decay_price="$last_decay"
+            fi
+            echo "$decay_price" > "$decay_file"
+            new_price="$decay_price"
+            direction="↓ decay (vacant ${vacancy_hours}h, t=${decay_t}, ${target_label} \$$target → floor \$$floor over ${DECAY_GRACE_HOURS}h grace + ${DECAY_HOURS}h decay)"
+        elif (( $(echo "${cur_bid:-0} < 0.01" | bc -l) )); then
             new_price="$start_price"
             direction="↑ (was \$0 — anchored to median-${START_PRICE_DISCOUNT} \$$start_price)"
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
