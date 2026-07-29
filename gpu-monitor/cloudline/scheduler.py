@@ -22,12 +22,16 @@ Outdoor-air awareness: any port whose name matches CLOUDLINE_INTAKE_PORT_NAMES
 (comma-separated, case-insensitive substring match — default "intake") is
 assumed to pull outside air INTO the room. Ramping that fan up only helps
 once outside is at least CLOUDLINE_OUTDOOR_MARGIN_C degrees cooler than the
-room (default 4°C); short of that, doing so just imports heat, so that port
-idles at CLOUDLINE_INTAKE_MIN_SPEED (default 0 — fully off) rather than the
-general MIN_SPEED floor. Every other port (e.g. an exhaust/return fan moving
-air within or out of the room) isn't outside-air-facing and keeps the plain
-proportional room-temp response. Outdoor reading comes from the same free/
-keyless Open-Meteo source as the dashboard's Cooling card
+room (default 5.6°C, ~10°F); short of that, doing so just imports heat, so
+that port idles at CLOUDLINE_INTAKE_MIN_SPEED (default 0 — fully off)
+rather than the general MIN_SPEED floor. The margin is wider than a first
+cut would suggest specifically because Intake and Return sit only 2-3ft
+apart physically — too small a gap risked "outside is cooler" being true on
+paper while Intake was actually just re-pulling Return's own exhaust
+rather than real outside air. Every other port (e.g. an exhaust/return fan
+moving air within or out of the room) isn't outside-air-facing and keeps
+the plain proportional room-temp response. Outdoor reading comes from the
+same free/keyless Open-Meteo source as the dashboard's Cooling card
 (gpu-monitor/dashboard/outdoor_weather_api.py) but fetched independently
 here to keep this script standalone/decoupled from the dashboard process.
 
@@ -218,7 +222,7 @@ INTAKE_PORT_NAMES = [
 INTAKE_MIN_SPEED = int(os.environ.get("CLOUDLINE_INTAKE_MIN_SPEED", "0"))  # intake specifically idles at 0 (off), not the general MIN_SPEED floor
 OUTDOOR_LAT = float(os.environ.get("OUTDOOR_WEATHER_LAT", "39.8467"))
 OUTDOOR_LON = float(os.environ.get("OUTDOOR_WEATHER_LON", "-75.7057"))
-OUTDOOR_MARGIN_C = float(os.environ.get("CLOUDLINE_OUTDOOR_MARGIN_C", "4"))  # outside must be at least this many °C cooler than the room before intake is allowed to ramp up (~3-5°C requested)
+OUTDOOR_MARGIN_C = float(os.environ.get("CLOUDLINE_OUTDOOR_MARGIN_C", "5.6"))  # outside must be at least this many °C cooler than the room before intake is allowed to ramp up (~10°F requested — Intake/Return sit only 2-3ft apart, so a small margin risked the intake just re-pulling the return fan's own exhaust instead of real outside air)
 _outdoor_cache = {"ts": 0, "temp_c": None}
 
 

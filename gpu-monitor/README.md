@@ -63,9 +63,11 @@ Any port named per `CLOUDLINE_INTAKE_PORT_NAMES` (default `intake`, case-
 insensitive substring match) is treated as pulling outside air in — that
 port idles at `CLOUDLINE_INTAKE_MIN_SPEED` (default `0`, fully off) unless
 outdoor temp is at least `CLOUDLINE_OUTDOOR_MARGIN_C` degrees cooler than
-the room (default 4°C), since ramping up an intake fan when it's just as
-hot or hotter outside imports heat instead of removing it. Every other
-port (e.g. an exhaust/return fan) isn't outside-air-facing and just follows the plain
+the room (default 5.6°C, ~10°F — wider than a first cut, since Intake and
+Return sit only 2-3ft apart and a smaller margin risked Intake just
+re-pulling Return's own exhaust instead of real outside air), since
+ramping up an intake fan when it's just as hot or hotter outside imports
+heat instead of removing it. Every other port (e.g. an exhaust/return fan) isn't outside-air-facing and just follows the plain
 room-temp curve above.
 
 ### Metering the fans' own electricity use
