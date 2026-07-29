@@ -439,24 +439,31 @@ STEPDOWN_CENTS_MAX=2
 # Confirmed live on zappa1 (a 1-free-GPU, low-occupancy rig): the old model
 # parks price at target(mean) for the whole vacancy and holds it there for
 # hours regardless of how long nothing sells, only dropping via a much
-# slower, coarser 1-2c/cycle stepdown. This replaces that for any listing
-# with a free slot (partial or fully vacant — matches zappa1's actual
-# 1-of-2-GPUs-free case) with a straight linear decay from target down to
-# the floor:
+# slower, coarser 1-2c/cycle stepdown. This replaces that — for a machine
+# that's WHOLLY free (every GPU, not a partial rental — see the trigger
+# condition where this is used) — with a straight linear decay from target
+# down to the floor:
 #   t     = clamp((vacancy_hours - DECAY_GRACE_HOURS) / DECAY_HOURS, 0, 1)
 #   price = max(floor, target - (target - floor) * t)
 # i.e. holds near target for DECAY_GRACE_HOURS (still fishing for a
 # premium buyer), then walks linearly down to the floor over the next
-# DECAY_HOURS — crossing the p25 band where the actual renters are within
-# an hour or two instead of after half a day parked at mean. Monotonic
-# while vacant: DECAY_STATE_DIR remembers the last decayed price and this
-# mode never raises it again mid-vacancy even if a fresh market pull would
-# otherwise justify a higher number — only an actual rental (which clears
-# the state file above) resets it back to target. FULLY rented machines
-# are unaffected either way — that's the separate ratchet-up-only logic.
+# DECAY_HOURS. Monotonic while vacant: DECAY_STATE_DIR remembers the last
+# decayed price and this mode never raises it again mid-vacancy even if a
+# fresh market pull would otherwise justify a higher number — only an
+# actual rental (which clears the state file above) resets it back to
+# target. FULLY rented machines are unaffected either way — that's the
+# separate ratchet-up-only logic. Partial rentals are ALSO unaffected —
+# also confirmed live 2026-07-29: three fresh instances launched on zappa1
+# in the $0.38-0.44 band while one GPU sat free, direct evidence that
+# demand exists well above the floor and that aggressively decaying a
+# partially-occupied listing toward floor would give away margin the
+# market had already shown it would pay. Defaults hold near target for 2h,
+# then take 10h more to fully reach the floor (12h total) — deliberately
+# slow, so a genuinely idle machine spends most of its vacancy in the
+# $0.38-0.44 demand band this data actually supports, not rushed to floor.
 DECAY_PRICING="${DECAY_PRICING:-0}"
-DECAY_GRACE_HOURS="${DECAY_GRACE_HOURS:-1.0}"
-DECAY_HOURS="${DECAY_HOURS:-4.0}"
+DECAY_GRACE_HOURS="${DECAY_GRACE_HOURS:-2.0}"
+DECAY_HOURS="${DECAY_HOURS:-10.0}"
 DECAY_STATE_DIR="/var/tmp/gpu_monitor_decay"
 
 # --- GPU count watchdog ---
@@ -2031,7 +2038,10 @@ for m in machines:
         # gpu_occupancy; num_gpus if missing) so this is a correct TOTAL,
         # not an understated per-GPU rate on a multi-GPU machine.
         occ_chars = (m.get('gpu_occupancy', '') or '').split()
-        occ_count = sum(1 for c in occ_chars if c in ('D', 'R')) or int(num_gpus or 1)
+        # Only 'x' counts as free -- see the pricing loop's free_count calc
+        # for why (an 'I'/transitional GPU already has a renter, confirmed
+        # live 2026-07-29).
+        occ_count = sum(1 for c in occ_chars if c != 'x') or int(num_gpus or 1)
         cur_bid = cur_bid * occ_count
 
     if not mid or not rented:
@@ -2436,7 +2446,10 @@ for m in data.get('machines', []):
         # gpu_occupancy; num_gpus if that string is missing) so this is a
         # correct TOTAL, not an understated per-GPU rate on a multi-GPU machine.
         occ_chars = (m.get('gpu_occupancy', '') or '').split()
-        occ_count = sum(1 for c in occ_chars if c in ('D', 'R')) or int(num_gpus or 1)
+        # Only 'x' counts as free -- see the pricing loop's free_count calc
+        # for why (an 'I'/transitional GPU already has a renter, confirmed
+        # live 2026-07-29).
+        occ_count = sum(1 for c in occ_chars if c != 'x') or int(num_gpus or 1)
         cost_val = per_gpu_price * occ_count
     else:
         # Not rented — informational only (nothing is being earned), so the
@@ -2597,7 +2610,13 @@ for m in data.get('machines', []):
                          'instance_id': s['instance_id'], 'rate': s['rate']})
         else:
             c = occ_chars[i] if i < len(occ_chars) else ''
-            rows.append({'gpu_idx': i, 'rented': c in ('D', 'R'),
+            # Only Vast's actual "nothing here" marker ('x') counts as
+            # free -- 'D'/'R' obviously, but also 'I' (a transitional/
+            # initializing state seen live 2026-07-29 on a GPU with a
+            # container already starting and VRAM already allocated) and
+            # anything unrecognized. See the matching fix in the pricing
+            # loop's free_count calc for the full story.
+            rows.append({'gpu_idx': i, 'rented': c != 'x',
                          'instance_id': None, 'rate': 0})
     print(json.dumps({'machine_id': mid, 'gpu_name': gpu_name,
                       'total_gpus': total, 'slots': rows}))
@@ -2873,13 +2892,25 @@ for m in data.get('machines', []):
     min_bid_v = m.get('min_bid_price', m.get('min_bid', 0))
     cur_bid   = float(listed_v or min_bid_v or 0)
     num_gpus = int(m.get('num_gpus', 1) or 1)
-    # Per-GPU occupancy ('x D D …': D/R = rented, x/I/blank = free) → free count,
-    # so pricing can tell a PARTIAL rental (some GPUs free) from a FULL one. If
-    # the occupancy string is missing, fall back to the old conservative view
-    # (rented ⇒ treat as full ⇒ don't price).
+    # Per-GPU occupancy ('x D D …') → free count, so pricing can tell a
+    # PARTIAL rental (some GPUs free) from a FULL one. Confirmed live
+    # 2026-07-29 (zappa1, machine 138419): treating anything OTHER than
+    # D/R as free (the previous rule) miscounted a freshly-launched
+    # instance's 'I' (initializing/transitional — VRAM already allocated,
+    # a container already starting) as a free slot, which let vacancy-decay
+    # pricing keep cutting the price while that GPU was actually already
+    # spoken for. Only 'x' (Vast's actual "nothing here" marker) counts as
+    # free now; every other character — D, R, I, or anything not
+    # explicitly recognized — counts as occupied. Conservative on purpose:
+    # undercounting vacancy (treating a genuinely free slot as occupied)
+    # just means one fewer pricing nudge upward toward target; overcounting
+    # it (this bug) actively discounted a GPU that already had a renter.
+    # If the occupancy string is missing entirely, fall back to the old
+    # conservative view (rented ⇒ treat as full ⇒ don't price).
+    KNOWN_FREE_CHARS = {'x'}
     occ_chars = (m.get('gpu_occupancy', '') or '').split()
     if occ_chars:
-        free_count = sum(1 for c in occ_chars[:num_gpus] if c not in ('D', 'R'))
+        free_count = sum(1 for c in occ_chars[:num_gpus] if c in KNOWN_FREE_CHARS)
     else:
         free_count = 0 if rented else num_gpus
     print('%s|%s|%s|%s|%s|%s|%s' % (mid, rented, listed, gpu_name, cur_bid, num_gpus, free_count))
@@ -3080,14 +3111,22 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
         fi
 
         local new_price direction
-        if [[ "${DECAY_PRICING:-0}" == "1" ]] && [[ "${free_count:-0}" -gt 0 ]] && (( ! fully_rented )); then
+        if [[ "${DECAY_PRICING:-0}" == "1" ]] && [[ "${free_count:-0}" -eq "$num_gpus" ]]; then
             # Continuous vacancy-decay (opt-in — see DECAY_PRICING's setup
-            # comment above). Replaces the whole start_price/idle_mode/
-            # stepdown chain below for any listing with a free slot: hold
-            # near target for DECAY_GRACE_HOURS, then walk linearly down to
-            # floor over the next DECAY_HOURS. Monotonic while vacant — never
-            # ticks back up mid-vacancy even if this cycle's fresh market
-            # pull moved target higher than last cycle's.
+            # comment above). Requires the WHOLE machine free (free_count
+            # == num_gpus), never a partial rental. Confirmed live
+            # 2026-07-29 (zappa1): demand was already showing up at
+            # $0.38-0.44 (three fresh instances launched in that band) while
+            # one GPU sat genuinely free -- aggressively decaying a
+            # partially-occupied listing toward floor in that situation
+            # would have undercut a price the market had already shown it
+            # would pay. A partial rental instead falls through to the
+            # existing gentler ratchet-up-toward-target branch below, same
+            # as it always has. Holds near target for DECAY_GRACE_HOURS,
+            # then walks linearly down to floor over the next DECAY_HOURS.
+            # Monotonic while vacant — never ticks back up mid-vacancy even
+            # if this cycle's fresh market pull moved target higher than
+            # last cycle's.
             mkdir -p "$DECAY_STATE_DIR" 2>/dev/null || true
             local decay_file="$DECAY_STATE_DIR/$mid"
             local vacancy_hours_f decay_t decay_price
