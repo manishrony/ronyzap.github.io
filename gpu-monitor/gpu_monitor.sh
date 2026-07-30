@@ -1995,6 +1995,50 @@ except FileNotFoundError:
 count = 0
 now_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
+# Reconcile stale open rentals: a machine-level rental_start with no
+# matching rental_end, for a machine that /machines/ now reports as NOT
+# rented (or that no longer belongs to this host at all). Without this,
+# a rental_end that never got written (e.g. a monitor restart/gap that
+# missed the transition) leaves that machine_id in open_rentals forever —
+# every future startup just prints "already has open rental — skipping"
+# and the record can never be corrected or used for history/analytics.
+# This is a best-effort correction (we don't know the real end time), so
+# it's tagged 'reconciled_stale' rather than a normal 'ended'/'gone'.
+hn = socket.gethostname()
+currently_rented = {}
+for m in machines:
+    if m.get('hostname', '') != hn:
+        continue
+    mid = str(m.get('id', ''))
+    if not mid:
+        continue
+    r = m.get('rented', False)
+    if int(m.get('current_rentals_resident', 0) or 0) > 0:
+        r = True
+    if int(m.get('current_rentals_running', 0) or 0) > 0:
+        r = True
+    if int(m.get('num_running_instances', 0) or 0) > 0:
+        r = True
+    currently_rented[mid] = r
+
+for mid in sorted(open_rentals):
+    if currently_rented.get(mid) is True:
+        continue
+    event = {
+        'ts':          now_str,
+        'type':        'rental_end',
+        'host':        hn,
+        'machine_id':  mid,
+        'instance_id': mid,
+        'gpus':        '',
+        'rate':        '',
+        'status':      'reconciled_stale',
+    }
+    with open(jsonl, 'a') as f:
+        f.write(json.dumps(event) + '\n')
+    print(f"[INIT] Closed stale open rental: machine {mid} has no matching rental_end and is not currently rented — wrote reconciled_stale rental_end")
+    open_rentals.discard(mid)
+
 for m in machines:
     mid      = str(m.get('id', ''))
     # Only manage machines that belong to this rig (by hostname)
