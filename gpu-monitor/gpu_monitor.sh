@@ -2478,30 +2478,29 @@ def classify_workload(image):
 # instance_end pair even though no GPU work ever ran, which would make a
 # renter's failed auth attempt look identical to genuine short-lived demand
 # (and wrongly count against "the low price attracted a real rental").
-# Best-effort classification from Kaalia's own log around this instance's
-# Create attempt(s) so the dashboard/analytics can tell these apart; only
-# the auth/pull failure cases are reliably detectable from this log, so
+#
+# The failure text does NOT appear in kaalia.log (confirmed live 2026-07-30
+# -- kaalia.log just shows the same "new cmd::Create(...)" retried every
+# ~1.2s forever, no error text at all). It's in Kaalia's own per-instance
+# log: /var/lib/vastai_kaalia/data/instance_extra_logs/C.<instance_id>
+# (same directory vast-activity.sh already reads). Best-effort: only the
+# auth/pull failure cases are reliably detectable from that file, so
 # anything else with a resolved image is assumed SUCCESS_RUNNING.
 def get_instance_lifecycle_status(instance_id, image):
     if not instance_id:
         return 'UNKNOWN'
-    id_re = re.compile(r'C\.' + re.escape(str(instance_id)) + r'\b')
     auth_re = re.compile(r'denied: denied|docker login failed', re.I)
     pull_re = re.compile(r'manifest unknown|pull access denied|no such host|repository does not exist', re.I)
-    for path in glob.glob('/var/lib/vastai_kaalia/kaalia.log*'):
-        try:
-            with open(path, errors='ignore') as f:
-                lines = f.readlines()
-        except Exception:
-            continue
-        for i, line in enumerate(lines):
-            if not id_re.search(line):
-                continue
-            window = ''.join(lines[i:i + 8])
-            if auth_re.search(window):
-                return 'CUSTOMER_IMAGE_AUTH_FAILURE'
-            if pull_re.search(window):
-                return 'IMAGE_PULL_FAILURE'
+    log_path = '/var/lib/vastai_kaalia/data/instance_extra_logs/C.%s' % instance_id
+    try:
+        with open(log_path, errors='ignore') as f:
+            text = f.read()
+        if auth_re.search(text):
+            return 'CUSTOMER_IMAGE_AUTH_FAILURE'
+        if pull_re.search(text):
+            return 'IMAGE_PULL_FAILURE'
+    except Exception:
+        pass
     return 'SUCCESS_RUNNING' if image else 'UNKNOWN'
 
 try:
