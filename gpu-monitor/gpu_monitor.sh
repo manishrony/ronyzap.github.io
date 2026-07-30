@@ -377,10 +377,13 @@ epoch_to_date() {
         || date -u -r "$epoch_int" '+%Y-%m-%d' 2>/dev/null
 }
 
-# Vast.ai's platform fee sits between the host's price and what renters see, so
-# the median LISTING price is above the real competitive target. Multiply the
-# market median by this factor (deduct 10%) to get the price we aim for.
-MARKET_PRICE_DISCOUNT=0.90
+# Vast.ai's platform fee sits between the host's price and what renters see --
+# every stat vastai_market_stats() pulls (p25/median/p75/mean) is the
+# customer-facing/listed price, not the host's actual take. Vast's renter-side
+# fee is ~15% (raised from an initial 10% estimate 2026-07-30), so multiply
+# by this factor to back out the fee and get the real host-side price we
+# should be targeting.
+MARKET_PRICE_DISCOUNT=0.85
 
 # Which market-stat vastai_pricing() targets: "mean" (default), "p75",
 # "median", or "p25". mean sits above median in a right-skewed market (a few
