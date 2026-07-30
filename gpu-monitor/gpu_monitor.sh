@@ -2118,6 +2118,12 @@ if not count:
     print("[INIT] No backfill needed — no newly rented machines")
 PYEOF
 
+    # Per-instance (C.*) tracking — seed it at startup too, same as the
+    # machine-level backfill above, so instance records exist from boot
+    # instead of only appearing once the first rented-state change fires.
+    # Reuses the slots fetch already made above (slots_tmpfile) — no extra call.
+    vastai_track_instances "$(cat "$slots_tmpfile" 2>/dev/null || echo '{}')" "$tmpfile"
+
     rm -f "$tmpfile" "$slots_tmpfile"
 }
 
@@ -2341,6 +2347,187 @@ classify_workload() {
     esac
 }
 
+# ─────────────────────────────────────────────
+# Vast.ai PER-INSTANCE (C.*) rental tracking
+# ─────────────────────────────────────────────
+# Runs ALONGSIDE the machine-level rental_start/rental_end tracking above,
+# not in place of it (dashboard/profit_api.py still consume the old event
+# shape). The machine-level events only know "rented: true/false" for a
+# whole machine, so a multi-GPU machine that goes from 1 to 2 concurrent
+# renters (e.g. C.46220527 already running, C.46229712 lands on the other
+# GPU) produces no event at all — old_rented was already True. This diffs
+# the real per-instance slot map from vastai_fetch_gpu_slots() (already
+# queried once per cycle for pricing) against the last-known set of active
+# instance ids and emits instance_start/instance_end events with real GPU
+# index, image, workload type, and a best-effort rate — no extra API call:
+# the rate is the same per-GPU share of the instance's real dph_total that
+# vastai_fetch_gpu_slots() already computes.
+VASTAI_INSTANCE_STATE_FILE="${VASTAI_INSTANCE_STATE_FILE:-/var/tmp/gpu_monitor_active_instances.json}"
+
+vastai_track_instances() {
+    local gpu_slots_json="$1" machines_resp_file="$2"
+    [[ -z "$VASTAI_API_KEY" ]] && return
+
+    python3 - "$gpu_slots_json" "$machines_resp_file" "$VASTAI_INSTANCE_STATE_FILE" "$JSONL_FILE" <<'PYEOF' 2>>"$LOG_FILE"
+import sys, json, socket, datetime, glob, re, os
+
+slots_arg, machines_f, state_f, jsonl = sys.argv[1:5]
+
+def get_instance_image(instance_id):
+    if not instance_id:
+        return ''
+    pattern = re.compile(r'name: C\.' + re.escape(str(instance_id)) + r'  base_image_: (\S+)')
+    last = ''
+    for path in glob.glob('/var/lib/vastai_kaalia/kaalia.log*'):
+        try:
+            with open(path, errors='ignore') as f:
+                for line in f:
+                    m = pattern.search(line)
+                    if m:
+                        last = m.group(1)
+        except Exception:
+            pass
+    return last
+
+def classify_workload(image):
+    img = (image or '').lower()
+    if not img:
+        return 'unknown'
+    if 'self-test' in img:
+        return 'selftest'
+    if any(k in img for k in ('miner', 'srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer', 'matador', 'wildrig')):
+        return 'mining'
+    if any(k in img for k in ('hashcat', 'hcxdump', 'hcxtools', 'johntheripper', 'john-the-ripper')):
+        return 'cracking'
+    if any(k in img for k in ('jupyter', 'linux-desktop', 'vscode', 'desktop', 'vnc')):
+        return 'desktop'
+    if any(k in img for k in ('llama', 'vllm', 'ollama', 'text-generation', 'tgi', 'triton', 'comfyui', 'stable-diffusion', 'automatic1111')):
+        return 'inference'
+    if any(k in img for k in ('pytorch', 'tensorflow', 'axolotl', 'unsloth', 'deepspeed', 'train')):
+        return 'training'
+    return 'unknown'
+
+try:
+    slots_by_machine = json.loads(slots_arg or "{}")
+except Exception:
+    slots_by_machine = {}
+
+hn = socket.gethostname()
+my_mids = set()
+try:
+    with open(machines_f) as f:
+        mdata = json.load(f)
+    for m in mdata.get('machines', []):
+        if m.get('hostname', '') == hn:
+            my_mids.add(str(m.get('id', '')))
+except Exception:
+    pass
+
+# Current active instance map: instance_id -> {machine_id, gpu_ids, rate}
+current = {}
+for mid, gpus in slots_by_machine.items():
+    if mid not in my_mids:
+        continue
+    per_instance = {}
+    for gidx, slot in gpus.items():
+        iid = slot.get('instance_id')
+        if not iid:
+            continue
+        rec = per_instance.setdefault(iid, {'gpu_ids': [], 'rate': 0.0})
+        rec['gpu_ids'].append(gidx)
+        rec['rate'] += float(slot.get('rate', 0) or 0)
+    for iid, rec in per_instance.items():
+        current[iid] = {
+            'machine_id': mid,
+            'gpu_ids': sorted(rec['gpu_ids'], key=lambda x: int(x) if str(x).isdigit() else 0),
+            'rate': round(rec['rate'], 4),
+        }
+
+state_existed = os.path.exists(state_f)
+prev = {}
+try:
+    with open(state_f) as f:
+        prev = json.load(f)
+except Exception:
+    prev = {}
+
+now = datetime.datetime.now(datetime.timezone.utc)
+now_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+started = 0
+ended = 0
+new_state = {}
+
+with open(jsonl, 'a') as jf:
+    for iid, rec in current.items():
+        if iid in prev:
+            entry = dict(prev[iid])
+            entry['rate'] = rec['rate']
+            entry['gpu_ids'] = rec['gpu_ids']
+            entry['machine_id'] = rec['machine_id']
+            new_state[iid] = entry
+            continue
+        image = get_instance_image(iid)
+        workload_type = classify_workload(image)
+        new_state[iid] = {
+            'machine_id': rec['machine_id'],
+            'gpu_ids': rec['gpu_ids'],
+            'rate': rec['rate'],
+            'image': image,
+            'workload_type': workload_type,
+            'start_ts': now_str,
+        }
+        event = {
+            'ts': now_str,
+            'type': 'instance_start',
+            'host': hn,
+            'instance_id': iid,
+            'machine_id': rec['machine_id'],
+            'gpu_ids': rec['gpu_ids'],
+            'rate': '$%.3f/hr' % rec['rate'],
+            'image': image,
+            'workload_type': workload_type,
+            'backfilled': not state_existed,
+        }
+        jf.write(json.dumps(event) + '\n')
+        started += 1
+
+    for iid, rec in prev.items():
+        if iid in current:
+            continue
+        try:
+            start_dt = datetime.datetime.strptime(rec.get('start_ts', ''), '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
+            duration_hours = max((now - start_dt).total_seconds() / 3600.0, 0)
+        except Exception:
+            duration_hours = 0
+        rate = float(rec.get('rate', 0) or 0)
+        event = {
+            'ts': now_str,
+            'type': 'instance_end',
+            'host': hn,
+            'instance_id': iid,
+            'machine_id': rec.get('machine_id', ''),
+            'gpu_ids': rec.get('gpu_ids', []),
+            'rate': '$%.3f/hr' % rate,
+            'image': rec.get('image', ''),
+            'workload_type': rec.get('workload_type', 'unknown'),
+            'duration_hours': round(duration_hours, 3),
+            'revenue_estimate': round(rate * duration_hours, 4),
+        }
+        jf.write(json.dumps(event) + '\n')
+        ended += 1
+
+try:
+    with open(state_f, 'w') as f:
+        json.dump(new_state, f)
+except Exception as e:
+    sys.stderr.write("[INSTANCE-TRACK] failed to write state: %s\n" % e)
+
+if started or ended:
+    print("[INSTANCE-TRACK] %d started, %d ended, %d active" % (started, ended, len(new_state)))
+PYEOF
+}
+
 # Check machine rental status from HOST perspective.
 # Uses /machines/?owner=me — 'rented' field = someone is renting your GPU.
 # Fires rental_start/end Telegram alerts only when rented status changes.
@@ -2475,6 +2662,9 @@ PYEOF
     # Response parsed cleanly — cache it so vastai_pricing (later this cycle) can
     # reuse it instead of re-fetching /machines/ and getting rate-limited.
     printf '%s' "$response" > "$MACHINES_CACHE_FILE" 2>/dev/null || true
+
+    # Per-instance (C.*) tracking — alongside the machine-level tracking below.
+    vastai_track_instances "$gpu_slots_json" "$MACHINES_CACHE_FILE"
 
     local last_state=""
     [[ -f "$VASTAI_LAST_STATE_FILE" ]] && last_state=$(cat "$VASTAI_LAST_STATE_FILE")
