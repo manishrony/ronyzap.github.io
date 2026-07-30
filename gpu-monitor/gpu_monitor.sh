@@ -506,8 +506,11 @@ LAST_SUCCESS_STATE_DIR="/var/tmp/gpu_monitor_last_success"
 # occupied gap is shorter than this window, the vacancy clock is paused and
 # resumed (not reset) once it goes vacant again; only an occupied stretch
 # at least this long counts as a real/meaningful rental and clears it for
-# real. 30 min chosen per this data (observed micro-rentals ran ~5-10 min).
-VACANCY_RESUME_WINDOW_SECS="${VACANCY_RESUME_WINDOW_SECS:-1800}"
+# real. 15 min (lowered from 30 min 2026-07-30): a sub-15min rental is
+# treated as noise, not real demand, so it should still count toward
+# decay/vacancy instead of pausing it -- anything 15min+ is long enough to
+# count as a genuine rental and resets the clock.
+VACANCY_RESUME_WINDOW_SECS="${VACANCY_RESUME_WINDOW_SECS:-900}"
 
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
