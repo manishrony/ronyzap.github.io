@@ -457,13 +457,17 @@ STEPDOWN_CENTS_MAX=2
 # in the $0.38-0.44 band while one GPU sat free, direct evidence that
 # demand exists well above the floor and that aggressively decaying a
 # partially-occupied listing toward floor would give away margin the
-# market had already shown it would pay. Defaults hold near target for 2h,
-# then take 10h more to fully reach the floor (12h total) — deliberately
-# slow, so a genuinely idle machine spends most of its vacancy in the
-# $0.38-0.44 demand band this data actually supports, not rushed to floor.
+# market had already shown it would pay. Defaults hold near target for 4h,
+# then take 20h more to fully reach the floor (24h total) — slowed further
+# 2026-07-30 (was 2h/10h = 12h total): a machine reaching the floor after
+# only ~2h of raw vacancy turned out to include time where Vast had assigned
+# a GPU slot to a renter whose container never actually started (customer
+# GHCR image-auth failures, C.46310644/C.46310821 — see
+# get_instance_lifecycle_status() below) — that's not real absence of
+# demand, so decaying that fast toward the floor on it was too aggressive.
 DECAY_PRICING="${DECAY_PRICING:-0}"
-DECAY_GRACE_HOURS="${DECAY_GRACE_HOURS:-2.0}"
-DECAY_HOURS="${DECAY_HOURS:-10.0}"
+DECAY_GRACE_HOURS="${DECAY_GRACE_HOURS:-4.0}"
+DECAY_HOURS="${DECAY_HOURS:-20.0}"
 DECAY_STATE_DIR="/var/tmp/gpu_monitor_decay"
 
 # Micro-rentals (5-10 min jobs that launch, run briefly, and vanish -- e.g.
@@ -2463,6 +2467,43 @@ def classify_workload(image):
         return 'training'
     return 'unknown'
 
+# Vast assigns a GPU slot (and a real dph_total/instance_id in /instances/)
+# the moment it targets a machine for a rental -- BEFORE Kaalia has actually
+# managed to create the renter's container. If the renter's own image pull
+# fails (bad/expired GHCR credentials, private image with no pull access,
+# typo'd tag, ...), Kaalia keeps retrying Create and eventually Vast tears
+# the target down -- confirmed live 2026-07-30 (C.46310644/C.46310821,
+# ghcr.io/chr0nict/recon-fleet:latest, "denied: denied" / "docker login
+# failed!"). That slot still shows up here as a normal instance_start/
+# instance_end pair even though no GPU work ever ran, which would make a
+# renter's failed auth attempt look identical to genuine short-lived demand
+# (and wrongly count against "the low price attracted a real rental").
+# Best-effort classification from Kaalia's own log around this instance's
+# Create attempt(s) so the dashboard/analytics can tell these apart; only
+# the auth/pull failure cases are reliably detectable from this log, so
+# anything else with a resolved image is assumed SUCCESS_RUNNING.
+def get_instance_lifecycle_status(instance_id, image):
+    if not instance_id:
+        return 'UNKNOWN'
+    id_re = re.compile(r'C\.' + re.escape(str(instance_id)) + r'\b')
+    auth_re = re.compile(r'denied: denied|docker login failed', re.I)
+    pull_re = re.compile(r'manifest unknown|pull access denied|no such host|repository does not exist', re.I)
+    for path in glob.glob('/var/lib/vastai_kaalia/kaalia.log*'):
+        try:
+            with open(path, errors='ignore') as f:
+                lines = f.readlines()
+        except Exception:
+            continue
+        for i, line in enumerate(lines):
+            if not id_re.search(line):
+                continue
+            window = ''.join(lines[i:i + 8])
+            if auth_re.search(window):
+                return 'CUSTOMER_IMAGE_AUTH_FAILURE'
+            if pull_re.search(window):
+                return 'IMAGE_PULL_FAILURE'
+    return 'SUCCESS_RUNNING' if image else 'UNKNOWN'
+
 try:
     slots_by_machine = json.loads(slots_arg or "{}")
 except Exception:
@@ -2525,12 +2566,14 @@ with open(jsonl, 'a') as jf:
             continue
         image = get_instance_image(iid)
         workload_type = classify_workload(image)
+        lifecycle_status = get_instance_lifecycle_status(iid, image)
         new_state[iid] = {
             'machine_id': rec['machine_id'],
             'gpu_ids': rec['gpu_ids'],
             'rate': rec['rate'],
             'image': image,
             'workload_type': workload_type,
+            'lifecycle_status': lifecycle_status,
             'start_ts': now_str,
         }
         event = {
@@ -2543,6 +2586,7 @@ with open(jsonl, 'a') as jf:
             'rate': '$%.3f/hr' % rec['rate'],
             'image': image,
             'workload_type': workload_type,
+            'lifecycle_status': lifecycle_status,
             'backfilled': not state_existed,
         }
         jf.write(json.dumps(event) + '\n')
@@ -2557,6 +2601,10 @@ with open(jsonl, 'a') as jf:
         except Exception:
             duration_hours = 0
         rate = float(rec.get('rate', 0) or 0)
+        # Re-check lifecycle status at end time too -- the auth/pull-failure
+        # log lines can land a cycle or two after the instance_start event
+        # already fired with a SUCCESS_RUNNING/UNKNOWN guess.
+        lifecycle_status = get_instance_lifecycle_status(iid, rec.get('image', ''))
         event = {
             'ts': now_str,
             'type': 'instance_end',
@@ -2567,6 +2615,7 @@ with open(jsonl, 'a') as jf:
             'rate': '$%.3f/hr' % rate,
             'image': rec.get('image', ''),
             'workload_type': rec.get('workload_type', 'unknown'),
+            'lifecycle_status': lifecycle_status,
             'duration_hours': round(duration_hours, 3),
             'revenue_estimate': round(rate * duration_hours, 4),
         }
