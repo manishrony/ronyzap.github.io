@@ -466,6 +466,18 @@ DECAY_GRACE_HOURS="${DECAY_GRACE_HOURS:-2.0}"
 DECAY_HOURS="${DECAY_HOURS:-10.0}"
 DECAY_STATE_DIR="/var/tmp/gpu_monitor_decay"
 
+# Micro-rentals (5-10 min jobs that launch, run briefly, and vanish -- e.g.
+# Promera/Goubli/LatentSync/MusicVideo-style short AI jobs, confirmed live
+# 2026-07-30) were wiping out hours of accumulated vacancy the instant
+# free_count touched 0, so the very next vacant cycle looked like a FRESH
+# vacancy and pricing jumped straight back toward the market mean -- even
+# though realistically the machine still has weak demand, not none. If the
+# occupied gap is shorter than this window, the vacancy clock is paused and
+# resumed (not reset) once it goes vacant again; only an occupied stretch
+# at least this long counts as a real/meaningful rental and clears it for
+# real. 30 min chosen per this data (observed micro-rentals ran ~5-10 min).
+VACANCY_RESUME_WINDOW_SECS="${VACANCY_RESUME_WINDOW_SECS:-1800}"
+
 # --- GPU count watchdog ---
 # 0 = auto-detect from first successful nvidia-smi run; set to e.g. 8 to override
 EXPECTED_GPU_COUNT=0
@@ -3172,14 +3184,47 @@ PYEOF
         # climbing back up).
         mkdir -p "$VACANCY_STATE_DIR" 2>/dev/null || true
         local vacancy_file="$VACANCY_STATE_DIR/$mid" idle_reset_file="$VACANCY_STATE_DIR/${mid}.idle_reset" vacancy_secs=0 now_epoch
+        local paused_file="$VACANCY_STATE_DIR/${mid}.paused"
         now_epoch=$(date +%s)
         if [[ "${free_count:-0}" -gt 0 ]]; then
+            # Vacant. If the machine just came off a short occupied gap (a
+            # micro-rental, not a meaningful one), resume the paused vacancy
+            # clock instead of starting a fresh one at 0.
+            if [[ -f "$paused_file" ]]; then
+                local paused_secs paused_since
+                read -r paused_secs paused_since < "$paused_file" 2>/dev/null
+                paused_secs="${paused_secs:-0}"; paused_since="${paused_since:-$now_epoch}"
+                local occupied_secs=$(( now_epoch - paused_since ))
+                if (( occupied_secs < VACANCY_RESUME_WINDOW_SECS )); then
+                    echo "$(( now_epoch - paused_secs ))" > "$vacancy_file"
+                    log "  Machine $mid: micro-rental ended after ${occupied_secs}s — resuming vacancy clock (was ${paused_secs}s, not reset)"
+                fi
+                rm -f "$paused_file"
+            fi
             [[ -f "$vacancy_file" ]] || echo "$now_epoch" > "$vacancy_file"
             local vacant_since
             vacant_since=$(cat "$vacancy_file" 2>/dev/null || echo "$now_epoch")
             vacancy_secs=$(( now_epoch - vacant_since ))
         else
-            rm -f "$vacancy_file" "$idle_reset_file" "$DECAY_STATE_DIR/$mid" 2>/dev/null || true
+            # Occupied. On the transition edge (vacancy_file still present),
+            # stash the accumulated vacancy into paused_file instead of
+            # discarding it outright -- it's only a real reset once occupied
+            # for VACANCY_RESUME_WINDOW_SECS (see restore branch above).
+            if [[ -f "$vacancy_file" ]]; then
+                local prior_vacant_since
+                prior_vacant_since=$(cat "$vacancy_file" 2>/dev/null || echo "$now_epoch")
+                echo "$(( now_epoch - prior_vacant_since )) $now_epoch" > "$paused_file"
+                rm -f "$vacancy_file" "$idle_reset_file" "$DECAY_STATE_DIR/$mid" 2>/dev/null || true
+            elif [[ -f "$paused_file" ]]; then
+                local paused_secs2 paused_since2
+                read -r paused_secs2 paused_since2 < "$paused_file" 2>/dev/null
+                paused_since2="${paused_since2:-$now_epoch}"
+                if (( now_epoch - paused_since2 >= VACANCY_RESUME_WINDOW_SECS )); then
+                    # Occupied long enough now to count as a real rental --
+                    # clear the paused vacancy so the NEXT vacancy starts at 0.
+                    rm -f "$paused_file"
+                fi
+            fi
         fi
 
         # Fetch market stats; parse p25/median/p75/mean in one Python call
