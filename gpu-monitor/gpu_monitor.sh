@@ -457,18 +457,45 @@ STEPDOWN_CENTS_MAX=2
 # in the $0.38-0.44 band while one GPU sat free, direct evidence that
 # demand exists well above the floor and that aggressively decaying a
 # partially-occupied listing toward floor would give away margin the
-# market had already shown it would pay. Defaults hold near target for 4h,
-# then take 20h more to fully reach the floor (24h total) — slowed further
-# 2026-07-30 (was 2h/10h = 12h total): a machine reaching the floor after
-# only ~2h of raw vacancy turned out to include time where Vast had assigned
-# a GPU slot to a renter whose container never actually started (customer
-# GHCR image-auth failures, C.46310644/C.46310821 — see
-# get_instance_lifecycle_status() below) — that's not real absence of
-# demand, so decaying that fast toward the floor on it was too aggressive.
+# market had already shown it would pay. Retuned again 2026-07-30 (was
+# 4h/20h = 24h total, briefly, after the recon-fleet false-vacancy finding):
+# now that the vacant target itself is median-anchored instead of mean-
+# anchored (see VACANT_TARGET_BLEND below), the price no longer has as far
+# to fall in the first place, so the earlier 24h-to-floor was overcorrecting
+# for a problem the new target model already mostly fixes. 1h grace + 7h
+# decay (8h total) reacts materially faster while still not dumping straight
+# to floor on a single bad sample.
 DECAY_PRICING="${DECAY_PRICING:-0}"
-DECAY_GRACE_HOURS="${DECAY_GRACE_HOURS:-4.0}"
-DECAY_HOURS="${DECAY_HOURS:-20.0}"
+DECAY_GRACE_HOURS="${DECAY_GRACE_HOURS:-1.0}"
+DECAY_HOURS="${DECAY_HOURS:-7.0}"
 DECAY_STATE_DIR="/var/tmp/gpu_monitor_decay"
+
+# ─────────────────────────────────────────────
+# Target-price model (2026-07-30 redesign)
+# ─────────────────────────────────────────────
+# Replaces "always target PRICE_TARGET_STAT" with three distinct regimes,
+# since a flat mean-target pushed the ask above where rentals actually
+# happened (logs showed rentals landing near median $0.36-0.41 while mean
+# sat at $0.44-0.49) and reset straight back to mean the instant a rental
+# ended, discarding evidence of what price had just worked:
+#   - FULLY rented:  target = min(smoothed_mean, smoothed_p75) -- chase the
+#     upper band since occupancy proves the ask isn't scaring anyone off,
+#     but don't blindly chase p75 past what the average buyer pays.
+#   - PARTIALLY rented: target = max(smoothed_median, last_success_price) --
+#     hold near whatever price is already demonstrated to work.
+#   - FULLY vacant: target = smoothed_median + VACANT_TARGET_BLEND *
+#     (smoothed_mean - smoothed_median), floored at 98% of
+#     last_success_price so ending a rental doesn't reset the ask all the
+#     way back to mean -- the next vacancy starts near where the last one
+#     actually got rented, not the market ceiling.
+# smoothed_median/mean are an EWMA (MARKET_SMOOTH_ALPHA weight on the new
+# sample) of vastai_market_stats()'s per-cycle pull -- raw samples swung
+# $0.04-0.07 cycle to cycle live on 2026-07-30, which would otherwise feed
+# noise straight into the target.
+VACANT_TARGET_BLEND="${VACANT_TARGET_BLEND:-0.10}"
+MARKET_SMOOTH_ALPHA="${MARKET_SMOOTH_ALPHA:-0.30}"
+MARKET_SMOOTH_STATE_DIR="/var/tmp/gpu_monitor_market_smooth"
+LAST_SUCCESS_STATE_DIR="/var/tmp/gpu_monitor_last_success"
 
 # Micro-rentals (5-10 min jobs that launch, run briefly, and vanish -- e.g.
 # Promera/Goubli/LatentSync/MusicVideo-style short AI jobs, confirmed live
@@ -3131,6 +3158,11 @@ PYEOF
 )
 }
 
+# bc-based min/max for the target-price model below (bash has no float
+# comparison operators, and these are called every machine every cycle).
+bc_max() { echo "$(( $(echo "$1 > $2" | bc -l) )) $1 $2" | awk '{print ($1==1)?$2:$3}'; }
+bc_min() { echo "$(( $(echo "$1 < $2" | bc -l) )) $1 $2" | awk '{print ($1==1)?$2:$3}'; }
+
 vastai_pricing() {
     [[ -z "$VASTAI_API_KEY" ]] && return
 
@@ -3403,19 +3435,75 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             log "  Machine $mid: partially rented — ${free_count} free GPU(s), pricing them toward ${target_label}"
         fi
 
-        # Target the configured stat (PRICE_TARGET_STAT — median by default;
-        # fall back to floor if that stat is unavailable).
-        local target="$target_value"
+        # ── Target-price model (2026-07-30 redesign) ──────────────────────
+        # Smooth median/mean per machine (EWMA) so a single noisy market
+        # sample doesn't whipsaw the target -- raw samples swung $0.04-0.07
+        # cycle to cycle live on 2026-07-30.
+        mkdir -p "$MARKET_SMOOTH_STATE_DIR" "$LAST_SUCCESS_STATE_DIR" 2>/dev/null || true
+        local smooth_file="$MARKET_SMOOTH_STATE_DIR/$mid"
+        local smoothed_median="$market_median" smoothed_mean="$market_mean" smoothed_p75="$market_p75"
+        if [[ "$market_median" != "0" && "$market_mean" != "0" ]]; then
+            local prev_smed="$market_median" prev_smean="$market_mean" prev_smp75="$market_p75"
+            if [[ -f "$smooth_file" ]]; then
+                read -r prev_smed prev_smean prev_smp75 < "$smooth_file" 2>/dev/null
+                prev_smed="${prev_smed:-$market_median}"; prev_smean="${prev_smean:-$market_mean}"; prev_smp75="${prev_smp75:-$market_p75}"
+            fi
+            smoothed_median=$(printf "%.4f" "$(echo "scale=4; $MARKET_SMOOTH_ALPHA * $market_median + (1 - $MARKET_SMOOTH_ALPHA) * $prev_smed" | bc)")
+            smoothed_mean=$(printf "%.4f" "$(echo "scale=4; $MARKET_SMOOTH_ALPHA * $market_mean + (1 - $MARKET_SMOOTH_ALPHA) * $prev_smean" | bc)")
+            smoothed_p75=$(printf "%.4f" "$(echo "scale=4; $MARKET_SMOOTH_ALPHA * $market_p75 + (1 - $MARKET_SMOOTH_ALPHA) * $prev_smp75" | bc)")
+            echo "$smoothed_median $smoothed_mean $smoothed_p75" > "$smooth_file"
+        elif [[ -f "$smooth_file" ]]; then
+            read -r smoothed_median smoothed_mean smoothed_p75 < "$smooth_file" 2>/dev/null
+        fi
+        smoothed_median="${smoothed_median:-0}"; smoothed_mean="${smoothed_mean:-0}"; smoothed_p75="${smoothed_p75:-0}"
+
+        # Remember the last price that actually had a renter attached, so a
+        # vacancy right after a rental ends starts near what just worked
+        # instead of resetting all the way to mean.
+        local success_file="$LAST_SUCCESS_STATE_DIR/$mid" last_success="0"
+        [[ "$rented" == "True" ]] && echo "$cur_bid" > "$success_file"
+        [[ -f "$success_file" ]] && last_success=$(cat "$success_file" 2>/dev/null || echo "0")
+
+        local target target_label
+        if (( fully_rented )); then
+            # Occupancy proves the ask isn't scaring anyone off -- chase the
+            # upper band, capped at p75 so a couple of premium outliers can't
+            # drag the ask past what the average renter actually pays.
+            target=$(bc_min "$smoothed_mean" "$smoothed_p75")
+            [[ "$target" == "0" ]] && target="$smoothed_median"
+            target_label="min(mean,p75)"
+        elif [[ "$rented" == "True" ]]; then
+            # Partial rental: hold near whatever price is already
+            # demonstrated to work, not the (higher) full-vacancy target.
+            target=$(bc_max "$smoothed_median" "$last_success")
+            target_label="max(median,last_success)"
+        else
+            # Fully vacant: stay just above median (blended toward mean by
+            # VACANT_TARGET_BLEND), floored at 98% of the last price that
+            # actually attracted a renter so the ask doesn't reset all the
+            # way back to mean the moment a rental ends.
+            local blend_target
+            blend_target=$(printf "%.4f" "$(echo "scale=4; $smoothed_median + $VACANT_TARGET_BLEND * ($smoothed_mean - $smoothed_median)" | bc)")
+            if (( $(echo "$last_success > 0" | bc -l) )); then
+                local last_success_floor
+                last_success_floor=$(printf "%.4f" "$(echo "scale=4; $last_success * 0.98" | bc)")
+                target=$(bc_max "$blend_target" "$last_success_floor")
+            else
+                target="$blend_target"
+            fi
+            target_label="vacant-base"
+        fi
         if [[ -z "$target" || "$target" == "0" ]]; then
             target="$floor"
-            log "  Machine $mid: market ${target_label} unavailable, targeting floor \$$floor"
+            target_label="floor"
+            log "  Machine $mid: market data unavailable, targeting floor \$$floor"
         fi
 
         local vacancy_hours=$(( vacancy_secs / 3600 ))
         local idle_mode=0
         [[ "${free_count:-0}" -gt 0 ]] && (( vacancy_secs >= IDLE_LISTING_THRESHOLD )) && idle_mode=1
 
-        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid | vacant=${vacancy_hours}h$([[ $idle_mode -eq 1 ]] && echo ' (idle mode)')"
+        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | smoothed median=\$$smoothed_median mean=\$$smoothed_mean | last_success=\$$last_success | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid | vacant=${vacancy_hours}h$([[ $idle_mode -eq 1 ]] && echo ' (idle mode)')"
 
         # Random 1-2¢ step, either direction, applied below whenever more
         # than 2¢ off ${target_label} (or walking up from the start_price
@@ -3486,8 +3574,8 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             # check below — but that only climbs once $rented confirms the
             # discount actually attracted someone (see that branch).
             touch "$idle_reset_file" 2>/dev/null || true
-            new_price="$start_price"
-            direction="↓/↑ (idle ${vacancy_hours}h+ unrented — re-anchored to median-${START_PRICE_DISCOUNT} \$$start_price to re-attract)"
+            new_price="$target"
+            direction="↓/↑ (idle ${vacancy_hours}h+ unrented — re-anchored to ${target_label} \$$target to re-attract)"
         elif (( fully_rented )) && (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             # Fully rented and above target — hold rather than lower. There's
             # no free inventory a lower ask would attract right now, so a
@@ -3551,7 +3639,7 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
 Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
 <b>\$$cur_bid → \$$new_price/hr</b> $direction
 Target (${target_label}): \$$target/hr | p25: \$$market_price | median: \$$market_median | p75: \$$market_p75 | mean: \$$market_mean | Floor: \$$floor/hr"
-            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"market_median\":$market_median,\"market_p75\":$market_p75,\"market_mean\":$market_mean,\"target_stat\":\"$target_label\",\"target_value\":$target,\"floor\":$floor,\"expire_date\":\"$expire_date\",\"idle_mode\":$([[ $idle_mode -eq 1 ]] && echo true || echo false),\"vacancy_hours\":$vacancy_hours}"
+            write_event "price_change" "{\"machine_id\":\"$mid\",\"gpu_name\":\"$gpu_name\",\"num_gpus\":$num_gpus,\"old_price\":$cur_bid,\"new_price\":$new_price,\"market_price\":$market_price,\"market_median\":$market_median,\"market_p75\":$market_p75,\"market_mean\":$market_mean,\"smoothed_median\":$smoothed_median,\"smoothed_mean\":$smoothed_mean,\"smoothed_p75\":$smoothed_p75,\"last_success_price\":$last_success,\"target_stat\":\"$target_label\",\"target_value\":$target,\"floor\":$floor,\"expire_date\":\"$expire_date\",\"idle_mode\":$([[ $idle_mode -eq 1 ]] && echo true || echo false),\"vacancy_hours\":$vacancy_hours}"
         else
             log "  Machine $mid: price update FAILED"
         fi
