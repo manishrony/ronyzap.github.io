@@ -510,6 +510,18 @@ LAST_SUCCESS_STATE_DIR="/var/tmp/gpu_monitor_last_success"
 # ask upward -- only genuine below-median vacancy-driven demand does.
 RATCHET_UP_WHILE_FULL="${RATCHET_UP_WHILE_FULL:-1}"
 
+# Whether a machine that's occupancy-confirmed FULLY VACANT (free_count ==
+# num_gpus, regardless of what Vast's own possibly-stale $rented flag says)
+# is allowed to ratchet its price up toward target (default 1, existing
+# behavior). Set to 0 per-rig for an occupancy-first strategy: a below-
+# target price while genuinely empty should hold (or keep decaying, if
+# DECAY_PRICING=1) rather than climb back toward target just because
+# $rented hadn't caught up yet. Confirmed live 2026-07-31 (zappa1): a
+# gpu-monitor restart left $rented stale "True" for one cycle after
+# gpu_occupancy already read "x x", so a manually-set $0.376 got ratcheted
+# straight back up to the $0.423 target with no renter in sight.
+RATCHET_UP_WHILE_VACANT="${RATCHET_UP_WHILE_VACANT:-1}"
+
 # Micro-rentals (5-10 min jobs that launch, run briefly, and vanish -- e.g.
 # Promera/Goubli/LatentSync/MusicVideo-style short AI jobs, confirmed live
 # 2026-07-30) were wiping out hours of accumulated vacancy the instant
@@ -3495,6 +3507,18 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             log "  Machine $mid: partially rented — ${free_count} free GPU(s), pricing them toward ${target_label}"
         fi
 
+        # Occupancy-confirmed fully vacant, independent of Vast's own $rented
+        # flag -- that flag can lag the real gpu_occupancy string by a cycle
+        # or more (confirmed live 2026-07-31: right after a gpu-monitor
+        # restart, $rented read stale "True" while gpu_occupancy already
+        # showed "x x", causing the up-ratchet branch below -- which only
+        # ever checked $rented -- to raise a manually-set $0.376 back to the
+        # $0.423 target even though the machine was actually empty). Use the
+        # occupancy-derived free_count as the source of truth for "is this
+        # genuinely vacant" instead of trusting $rented alone.
+        local fully_vacant=0
+        [[ "${free_count:-0}" -ge "$num_gpus" ]] && fully_vacant=1
+
         # ── Target-price model (2026-07-30 redesign) ──────────────────────
         # Smooth median/mean per machine (EWMA) so a single noisy market
         # sample doesn't whipsaw the target -- raw samples swung $0.04-0.07
@@ -3658,6 +3682,14 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
             direction="↓ ${down_cents}¢ (above ${target_label})"
+        elif (( fully_vacant )) && [[ "${RATCHET_UP_WHILE_VACANT:-1}" != "1" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
+            # Occupancy (free_count) says genuinely empty, even if $rented
+            # is stale-True this cycle -- see RATCHET_UP_WHILE_VACANT's
+            # setup comment above. Hold instead of climbing back toward
+            # target; DECAY_PRICING (if enabled) still applies below and can
+            # lower this further, just never raise it.
+            log "  Machine $mid: occupancy-confirmed fully vacant, below ${target_label} (\$$target) — RATCHET_UP_WHILE_VACANT=0, holding at \$$cur_bid"
+            continue
         elif [[ "$rented" == "True" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
             direction="↑ ${up_cents}¢ (below ${target_label})"
