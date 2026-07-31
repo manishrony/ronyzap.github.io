@@ -3589,6 +3589,16 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
 
         log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | smoothed median=\$$smoothed_median mean=\$$smoothed_mean | last_success=\$$last_success | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid | vacant=${vacancy_hours}h$([[ $idle_mode -eq 1 ]] && echo ' (idle mode)')"
 
+        # Trace-level decision inputs -- added 2026-07-31 to diagnose a
+        # reproducible case (zappa1, machine 138419) where a manually-set
+        # below-target price got raised back toward target on a cycle where
+        # neither RATCHET_UP_WHILE_FULL nor RATCHET_UP_WHILE_VACANT should
+        # have allowed it. Logs the EXACT raw inputs each branch condition
+        # actually evaluates against, so the next occurrence pinpoints which
+        # branch fired instead of requiring after-the-fact inference from
+        # the summary line above.
+        log "  Machine $mid: [TRACE] rented=$rented free_count=$free_count num_gpus=$num_gpus fully_rented=$fully_rented fully_vacant=$fully_vacant vacancy_secs=$vacancy_secs idle_mode=$idle_mode idle_reset_file_exists=$([[ -f "$idle_reset_file" ]] && echo yes || echo no) RATCHET_UP_WHILE_FULL='${RATCHET_UP_WHILE_FULL:-1}' RATCHET_UP_WHILE_VACANT='${RATCHET_UP_WHILE_VACANT:-1}' listed=$listed"
+
         # Random 1-2¢ step, either direction, applied below whenever more
         # than 2¢ off ${target_label} (or walking up from the start_price
         # anchor computed below, which is also more than 2¢ under target).
