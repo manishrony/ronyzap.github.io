@@ -1788,9 +1788,21 @@ function renderRigCard(idx, d) {
   if (rentalBar) {
     if (isRented) {
       rentalBar.classList.remove("hidden");
-      document.getElementById("rc"+idx+"-rental-rate").textContent = "● Rented @ " + (lastRent.rate || "—");
+      // Prefer the latest price_change over the original rental_start for
+      // both rate and end date -- rental_start only fires once, on the
+      // False->True transition. A machine that stays continuously "rented"
+      // (back-to-back tenants, Vast's own rented flag never flipping) never
+      // gets a fresh rental_start, so its rate/expire_date stay frozen at
+      // whatever they were on day one -- confirmed live 2026-07-31 (machine
+      // 138419: dashboard showed "ends ~2026-07-31", the exact estimate from
+      // a 2026-06-28 rental_start, despite dozens of repricings since).
+      // price_change fires on every real price update and always carries a
+      // fresh expire_date, so it's a much better proxy for "current."
       const lastPc = [...(d.events||[])].filter(e=>e.type==="price_change").pop();
-      const rcExpDate = lastRent.expire_date || lastPc?.expire_date;
+      const useLivePc = lastPc && lastPc.ts >= lastRent.ts;
+      const displayRate = useLivePc ? ("$" + Number(lastPc.new_price).toFixed(3) + "/hr") : (lastRent.rate || "—");
+      document.getElementById("rc"+idx+"-rental-rate").textContent = "● Rented @ " + displayRate;
+      const rcExpDate = (useLivePc ? lastPc.expire_date : null) || lastRent.expire_date;
       document.getElementById("rc"+idx+"-rental-end").textContent = rcExpDate ? "ends ~" + rcExpDate : "";
     } else {
       rentalBar.classList.add("hidden");

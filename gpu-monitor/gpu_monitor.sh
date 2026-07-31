@@ -3245,11 +3245,12 @@ for m in data.get('machines', []):
         free_count = sum(1 for c in occ_chars[:num_gpus] if c in KNOWN_FREE_CHARS)
     else:
         free_count = 0 if rented else num_gpus
-    print('%s|%s|%s|%s|%s|%s|%s' % (mid, rented, listed, gpu_name, cur_bid, num_gpus, free_count))
+    end_date = m.get('end_date') or ''
+    print('%s|%s|%s|%s|%s|%s|%s|%s' % (mid, rented, listed, gpu_name, cur_bid, num_gpus, free_count, end_date))
 PYEOF
     [[ -n "$fetched_tmp" ]] && rm -f "$fetched_tmp"
 
-    while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus free_count; do
+    while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus free_count end_epoch; do
 
         [[ -z "$mid" ]] && continue
 
@@ -3634,8 +3635,21 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             continue
         fi
 
+        # Prefer Vast's own real end_date (confirmed to match the account
+        # console's "Contract end" exactly -- see vastai_check()'s comment
+        # above) over the rough MAX_RENTAL_DAYS guess, so the dashboard's
+        # "ends ~" doesn't stay pinned to whatever the ORIGINAL rental_start
+        # event estimated on day one, even after the underlying tenant has
+        # renewed/changed multiple times since (confirmed live 2026-07-31,
+        # machine 138419: dashboard showed "ends ~2026-07-31", the exact
+        # estimate from the 2026-06-28 rental_start, despite the machine
+        # having been continuously rented and repriced dozens of times since).
         local expire_date
-        expire_date=$(estimated_expire_date)
+        if expire_date=$(epoch_to_date "$end_epoch") && [[ -n "$expire_date" ]]; then
+            :
+        else
+            expire_date=$(estimated_expire_date)
+        fi
 
         log "  Machine $mid: \$$cur_bid → \$$new_price/hr $direction (max rental: $expire_date)"
 

@@ -487,14 +487,22 @@ function renderOverview() {
   document.getElementById("stat-rental-status").innerHTML = isRented
     ? `<span class="text-emerald-400">● Active</span>`
     : `<span class="text-slate-500">○ Available</span>`;
-  document.getElementById("stat-rental-sub").textContent = isRented
-    ? (lastRentStart.gpus || "") + " @ " + (lastRentStart.rate || "")
-    : "No active rental";
   const latestPC = [...STATE.events].filter(e => e.type === "price_change").pop();
+  // Prefer the latest price_change over rental_start for the "@ rate" sub
+  // and end date -- rental_start only fires once, on the False->True
+  // transition, so a machine that stays continuously rented (back-to-back
+  // tenants, Vast's own rented flag never flipping) never gets a fresh one
+  // and its rate/expire_date stay frozen at day-one values forever
+  // (confirmed live 2026-07-31). price_change fires on every real price
+  // update and always carries a fresh expire_date.
+  const useLivePC = isRented && latestPC && lastRentStart && latestPC.ts >= lastRentStart.ts;
+  document.getElementById("stat-rental-sub").textContent = isRented
+    ? (lastRentStart.gpus || "") + " @ " + (useLivePC ? ("$" + Number(latestPC.new_price).toFixed(4) + "/hr") : (lastRentStart.rate || ""))
+    : "No active rental";
   const rateEl = document.getElementById("stat-rental-rate");
   const endEl = document.getElementById("stat-rental-end");
   if (rateEl) rateEl.textContent = latestPC?.new_price ? "Listed: $" + Number(latestPC.new_price).toFixed(4) + "/hr" : "";
-  const rentEndDate = isRented ? (lastRentStart.expire_date || latestPC?.expire_date) : null;
+  const rentEndDate = isRented ? ((useLivePC ? latestPC.expire_date : null) || lastRentStart.expire_date) : null;
   if (endEl) endEl.textContent = rentEndDate ? "Est. end (max listing window): " + rentEndDate : "";
 
   const last = lastGPUStatus();
