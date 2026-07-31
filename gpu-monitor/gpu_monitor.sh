@@ -3737,6 +3737,26 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             direction="↑ floored at \$$floor"
         fi
 
+        # Branch-independent safety clamp: no matter which of the branches
+        # above decided to raise the price, never let it exceed cur_bid
+        # while RATCHET_UP_WHILE_FULL/VACANT=0 applies. Confirmed live
+        # 2026-07-31 (zappa1, machine 138419): the dedicated elif guards
+        # above matched every logged condition (fully_vacant=1,
+        # RATCHET_UP_WHILE_VACANT='0', cur_bid < target-0.02) yet the price
+        # still moved from $0.37 to $0.419 that cycle -- something in the
+        # elif chain let it through despite the guard, still unexplained.
+        # Rather than keep chasing which branch misfired, enforce the
+        # invariant unconditionally right before the price is actually sent,
+        # so it holds regardless of which upstream branch computed the raise.
+        if (( fully_vacant )) && [[ "${RATCHET_UP_WHILE_VACANT:-1}" != "1" ]] && (( $(echo "$new_price > $cur_bid" | bc -l) )); then
+            log "  Machine $mid: RATCHET_UP_WHILE_VACANT=0 safety clamp -- computed \$$new_price > current \$$cur_bid while fully vacant, capping at \$$cur_bid"
+            new_price="$cur_bid"
+        fi
+        if (( fully_rented )) && [[ "${RATCHET_UP_WHILE_FULL:-1}" != "1" ]] && (( $(echo "$new_price > $cur_bid" | bc -l) )); then
+            log "  Machine $mid: RATCHET_UP_WHILE_FULL=0 safety clamp -- computed \$$new_price > current \$$cur_bid while fully rented, capping at \$$cur_bid"
+            new_price="$cur_bid"
+        fi
+
         if (( $(echo "($new_price - $cur_bid)^2 < 0.0001" | bc -l) )); then
             log "  Machine $mid: negligible change, skipping"
             continue
