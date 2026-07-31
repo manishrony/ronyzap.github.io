@@ -500,6 +500,16 @@ MARKET_SMOOTH_ALPHA="${MARKET_SMOOTH_ALPHA:-0.30}"
 MARKET_SMOOTH_STATE_DIR="/var/tmp/gpu_monitor_market_smooth"
 LAST_SUCCESS_STATE_DIR="/var/tmp/gpu_monitor_last_success"
 
+# Whether a fully-rented machine's LISTED re-list ask is allowed to climb
+# toward target (default 1, existing behavior). Set to 0 per-rig in
+# /etc/gpu_monitor.conf for an occupancy-first strategy (e.g. a newer host
+# still building utilization/reliability, where the priority is filling the
+# NEXT rental rather than maximizing the re-list ask): being full never
+# raises the price mid-contract either way (Vast fixes on-demand terms at
+# creation), so with this off, occupancy alone no longer nudges the re-list
+# ask upward -- only genuine below-median vacancy-driven demand does.
+RATCHET_UP_WHILE_FULL="${RATCHET_UP_WHILE_FULL:-1}"
+
 # Micro-rentals (5-10 min jobs that launch, run briefly, and vanish -- e.g.
 # Promera/Goubli/LatentSync/MusicVideo-style short AI jobs, confirmed live
 # 2026-07-30) were wiping out hours of accumulated vacancy the instant
@@ -3589,6 +3599,18 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             # downward move here would only give away margin on the eventual
             # re-list for no reason; see the fully_rented set-up above.
             log "  Machine $mid: fully rented and above ${target_label} (\$$target) — holding at \$$cur_bid (no downward moves while full)"
+            continue
+        elif (( fully_rented )) && [[ "${RATCHET_UP_WHILE_FULL:-1}" != "1" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
+            # Occupancy-first mode (RATCHET_UP_WHILE_FULL=0, per-rig override
+            # -- e.g. zappa1, where a newer host benefits from staying priced
+            # to build utilization/reliability rather than chasing margin):
+            # don't raise the re-list ask just because the machine happens to
+            # be full right now. The current contract's price is already
+            # locked in regardless (Vast fixes on-demand terms at rental
+            # creation -- this only ever affected the future re-list ask
+            # anyway), so ratcheting up here only risks pricing the NEXT
+            # tenant out and hurting occupancy, with no effect on this rental.
+            log "  Machine $mid: fully rented, below ${target_label} (\$$target) — RATCHET_UP_WHILE_FULL=0, holding re-list ask at \$$cur_bid"
             continue
         elif (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $adjust_down" | bc)")
