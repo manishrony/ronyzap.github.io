@@ -2855,6 +2855,49 @@ PYEOF
                             expire_date=$(estimated_expire_date)
                             expire_source="estimated"
                         fi
+                        # At the exact moment of transition, /instances/ often
+                        # hasn't indexed the brand-new instance yet (real_iid
+                        # empty), so $cost fell back to earn_hour -- Vast's
+                        # own rolling/smoothed average rate, NOT a live figure.
+                        # After a vacancy, that average is diluted by the
+                        # unrented hours and reads far below the real rate
+                        # (confirmed live 2026-07-31: machine 138419 logged
+                        # "$0.138/hr" for a rental that actually landed at
+                        # $0.3717/GPU x2, because earn_hour hadn't caught up
+                        # after ~4.5h vacant). We ourselves just set that
+                        # listed price moments earlier, so it's a far better
+                        # one-time estimate than a lagging account-wide
+                        # average -- pull it from our own most recent
+                        # price_change for this machine instead.
+                        if [[ -z "$real_iid" ]]; then
+                            local last_listed_price
+                            last_listed_price=$(python3 - "$JSONL_FILE" "$mid" <<'PYEOF' 2>/dev/null
+import sys, json
+jsonl, mid = sys.argv[1], sys.argv[2]
+last = None
+try:
+    with open(jsonl) as f:
+        for line in f:
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get('type') == 'price_change' and str(ev.get('machine_id', '')) == mid:
+                p = float(ev.get('new_price', 0) or 0)
+                if p > 0:
+                    last = p
+except FileNotFoundError:
+    pass
+print(last if last is not None else '')
+PYEOF
+)
+                            if [[ -n "$last_listed_price" ]]; then
+                                local est_total
+                                est_total=$(printf "%.3f" "$(echo "scale=4; $last_listed_price * ${rented_count:-1}" | bc)")
+                                cost="\$${est_total}/hr"
+                                log "  Machine $mid: real_instance_id not indexed yet -- using our own last listed price \$$last_listed_price/GPU x ${rented_count:-1} = $cost instead of earn_hour-derived estimate"
+                            fi
+                        fi
                         log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown}, ${expire_source} end: $expire_date)"
                         tg_send "✅ <b>Vast.ai Rental STARTED</b> — $(hostname)
 Machine: <b>$mid</b> | GPUs rented: $rented_gpus
