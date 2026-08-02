@@ -2834,7 +2834,7 @@ PYEOF
         # Check each current machine for rental status changes
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid rented gpus cost real_iid rented_count _ end_epoch <<< "$line"
+            IFS='|' read -r mid rented gpus cost real_iid rented_count earn_day end_epoch <<< "$line"
 
             # GPUs actually rented (e.g. "4x RTX 5090"), not the whole machine.
             # gpus is "8x RTX 5090"; strip the count and prepend the rented count.
@@ -2876,11 +2876,44 @@ PYEOF
                         # (confirmed live 2026-07-31: machine 138419 logged
                         # "$0.138/hr" for a rental that actually landed at
                         # $0.3717/GPU x2, because earn_hour hadn't caught up
-                        # after ~4.5h vacant). We ourselves just set that
-                        # listed price moments earlier, so it's a far better
-                        # one-time estimate than a lagging account-wide
-                        # average -- pull it from our own most recent
-                        # price_change for this machine instead.
+                        # after ~4.5h vacant).
+                        #
+                        # real_instance_id/rate are the primary record tying a
+                        # rental window to Vast's own instance id -- treated as
+                        # a recordkeeping requirement (attribution if a rental's
+                        # traffic is ever the subject of an abuse report), not
+                        # just a cosmetic dashboard figure. So a single missed
+                        # index isn't accepted silently: retry /instances/ once
+                        # after a short delay (it typically catches up within a
+                        # few seconds) before falling back to an estimate.
+                        if [[ -z "$real_iid" ]]; then
+                            sleep 8
+                            local retry_slots_json retry_real_iid retry_rate
+                            retry_slots_json=$(vastai_fetch_gpu_slots)
+                            read -r retry_real_iid retry_rate < <(python3 - "$retry_slots_json" "$mid" <<'PYEOF' 2>/dev/null
+import sys, json
+slots = json.loads(sys.argv[1] or "{}")
+mid = sys.argv[2]
+m = slots.get(mid, {})
+rented = [s for s in m.values() if s.get('instance_id')]
+iid = rented[0]['instance_id'] if rented else ''
+rate = sum(float(s.get('rate', 0) or 0) for s in rented)
+print(iid, rate)
+PYEOF
+)
+                            if [[ -n "$retry_real_iid" ]]; then
+                                real_iid="$retry_real_iid"
+                                cost="\$$(printf '%.3f' "$retry_rate")/hr"
+                                image=$(get_instance_image "$real_iid")
+                                workload_type=$(classify_workload "$image")
+                                log "  Machine $mid: real_instance_id indexed on retry ($real_iid) -- using live rate $cost instead of an estimate"
+                            fi
+                        fi
+                        # Still no real_iid after the retry -- fall back to our
+                        # own most recent price_change for this machine, a far
+                        # better one-time estimate than a lagging account-wide
+                        # earn_hour average (we set that listed price ourselves
+                        # moments earlier).
                         if [[ -z "$real_iid" ]]; then
                             local last_listed_price
                             last_listed_price=$(python3 - "$JSONL_FILE" "$mid" <<'PYEOF' 2>/dev/null
@@ -2907,7 +2940,18 @@ PYEOF
                                 local est_total
                                 est_total=$(printf "%.3f" "$(echo "scale=4; $last_listed_price * ${rented_count:-1}" | bc)")
                                 cost="\$${est_total}/hr"
-                                log "  Machine $mid: real_instance_id not indexed yet -- using our own last listed price \$$last_listed_price/GPU x ${rented_count:-1} = $cost instead of earn_hour-derived estimate"
+                                log "  Machine $mid: real_instance_id still not indexed after retry -- using our own last listed price \$$last_listed_price/GPU x ${rented_count:-1} = $cost instead of earn_hour-derived estimate"
+                            elif [[ -n "${earn_day:-}" ]] && (( $(echo "${earn_day:-0} > 0" | bc -l) )); then
+                                # Last resort: no price_change on record either
+                                # (e.g. very first rental on a fresh listing) --
+                                # earn_day/24 is a real Vast-reported figure, so
+                                # even a rough live-average beats a flat $0.000
+                                # that would otherwise misrepresent this rental
+                                # as free in the permanent record.
+                                local est_hourly
+                                est_hourly=$(printf "%.3f" "$(echo "scale=4; $earn_day / 24" | bc)")
+                                cost="\$${est_hourly}/hr"
+                                log "  Machine $mid: no real_instance_id or price_change on record -- using earn_day/24 = $cost as last-resort rate estimate"
                             fi
                         fi
                         log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown}, ${expire_source} end: $expire_date)"
