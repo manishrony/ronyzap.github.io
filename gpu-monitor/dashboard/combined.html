@@ -1909,8 +1909,8 @@ function renderRig(idx) {
     barChart("chart-rd-rev", hours.map(h=>h.toString().padStart(2,"0")+":00"), [{
       label:"Revenue/hr", backgroundColor:"#22c55e99", borderColor:"#22c55e", borderWidth:1, borderRadius:4,
       data: hours.map(h=>{
-        const hStart=new Date(today()); hStart.setHours(h,0,0,0);
-        const hEnd=new Date(today()); hEnd.setHours(h+1,0,0,0);
+        const hStart=new Date(today()); hStart.setUTCHours(h,0,0,0);
+        const hEnd=new Date(today()); hEnd.setUTCHours(h+1,0,0,0);
         return parseFloat(computeRevenue(revEvents, hStart, hEnd, {skipDailyEarnings:true}).toFixed(4));
       }),
     }]);
