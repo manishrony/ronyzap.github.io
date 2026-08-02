@@ -840,19 +840,25 @@ function renderAllMonths() {
   document.getElementById("mo-avg").textContent      = fmtUSD(mRev / daysElapsed) + "/day";
   document.getElementById("mo-prices").textContent   = mEvs.filter(e=>e.type==="price_change").length;
 
-  const months = getUniqueMonths(STATE.events);
-  const mLabels = months.map(ym => {
-    const [y,m] = ym.split("-").map(Number);
-    return new Date(Date.UTC(y,m-1,1)).toLocaleDateString([], {timeZone:"UTC", month:"short",year:"2-digit"});
-  });
-  const mRevs = months.map(ym => {
-    const [y,m] = ym.split("-").map(Number);
-    const { start, end } = monthRange(y, m);
-    return parseFloat(computeRevenue(STATE.events, start, end > now ? now : end).toFixed(4));
-  });
-  document.getElementById("mo-chart-label").textContent = "Monthly Revenue — All Time";
-  barChart("chart-monthly-revenue", mLabels, mRevs, "#22c55e");
+  // Default chart: week-by-week bars for the CURRENT month (mirrors how the
+  // Yearly tab defaults to a month-by-month view of the current year), so
+  // opening the tab shows immediately-actionable recent detail instead of
+  // an all-time-history chart that buries this month among many others.
+  // "All Months" below still covers navigation to any past month.
+  const curMonthLabel = new Date(Date.UTC(curY,curM-1,1)).toLocaleDateString([], {timeZone:"UTC", month:"long",year:"numeric"});
+  const weeks = []; let cur = new Date(mS);
+  while (cur < mE && cur < now) {
+    const wS = new Date(cur), wE = new Date(Math.min(cur.getTime()+7*86400000, mE.getTime(), now.getTime()));
+    weeks.push({
+      label: wS.toLocaleDateString([], {timeZone:"UTC", month:"short",day:"numeric"})+" – "+new Date(wE.getTime()-1).toLocaleDateString([], {timeZone:"UTC", month:"short",day:"numeric"}),
+      rev: parseFloat(computeRevenue(STATE.events, wS, wE).toFixed(4)),
+    });
+    cur = new Date(cur.getTime() + 7*86400000);
+  }
+  document.getElementById("mo-chart-label").textContent = "Week-by-Week — " + curMonthLabel;
+  barChart("chart-monthly-revenue", weeks.map(w=>w.label), weeks.map(w=>w.rev), "#22c55e");
 
+  const months = getUniqueMonths(STATE.events);
   const rows = [...months].reverse().map(ym => {
     const [y,m] = ym.split("-").map(Number);
     const { start, end } = monthRange(y, m);
