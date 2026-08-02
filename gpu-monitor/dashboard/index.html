@@ -337,15 +337,20 @@ function eventBadge(type) {
 // computeRevenue — daily_earnings (Vast.ai confirmed) take priority.
 // rental_start/end estimates on days not covered. Duplicate rental_start
 // events (from restarts) are collapsed into a single open session per machine.
-function computeRevenue(allEvents, periodStart, periodEnd) {
+function computeRevenue(allEvents, periodStart, periodEnd, opts = {}) {
   const pS = periodStart ? periodStart.getTime() : 0;
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
   let total = 0;
   const covered = new Set();
   // Collapse daily_earnings to one value per (date, machine): newest ts wins,
-  // API-sourced entries supersede legacy ones for the same date.
+  // API-sourced entries supersede legacy ones for the same date. This whole
+  // block only makes sense for windows that span (roughly) a full day --
+  // it attributes one lump total to the day, not to any sub-range within
+  // it. A caller querying a narrower window (e.g. a single hour, for the
+  // hourly revenue chart) must pass skipDailyEarnings so this day-level
+  // total isn't replayed into every sub-window that happens to overlap it.
   const deMap = new Map(), apiDates = new Set();
-  allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
+  if (!opts.skipDailyEarnings) allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
     const date = e.date || e.ts.slice(0, 10);
     const key = date + "|" + String(e.machine_id || "");
     const prev = deMap.get(key);
@@ -705,7 +710,7 @@ function renderDaily() {
     hours.map(h => {
       const hS = new Date(today()); hS.setUTCHours(h,0,0,0);
       const hE = new Date(today()); hE.setUTCHours(h+1,0,0,0);
-      return parseFloat(computeRevenue(STATE.events, hS, hE).toFixed(4));
+      return parseFloat(computeRevenue(STATE.events, hS, hE, {skipDailyEarnings:true}).toFixed(4));
     }));
 
   const rentStarts = todayEvs.filter(e=>e.type==="rental_start");
