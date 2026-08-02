@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Daily backup of this rig's gpu_monitor_data.jsonl (the event-log "database"
 # — rentals, pricing, gpu_status, earnings) into BACKUP_DIR, gzipped and
-# timestamped. Anything older than BACKUP_RETENTION_DAYS gets deleted
-# automatically on each run. Runs via the gpu-backup.timer systemd unit
-# (daily); safe to also run manually — sudo backup-jsonl.
+# timestamped. Runs via the gpu-backup.timer systemd unit (daily); safe to
+# also run manually — sudo backup-jsonl.
+#
+# Retention: kept indefinitely by default (BACKUP_RETENTION_DAYS=0) —
+# rental_start/rental_end/price_change records here are the primary
+# attribution evidence for a rental window if a renter's traffic is ever the
+# subject of an abuse report, so nothing prunes itself away automatically
+# unless BACKUP_RETENTION_DAYS is explicitly set to a positive number of
+# days in /etc/gpu_monitor.conf.
 #
 # Note: this backs up the JSONL, not the Prometheus TSDB (which only runs on
 # the hub) — Prometheus's own 10y retention + its block-storage format is
@@ -14,7 +20,7 @@ set -euo pipefail
 
 JSONL_FILE="${GPU_DATA:-/var/log/gpu_monitor_data.jsonl}"
 BACKUP_DIR="${GPU_BACKUP_DIR:-/var/backups/gpu-monitor}"
-BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-0}"   # 0 = keep forever
 
 if [[ ! -f "$JSONL_FILE" ]]; then
     echo "[!] $JSONL_FILE not found — nothing to back up" >&2
@@ -27,11 +33,15 @@ dest="$BACKUP_DIR/gpu_monitor_data_${stamp}.jsonl.gz"
 gzip -c "$JSONL_FILE" > "$dest"
 echo "[OK] Backed up $JSONL_FILE -> $dest ($(du -h "$dest" | cut -f1))"
 
-deleted=0
-while IFS= read -r -d '' old; do
-    rm -f "$old"
-    deleted=$((deleted + 1))
-done < <(find "$BACKUP_DIR" -maxdepth 1 -name 'gpu_monitor_data_*.jsonl.gz' -mtime "+${BACKUP_RETENTION_DAYS}" -print0)
-(( deleted > 0 )) && echo "[OK] Pruned $deleted backup(s) older than ${BACKUP_RETENTION_DAYS} days"
+if [[ "$BACKUP_RETENTION_DAYS" -gt 0 ]]; then
+    deleted=0
+    while IFS= read -r -d '' old; do
+        rm -f "$old"
+        deleted=$((deleted + 1))
+    done < <(find "$BACKUP_DIR" -maxdepth 1 -name 'gpu_monitor_data_*.jsonl.gz' -mtime "+${BACKUP_RETENTION_DAYS}" -print0)
+    (( deleted > 0 )) && echo "[OK] Pruned $deleted backup(s) older than ${BACKUP_RETENTION_DAYS} days"
+else
+    echo "[OK] Retention disabled (BACKUP_RETENTION_DAYS=0) — no backups pruned"
+fi
 
 exit 0

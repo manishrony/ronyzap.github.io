@@ -51,12 +51,56 @@ Prometheus themselves — the whole point of the central design is one place
 to query all three rigs' history, matching how the combined dashboard
 already proxies peer data.
 
-The JSONL event log's own daily gzip backup (`gpu-backup.timer`, 14-day
-retention — see "Daily backup" below) is a **disaster-recovery** copy, not
-a data-lifecycle policy: its job is restoring Prometheus (via the backfill
-procedure below) if a rig's disk is ever destroyed or corrupted, not
-limiting how long Prometheus itself keeps data. The two retentions are
-intentionally different things.
+The JSONL event log's own daily gzip backup (`gpu-backup.timer`, kept
+indefinitely by default — see "Daily backup + cross-rig replication" below)
+is a **disaster-recovery** copy, not a data-lifecycle policy: its job is
+restoring Prometheus (via the backfill procedure below) if a rig's disk is
+ever destroyed or corrupted, not limiting how long Prometheus itself keeps
+data. The two retentions are intentionally different things. rental_start/
+rental_end/price_change records in the JSONL are also the primary
+attribution evidence tying a rental window to Vast's own instance id, so
+neither retention is trimmed automatically unless explicitly configured.
+
+## Daily backup + cross-rig replication
+
+Two separate, independent safety nets for the JSONL event log — both opt-in
+by default retention behavior, neither ever deletes anything unless
+explicitly configured to:
+
+- **`gpu-backup.timer`** (every rig, always installed) — runs
+  `backup-jsonl` daily, gzipping the local JSONL into
+  `/var/backups/gpu-monitor/gpu_monitor_data_<timestamp>.jsonl.gz`. Protects
+  against accidental deletion/corruption of the live file on THIS disk.
+  Kept indefinitely by default (`BACKUP_RETENTION_DAYS=0` in
+  `/etc/gpu_monitor.conf`); set it to a positive number of days to prune
+  older snapshots instead.
+
+- **`gpu-replicate.timer`** (opt-in, off by default) — runs
+  `replicate-jsonl` daily at 23:50 UTC, rsyncing this rig's live JSONL (plus
+  any local gzip backups) to a peer rig over SSH. Protects against losing
+  the whole rig — disk failure, theft, seizure — not just a bad write on
+  this one disk; a single-host copy of rental attribution records isn't
+  durable enough on its own. To enable (e.g. zappa1 → zappa2):
+
+  ```bash
+  # on zappa1: passwordless SSH to zappa2 (run once)
+  ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_replicate -N ""
+  ssh-copy-id -i /root/.ssh/id_ed25519_replicate.pub ronyzap@192.168.1.196
+
+  # on zappa1: /etc/gpu_monitor.conf
+  REPLICATE_TARGET_HOST=192.168.1.196
+  REPLICATE_TARGET_USER=ronyzap
+  REPLICATE_SSH_KEY=/root/.ssh/id_ed25519_replicate
+  # REPLICATE_TARGET_PATH defaults to /var/backups/gpu-monitor-replica/<this-hostname>
+
+  sudo systemctl enable --now gpu-replicate.timer
+  sudo replicate-jsonl   # test manually before waiting for the timer
+  ```
+
+  The replica lands on zappa2 at
+  `/var/backups/gpu-monitor-replica/zappa1/gpu_monitor_data_<date>.jsonl` —
+  a plain read-only copy, not merged into zappa2's own JSONL or dashboard,
+  so it never affects zappa2's own revenue/pricing calculations.
 
 - Prometheus UI: `http://<hub-ip>:9090` (its own query browser/graphing, if
   you want raw PromQL access beyond the dashboard's History page)

@@ -51,6 +51,10 @@ BACKUP_SRC="$(dirname "$0")/backup-jsonl.sh"
 BACKUP_DEST="/usr/local/bin/backup-jsonl"
 BACKUP_SVC="/etc/systemd/system/gpu-backup.service"
 BACKUP_TIMER="/etc/systemd/system/gpu-backup.timer"
+REPLICATE_SRC="$(dirname "$0")/replicate-jsonl.sh"
+REPLICATE_DEST="/usr/local/bin/replicate-jsonl"
+REPLICATE_SVC="/etc/systemd/system/gpu-replicate.service"
+REPLICATE_TIMER="/etc/systemd/system/gpu-replicate.timer"
 DASH_SRC="$(dirname "$0")/dashboard"
 DASH_DEST="/opt/gpu-monitor/dashboard"
 MONITOR_SVC="/etc/systemd/system/gpu-monitor.service"
@@ -118,7 +122,7 @@ echo "[*] Installing backfill-prometheus helper (run manually, one-off per rig).
 cp "$BACKFILLPROM_SRC" "$BACKFILLPROM_DEST"
 chmod +x "$BACKFILLPROM_DEST"
 
-echo "[*] Installing backup-jsonl helper + daily backup timer (14-day retention)..."
+echo "[*] Installing backup-jsonl helper + daily backup timer (kept indefinitely by default)..."
 cp "$BACKUP_SRC" "$BACKUP_DEST"
 chmod +x "$BACKUP_DEST"
 cat > "$BACKUP_SVC" <<EOF
@@ -132,7 +136,7 @@ User=root
 EOF
 cat > "$BACKUP_TIMER" <<EOF
 [Unit]
-Description=Run gpu-backup daily (14-day retention)
+Description=Run gpu-backup daily (kept indefinitely by default)
 
 [Timer]
 OnCalendar=daily
@@ -143,6 +147,40 @@ WantedBy=timers.target
 EOF
 systemctl daemon-reload
 systemctl enable --now gpu-backup.timer
+
+echo "[*] Installing replicate-jsonl helper (cross-rig daily replication, only active if REPLICATE_TARGET_HOST is set)..."
+cp "$REPLICATE_SRC" "$REPLICATE_DEST"
+chmod +x "$REPLICATE_DEST"
+cat > "$REPLICATE_SVC" <<EOF
+[Unit]
+Description=GPU Monitor daily cross-rig JSONL replication
+
+[Service]
+Type=oneshot
+ExecStart=$REPLICATE_DEST
+User=root
+EOF
+cat > "$REPLICATE_TIMER" <<EOF
+[Unit]
+Description=Run gpu-replicate daily, end of day UTC (no-op unless REPLICATE_TARGET_HOST is configured)
+
+[Timer]
+OnCalendar=*-*-* 23:50:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+if [[ -f /etc/gpu_monitor.conf ]] && grep -q '^REPLICATE_TARGET_HOST=.\+' /etc/gpu_monitor.conf 2>/dev/null; then
+    echo "[*] REPLICATE_TARGET_HOST is configured — enabling gpu-replicate.timer..."
+    systemctl enable --now gpu-replicate.timer
+else
+    echo "  ⚠️  REPLICATE_TARGET_HOST not set in /etc/gpu_monitor.conf — gpu-replicate.timer installed but not enabled."
+    echo "      To enable: set REPLICATE_TARGET_HOST (and REPLICATE_TARGET_USER/REPLICATE_TARGET_PATH if needed)"
+    echo "      in /etc/gpu_monitor.conf, set up passwordless SSH to that host, then:"
+    echo "      sudo systemctl enable --now gpu-replicate.timer"
+fi
 
 echo "[*] Installing dashboard to $DASH_DEST ..."
 mkdir -p "$DASH_DEST"
@@ -268,7 +306,7 @@ EOF
     # of data even over years. The whole point of this is to never lose
     # history to log rotation/rotation-driven pruning again — Prometheus
     # itself is the durable, never-delete record; the JSONL log's own daily
-    # gzip backup (gpu-backup.timer, 14-day retention) exists to *restore*
+    # gzip backup (gpu-backup.timer, kept indefinitely by default) exists to *restore*
     # Prometheus if a rig's disk is ever destroyed or corrupted, not to
     # define how long Prometheus itself keeps data.
     if [[ -f /etc/default/prometheus ]] && grep -q '^ARGS=' /etc/default/prometheus; then
@@ -312,7 +350,12 @@ else
     echo "     Tapo power:disabled — set TAPO_HOST/TAPO_EMAIL/TAPO_PASSWORD in this rig's own /etc/gpu_monitor.conf for a per-rig smart-plug meter (see RIGS.md)"
 fi
 echo "     Backfill:  backfill-prometheus --rig <name> --out <file>.om (one-off per rig: JSONL+log -> OpenMetrics for historical import, see RIGS.md)"
-echo "     Backup:    daily JSONL backup -> /var/backups/gpu-monitor, 14-day retention (gpu-backup.timer; run backup-jsonl manually to test)"
+echo "     Backup:    daily JSONL backup -> /var/backups/gpu-monitor, kept indefinitely by default (gpu-backup.timer; run backup-jsonl manually to test)"
+if [[ -f /etc/gpu_monitor.conf ]] && grep -q '^REPLICATE_TARGET_HOST=.\+' /etc/gpu_monitor.conf 2>/dev/null; then
+    echo "     Replicate: daily cross-rig JSONL replication -> $(grep '^REPLICATE_TARGET_HOST=' /etc/gpu_monitor.conf | cut -d= -f2) (gpu-replicate.timer; run replicate-jsonl manually to test)"
+else
+    echo "     Replicate: disabled — set REPLICATE_TARGET_HOST in this rig's own /etc/gpu_monitor.conf for daily cross-rig replication (see RIGS.md)"
+fi
 CHAT_KEY_NAME=$(echo "$CHAT_PROVIDER" | tr '[:lower:]' '[:upper:]')_API_KEY
 if [[ -f /etc/gpu_monitor.conf ]] && grep -q "^${CHAT_KEY_NAME}=.\+" /etc/gpu_monitor.conf 2>/dev/null; then
     echo "     Chat:      enabled ($CHAT_KEY_NAME set, LLM_PROVIDER=$CHAT_PROVIDER) — read-only Rig Assistant on the combined dashboard"
