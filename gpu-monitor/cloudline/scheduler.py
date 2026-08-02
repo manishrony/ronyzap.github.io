@@ -289,9 +289,9 @@ def main():
 
     last_speed = {}
     while True:
+        total_watts = 0.0
         try:
             outdoor_c = get_outdoor_temp_c()
-            total_watts = 0.0
             for dev in client.list_devices():
                 room_c = dev.get("temp_c")
                 base_speed = target_speed(room_c)
@@ -329,14 +329,22 @@ def main():
                     last_speed[key] = speed
                     outdoor_str = f"{outdoor_c:.1f}°C" if outdoor_c is not None else "unknown"
                     print(f"[cloudline-scheduler] {dev['name']} ({room_c}°C, outside {outdoor_str}) port {port['port']} -> speed {speed}", flush=True)
-
-            poll_power(total_watts)
         except Exception as e:
+            # Fan-control failures (e.g. AC Infinity's addDevMode API erroring)
+            # must not block power polling below — they're independent
+            # concerns, and a flaky fan API previously starved poll_power()
+            # of every single call, silently, for as long as the API stayed down.
             print(f"[cloudline-scheduler] error: {e}", file=sys.stderr)
             try:
                 client.login()
             except Exception:
                 pass
+
+        try:
+            poll_power(total_watts)
+        except Exception as e:
+            print(f"[cloudline-scheduler] power poll error: {e}", file=sys.stderr)
+
         time.sleep(POLL_SECONDS)
 
 
