@@ -759,7 +759,7 @@ function renderWeekly() {
 
   const days = Array.from({length:7},(_,i)=>daysAgo(6-i));
   barChart("chart-daily-revenue",
-    days.map(d=>d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"})),
+    days.map(d=>d.toLocaleDateString([], {timeZone:"UTC", weekday:"short",month:"short",day:"numeric"})),
     days.map(d => { const next = new Date(d); next.setDate(next.getDate()+1); return parseFloat(computeRevenue(STATE.events, d, next).toFixed(4)); }),
     "#22c55e");
 
@@ -774,7 +774,7 @@ function renderWeekly() {
   const summary = days.map(d => {
     const next = new Date(d); next.setDate(next.getDate()+1);
     const de = STATE.events.filter(e=>e.ts>=d.toISOString()&&e.ts<next.toISOString());
-    return {label:d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}),
+    return {label:d.toLocaleDateString([], {timeZone:"UTC", weekday:"short",month:"short",day:"numeric"}),
       rev:computeRevenue(STATE.events, d, next), rents:de.filter(e=>e.type==="rental_start").length,
       warns:de.filter(e=>e.type==="temp_warning").length, prices:de.filter(e=>e.type==="price_change").length};
   });
@@ -813,7 +813,7 @@ function renderMonthly() {
     bc.classList.remove("hidden"); bc.classList.add("flex");
     const { year, month } = MONTHLY_DRILL;
     document.getElementById("monthly-drill-label").textContent =
-      new Date(Date.UTC(year, month-1, 1)).toLocaleDateString([], {month:"long", year:"numeric"});
+      new Date(Date.UTC(year, month-1, 1)).toLocaleDateString([], {timeZone:"UTC", month:"long", year:"numeric"});
     renderMonthDetail(year, month);
   }
 }
@@ -843,7 +843,7 @@ function renderAllMonths() {
   const months = getUniqueMonths(STATE.events);
   const mLabels = months.map(ym => {
     const [y,m] = ym.split("-").map(Number);
-    return new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"short",year:"2-digit"});
+    return new Date(Date.UTC(y,m-1,1)).toLocaleDateString([], {timeZone:"UTC", month:"short",year:"2-digit"});
   });
   const mRevs = months.map(ym => {
     const [y,m] = ym.split("-").map(Number);
@@ -858,7 +858,7 @@ function renderAllMonths() {
     const { start, end } = monthRange(y, m);
     const cap = end > now ? now : end;
     const evs = STATE.events.filter(e => e.ts >= start.toISOString() && e.ts < end.toISOString());
-    return { ym, label: new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"long",year:"numeric"}),
+    return { ym, label: new Date(Date.UTC(y,m-1,1)).toLocaleDateString([], {timeZone:"UTC", month:"long",year:"numeric"}),
       rev: computeRevenue(STATE.events, start, cap),
       rents: countRentals(STATE.events, start, cap),
       warns: evs.filter(e=>e.type==="temp_warning").length,
@@ -902,7 +902,7 @@ function renderMonthDetail(year, month) {
   const rev = computeRevenue(STATE.events, start, cap);
   const daysInMonth  = (end - start) / 86400000;
   const daysElapsed  = Math.max(1, Math.ceil((cap - start) / 86400000));
-  const label = new Date(Date.UTC(year, month-1, 1)).toLocaleDateString([],{month:"long", year:"numeric"});
+  const label = new Date(Date.UTC(year, month-1, 1)).toLocaleDateString([], {timeZone:"UTC", month:"long", year:"numeric"});
 
   document.getElementById("mo-stat1-label").textContent = label;
   document.getElementById("mo-revenue").textContent = fmtUSD(rev);
@@ -915,7 +915,7 @@ function renderMonthDetail(year, month) {
     const ds = new Date(Date.UTC(year, month-1, d));
     const de = new Date(Date.UTC(year, month-1, d+1));
     if (ds > now) break;
-    dayLabels.push(ds.toLocaleDateString([],{day:"numeric",month:"short"}));
+    dayLabels.push(ds.toLocaleDateString([], {timeZone:"UTC", day:"numeric",month:"short"}));
     dayRevs.push(parseFloat(computeRevenue(STATE.events, ds, de > now ? now : de).toFixed(4)));
   }
   document.getElementById("mo-chart-label").textContent = "Daily Revenue — " + label;
@@ -929,8 +929,8 @@ function renderMonthDetail(year, month) {
     const wE = new Date(Math.min(cur.getTime() + 7*86400000, end.getTime(), now.getTime()));
     const wEvs = evs.filter(e => e.ts >= wS.toISOString() && e.ts < wE.toISOString());
     weeks.push({
-      label: wS.toLocaleDateString([],{month:"short",day:"numeric"}) + " – " +
-             new Date(wE.getTime()-1).toLocaleDateString([],{month:"short",day:"numeric"}),
+      label: wS.toLocaleDateString([], {timeZone:"UTC", month:"short",day:"numeric"}) + " – " +
+             new Date(wE.getTime()-1).toLocaleDateString([], {timeZone:"UTC", month:"short",day:"numeric"}),
       rev: computeRevenue(STATE.events, wS, wE),
       rents: wEvs.filter(e=>e.type==="rental_start").length,
       warns: wEvs.filter(e=>e.type==="temp_warning").length,
@@ -1016,7 +1016,7 @@ function renderAllYears() {
     for (let m = 1; m <= 12; m++) {
       const { start, end } = monthRange(curY, m);
       if (start > now) break;
-      moLabels.push(start.toLocaleDateString([],{month:"short"}));
+      moLabels.push(start.toLocaleDateString([], {timeZone:"UTC", month:"short"}));
       moRevs.push(parseFloat(computeRevenue(STATE.events, start, end > now ? now : end).toFixed(4)));
     }
     document.getElementById("yr-chart-label").textContent = "Monthly Revenue — " + curY;
@@ -1075,9 +1075,9 @@ function renderYearDetail(year) {
     const cap = end > now ? now : end;
     const evs = STATE.events.filter(e => e.ts >= start.toISOString() && e.ts < end.toISOString());
     const rev = computeRevenue(STATE.events, start, cap);
-    moLabels.push(start.toLocaleDateString([],{month:"short"}));
+    moLabels.push(start.toLocaleDateString([], {timeZone:"UTC", month:"short"}));
     moRevs.push(parseFloat(rev.toFixed(4)));
-    moRows.push({ m, label: start.toLocaleDateString([],{month:"long"}), rev,
+    moRows.push({ m, label: start.toLocaleDateString([], {timeZone:"UTC", month:"long"}), rev,
       rents: evs.filter(e=>e.type==="rental_start").length,
       warns: evs.filter(e=>e.type==="temp_warning").length,
       prices: evs.filter(e=>e.type==="price_change").length });

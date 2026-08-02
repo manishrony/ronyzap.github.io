@@ -1674,7 +1674,7 @@ function renderCombined() {
 
   // Combined revenue bar chart (7d)
   const days = Array.from({length:7},(_,i)=>daysAgo(6-i));
-  const dayLabels = days.map(d=>d.toLocaleDateString([],{weekday:"short",day:"numeric"}));
+  const dayLabels = days.map(d=>d.toLocaleDateString([], {timeZone:"UTC", weekday:"short",day:"numeric"}));
   barChart("chart-c-rev", dayLabels, DATA.map((d,ri)=>({
     label: rigName(ri),
     data: days.map(day=>{
@@ -1944,7 +1944,7 @@ function renderRig(idx) {
     document.getElementById("rw-prices").textContent  = weekEvs.filter(e=>e.type==="price_change").length;
 
     const days = Array.from({length:7},(_,i)=>daysAgo(6-i));
-    const dayLabels = days.map(d=>d.toLocaleDateString([],{weekday:"short",day:"numeric"}));
+    const dayLabels = days.map(d=>d.toLocaleDateString([], {timeZone:"UTC", weekday:"short",day:"numeric"}));
     barChart("chart-rw-rev", dayLabels, [{
       label:"Revenue ($)", backgroundColor:"#22c55e99", borderColor:"#22c55e", borderWidth:1, borderRadius:4,
       data: days.map(day=>{
@@ -1963,7 +1963,7 @@ function renderRig(idx) {
     const summary = days.map(d=>{
       const next=new Date(d); next.setDate(next.getDate()+1);
       const de=events.filter(e=>e.ts>=d.toISOString()&&e.ts<next.toISOString());
-      return {label:d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"}),
+      return {label:d.toLocaleDateString([], {timeZone:"UTC", weekday:"short",month:"short",day:"numeric"}),
         rev:computeRevenue(revEvents, d, next),rents:de.filter(e=>e.type==="rental_start").length,
         warns:de.filter(e=>e.type==="temp_warning").length,prices:de.filter(e=>e.type==="price_change").length};
     });
@@ -2110,7 +2110,7 @@ function renderRigMonthly(events) {
     bc.classList.remove("hidden"); bc.classList.add("flex");
     const {year,month} = RIG_MONTHLY_DRILL;
     document.getElementById("rm-drill-label").textContent =
-      new Date(Date.UTC(year,month-1,1)).toLocaleDateString([],{month:"long",year:"numeric"});
+      new Date(Date.UTC(year,month-1,1)).toLocaleDateString([], {timeZone:"UTC", month:"long",year:"numeric"});
     renderRigMonthDetail(events, year, month);
   }
 }
@@ -2137,7 +2137,7 @@ function renderRigAllMonths(events) {
 
   const months = getUniqueMonths(events);
   const mRevs  = months.map(ym=>{const [y,m]=ym.split("-").map(Number);const{start,end}=monthRange(y,m);return parseFloat(computeRevenue(events,start,end>now?now:end).toFixed(4));});
-  const mLabels= months.map(ym=>{const [y,m]=ym.split("-").map(Number);return new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"short",year:"2-digit"});});
+  const mLabels= months.map(ym=>{const [y,m]=ym.split("-").map(Number);return new Date(Date.UTC(y,m-1,1)).toLocaleDateString([], {timeZone:"UTC", month:"short",year:"2-digit"});});
   document.getElementById("rm-chart-label").textContent = "Monthly Revenue — All Time";
   barChart("chart-rm-rev", mLabels, mRevs, "#22c55e");
 
@@ -2145,7 +2145,7 @@ function renderRigAllMonths(events) {
     const [y,m]=ym.split("-").map(Number);
     const{start,end}=monthRange(y,m);const cap=end>now?now:end;
     const evs=events.filter(e=>e.ts>=start.toISOString()&&e.ts<end.toISOString());
-    return{ym,label:new Date(Date.UTC(y,m-1,1)).toLocaleDateString([],{month:"long",year:"numeric"}),
+    return{ym,label:new Date(Date.UTC(y,m-1,1)).toLocaleDateString([], {timeZone:"UTC", month:"long",year:"numeric"}),
       rev:computeRevenue(events,start,cap),rents:countRentals(events,start,cap),
       warns:evs.filter(e=>e.type==="temp_warning").length,prices:evs.filter(e=>e.type==="price_change").length};
   });
@@ -2184,7 +2184,7 @@ function renderRigMonthDetail(events, year, month) {
   const rev = computeRevenue(events, start, cap);
   const daysInMonth = (end-start)/86400000;
   const daysElapsed = Math.max(1,Math.ceil((cap-start)/86400000));
-  const label = new Date(Date.UTC(year,month-1,1)).toLocaleDateString([],{month:"long",year:"numeric"});
+  const label = new Date(Date.UTC(year,month-1,1)).toLocaleDateString([], {timeZone:"UTC", month:"long",year:"numeric"});
 
   document.getElementById("rm-stat1-label").textContent = label;
   document.getElementById("rm-revenue").textContent = fmtUSD(rev);
@@ -2196,7 +2196,7 @@ function renderRigMonthDetail(events, year, month) {
   for(let d=1;d<=daysInMonth;d++){
     const ds=new Date(Date.UTC(year,month-1,d)),de=new Date(Date.UTC(year,month-1,d+1));
     if(ds>now)break;
-    dayLabels.push(ds.toLocaleDateString([],{day:"numeric",month:"short"}));
+    dayLabels.push(ds.toLocaleDateString([], {timeZone:"UTC", day:"numeric",month:"short"}));
     dayRevs.push(parseFloat(computeRevenue(events,ds,de>now?now:de).toFixed(4)));
   }
   document.getElementById("rm-chart-label").textContent = "Daily Revenue — "+label;
@@ -2206,7 +2206,7 @@ function renderRigMonthDetail(events, year, month) {
   while(cur<end&&cur<now){
     const wS=new Date(cur),wE=new Date(Math.min(cur.getTime()+7*86400000,end.getTime(),now.getTime()));
     const wEvs=evs.filter(e=>e.ts>=wS.toISOString()&&e.ts<wE.toISOString());
-    weeks.push({label:wS.toLocaleDateString([],{month:"short",day:"numeric"})+" – "+new Date(wE.getTime()-1).toLocaleDateString([],{month:"short",day:"numeric"}),
+    weeks.push({label:wS.toLocaleDateString([], {timeZone:"UTC", month:"short",day:"numeric"})+" – "+new Date(wE.getTime()-1).toLocaleDateString([], {timeZone:"UTC", month:"short",day:"numeric"}),
       rev:computeRevenue(events,wS,wE),rents:wEvs.filter(e=>e.type==="rental_start").length,
       warns:wEvs.filter(e=>e.type==="temp_warning").length,prices:wEvs.filter(e=>e.type==="price_change").length});
     cur=new Date(cur.getTime()+7*86400000);
@@ -2274,7 +2274,7 @@ function renderRigAllYears(events) {
     document.getElementById("ry-chart-label").textContent="Annual Revenue — All Years";
   } else {
     const moLabels=[],moRevs=[];
-    for(let m=1;m<=12;m++){const{start,end}=monthRange(curY,m);if(start>now)break;moLabels.push(start.toLocaleDateString([],{month:"short"}));moRevs.push(parseFloat(computeRevenue(events,start,end>now?now:end).toFixed(4)));}
+    for(let m=1;m<=12;m++){const{start,end}=monthRange(curY,m);if(start>now)break;moLabels.push(start.toLocaleDateString([], {timeZone:"UTC", month:"short"}));moRevs.push(parseFloat(computeRevenue(events,start,end>now?now:end).toFixed(4)));}
     barChart("chart-ry-rev",moLabels,moRevs,"#3b82f6");
     document.getElementById("ry-chart-label").textContent="Monthly Revenue — "+curY;
   }
@@ -2323,9 +2323,9 @@ function renderRigYearDetail(events, year) {
     const cap=end>now?now:end;
     const evs=events.filter(e=>e.ts>=start.toISOString()&&e.ts<end.toISOString());
     const rev=computeRevenue(events,start,cap);
-    moLabels.push(start.toLocaleDateString([],{month:"short"}));
+    moLabels.push(start.toLocaleDateString([], {timeZone:"UTC", month:"short"}));
     moRevs.push(parseFloat(rev.toFixed(4)));
-    moRows.push({m,label:start.toLocaleDateString([],{month:"long"}),rev,
+    moRows.push({m,label:start.toLocaleDateString([], {timeZone:"UTC", month:"long"}),rev,
       rents:evs.filter(e=>e.type==="rental_start").length,
       warns:evs.filter(e=>e.type==="temp_warning").length,
       prices:evs.filter(e=>e.type==="price_change").length});
