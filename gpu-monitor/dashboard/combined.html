@@ -1216,7 +1216,7 @@ function buildRentalSessions(allEvents) {
 // daily_earnings (Vast.ai confirmed) take priority over rental_start/end.
 // For any UTC day covered by daily_earnings, use that amount as-is.
 // rental_start/end estimates on uncovered days.
-function computeRevenue(allEvents, periodStart, periodEnd) {
+function computeRevenue(allEvents, periodStart, periodEnd, opts = {}) {
   const pS = periodStart ? periodStart.getTime() : 0;
   const pE = periodEnd   ? periodEnd.getTime()   : Date.now();
   let total = 0;
@@ -1224,9 +1224,14 @@ function computeRevenue(allEvents, periodStart, periodEnd) {
   // Collapse daily_earnings to one value per (date, machine): newest ts wins
   // (idempotent re-syncs), and API-sourced entries supersede any legacy/manual
   // entry for the same date. Per-date total = sum across machines/rigs.
+  // This whole block only makes sense for windows spanning (roughly) a full
+  // day -- it attributes one lump total to the day, not to any sub-range
+  // within it. Callers querying a narrower window (e.g. a single hour, for
+  // the hourly revenue chart) must pass skipDailyEarnings so this day-level
+  // total isn't replayed into every sub-window that happens to overlap it.
   const deMap = new Map();      // "date|machine" -> newest event
   const apiDates = new Set();   // dates that have a Vast-API entry
-  allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
+  if (!opts.skipDailyEarnings) allEvents.filter(e => e.type === "daily_earnings").forEach(e => {
     const date = e.date || e.ts.slice(0, 10);
     const key = date + "|" + String(e.machine_id || "");
     const prev = deMap.get(key);
@@ -1906,7 +1911,7 @@ function renderRig(idx) {
       data: hours.map(h=>{
         const hStart=new Date(today()); hStart.setHours(h,0,0,0);
         const hEnd=new Date(today()); hEnd.setHours(h+1,0,0,0);
-        return parseFloat(computeRevenue(revEvents, hStart, hEnd).toFixed(4));
+        return parseFloat(computeRevenue(revEvents, hStart, hEnd, {skipDailyEarnings:true}).toFixed(4));
       }),
     }]);
 
