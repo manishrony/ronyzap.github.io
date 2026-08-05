@@ -184,21 +184,15 @@ fi
 
 echo "[*] Installing dashboard to $DASH_DEST ..."
 mkdir -p "$DASH_DEST"
-cp "$DASH_SRC/server.py"        "$DASH_DEST/"
-cp "$DASH_SRC/assistant.py"     "$DASH_DEST/"
-cp "$DASH_SRC/prom_exporter.py" "$DASH_DEST/"
-cp "$DASH_SRC/history_api.py"   "$DASH_DEST/"
-cp "$DASH_SRC/profit_api.py"        "$DASH_DEST/"
-cp "$DASH_SRC/occupancy_api.py"     "$DASH_DEST/"
-cp "$DASH_SRC/daily_summary_api.py" "$DASH_DEST/"
-cp "$DASH_SRC/events_api.py"        "$DASH_DEST/"
-cp "$DASH_SRC/health_api.py"        "$DASH_DEST/"
-cp "$DASH_SRC/pricing_advisor_api.py" "$DASH_DEST/"
-cp "$DASH_SRC/prom_client.py"       "$DASH_DEST/"
-cp "$DASH_SRC/index.html"       "$DASH_DEST/"
-cp "$DASH_SRC/combined.html"    "$DASH_DEST/"
-cp "$DASH_SRC/market.html"      "$DASH_DEST/"
-cp "$DASH_SRC/history.html"     "$DASH_DEST/"
+# Copy every .py/.html in the dashboard source dir rather than an explicit
+# per-file list -- the explicit list silently fell out of sync with the repo
+# (cooling_api.py and outdoor_weather_api.py existed in the repo but were
+# never added here, so a genuinely fresh install, confirmed live on zappa3
+# 2026-08-05, crash-looped on `ModuleNotFoundError: No module named
+# 'cooling_api'` even though zappa1/zappa2 happened to already have the file
+# from being deployed before/outside this list).
+cp "$DASH_SRC"/*.py "$DASH_DEST/"
+cp "$DASH_SRC"/*.html "$DASH_DEST/"
 
 # Rig Assistant chat backend is swappable (see LLM_PROVIDER in RIGS.md) —
 # install whichever provider's SDK this rig's conf actually selects (defaults
