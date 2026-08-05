@@ -194,6 +194,19 @@ mkdir -p "$DASH_DEST"
 cp "$DASH_SRC"/*.py "$DASH_DEST/"
 cp "$DASH_SRC"/*.html "$DASH_DEST/"
 
+# cooling_api.py unconditionally imports client.py at module load time
+# (sys.path.insert + `from client import ...`), regardless of whether this
+# rig has a physical Cloudline controller -- so every rig's dashboard needs
+# it just to boot, not only the one hub-side rig cloudline/deploy/deploy.sh
+# targets. Confirmed live on zappa3, 2026-08-05: dashboard crash-looped on
+# ModuleNotFoundError: No module named 'client' until this was deployed.
+CLOUDLINE_CLIENT_SRC="$(dirname "$0")/cloudline/client.py"
+CLOUDLINE_DEST="/opt/gpu-monitor/cloudline"
+if [[ -f "$CLOUDLINE_CLIENT_SRC" ]]; then
+    mkdir -p "$CLOUDLINE_DEST"
+    cp "$CLOUDLINE_CLIENT_SRC" "$CLOUDLINE_DEST/"
+fi
+
 # Rig Assistant chat backend is swappable (see LLM_PROVIDER in RIGS.md) —
 # install whichever provider's SDK this rig's conf actually selects (defaults
 # to "openai" if LLM_PROVIDER isn't set, matching assistant.py's default).
