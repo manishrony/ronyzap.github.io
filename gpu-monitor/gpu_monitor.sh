@@ -350,6 +350,9 @@ PRICE_ADJUST_UP_MAX=2    # cents to RAISE per cycle when below target (max)
 PRICE_ADJUST_DOWN_MIN=1  # cents to LOWER per cycle when above target (min)
 PRICE_ADJUST_DOWN_MAX=2  # cents to LOWER per cycle when above target (max)
 MAX_RENTAL_DAYS=14   # max rental/listing duration set on every pricing update (2 weeks)
+MIN_CHUNK_DAYS=1     # min rental length (days) Vast will offer a renter — RIG-SPECIFIC,
+                     # override in that rig's /etc/gpu_monitor.conf to bias toward
+                     # longer-term tenants (e.g. MIN_CHUNK_DAYS=3)
 
 # Best-effort "no later than" date for the CURRENT listing window (now +
 # MAX_RENTAL_DAYS), used to show a contract-end estimate on the dashboard.
@@ -3176,13 +3179,13 @@ obj = {
     'price_inetu':        float(sys.argv[5]),
     'price_inetd':        float(sys.argv[6]),
     'price_min_bid':      float(sys.argv[3]),
-    'min_chunk':          1,
+    'min_chunk':          int(sys.argv[7]),
     'end_date':           int(sys.argv[4]) if sys.argv[4] != '0' else None,
     'credit_discount_max': 0,
 }
 print(json.dumps(obj))
 " "$machine_id" "$new_price" "$floor_price" "$end_ts" \
-  "$PRICE_INET_UP" "$PRICE_INET_DOWN" 2>/dev/null)
+  "$PRICE_INET_UP" "$PRICE_INET_DOWN" "$MIN_CHUNK_DAYS" 2>/dev/null)
 
     if [[ -z "$body" ]]; then
         log "  ERROR: could not build create_asks body"; rm -f "$tmpf"; return 1
