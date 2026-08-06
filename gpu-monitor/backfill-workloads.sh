@@ -89,7 +89,14 @@ with open(jsonl_path) as f:
         except Exception:
             continue
         if ev.get('type') == 'rental_start':
-            if ev.get('workload_type'):
+            # "unknown" is what gpu_monitor.sh writes when it COULDN'T
+            # classify the rental (no image found at all) -- treating it as
+            # truthy here meant every "unknown" row was marked already-done
+            # and permanently skipped, never actually attempting the
+            # kaalia.log lookup that might recover it. Confirmed live
+            # 2026-08-06: all 11 sessions in the last 30 days showed
+            # "Unknown" on the dashboard and this script skipped every one.
+            if ev.get('workload_type') and ev.get('workload_type') != 'unknown':
                 already_done.add((ev.get('ts'), str(ev.get('machine_id', ''))))
             else:
                 rental_starts.append(ev)
