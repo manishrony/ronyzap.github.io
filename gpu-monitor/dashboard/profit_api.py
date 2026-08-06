@@ -117,6 +117,17 @@ def _earnings_by_rig_date(prom_url, start_ts, now_ts):
         rig, date = metric.get("rig"), metric.get("date")
         if rig is None or date is None:
             continue
+        # Normalize case before using rig as part of the dedup key: the live
+        # exporter always labels by lowercase hostname now, but an older/
+        # manually-typed `backfill-prometheus.py --rig <name>` invocation
+        # could still have written the same physical rig's history under a
+        # differently-cased spelling (e.g. "Zappa1" vs "zappa1") as a
+        # genuinely separate Prometheus series. Without this, that split
+        # survives as two different dict keys below and both get counted in
+        # month_revenue = sum(earnings.values()) -- double-counting that
+        # rig's real revenue. Confirmed live (2026-08-06): month-to-date
+        # revenue was ~2x what today's own rate would extrapolate to.
+        rig = rig.lower()
         values = series.get("values") or []
         if not values:
             continue
@@ -187,6 +198,7 @@ def _electricity_cost_by_rig(prom_url, start_ts, end_ts):
         rig = series.get("metric", {}).get("rig")
         if rig is None:
             continue
+        rig = rig.lower()  # same case-normalization as _earnings_by_rig_date, same reason
         watt_sum = 0.0
         for _, v in series.get("values") or []:
             try:
