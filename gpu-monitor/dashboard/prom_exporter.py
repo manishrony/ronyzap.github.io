@@ -157,6 +157,15 @@ def render_metrics(data_file, state_file):
     # Vast's own API, queried directly with the same UTC day window) already
     # had the true settled totals ($11.27/$78.62/$4.49) from an hour later.
     latest_earnings_by_date = {}
+    # --- Latest rental_start per machine (for rental_instance_info below) ---
+    # Only ever read from the JSONL, never exposed as a Prometheus metric --
+    # real_instance_id/image/workload_type had no historical record in
+    # Prometheus/Grafana at all, only in this rig's local JSONL file. Track
+    # the last rental_start per machine here; render_metrics only emits it
+    # while `state` (this scrape's live /machines/ snapshot) says the
+    # machine is CURRENTLY rented, so a rental that already ended doesn't
+    # keep reporting a stale container as if it were still active.
+    latest_rental_start = {}
 
     for ev in _read_jsonl(data_file):
         t = ev.get("type")
@@ -174,6 +183,10 @@ def render_metrics(data_file, state_file):
             mid = str(ev.get("machine_id", ""))
             if mid:
                 latest_price[mid] = ev
+        elif t == "rental_start":
+            mid = str(ev.get("machine_id", ""))
+            if mid:
+                latest_rental_start[mid] = ev
         elif t == "daily_earnings" and ev.get("source") == "vast_api":
             d = ev.get("date")
             ts = ev.get("ts", "")
@@ -210,6 +223,28 @@ def render_metrics(data_file, state_file):
         m.add("machine_rental_rate_dollars_per_hour", "gauge", "Current total $/hr this machine is earning (live instance rate, or earn_hour fallback for D-type).", labels, s["cost"])
         m.add("machine_rented_gpus", "gauge", "Number of GPUs on this machine currently rented.", labels, s["rented_count"])
         m.add("machine_earn_day_dollars", "gauge", "Vast's own live running total for today (earn_day).", labels, s["earn_day"])
+
+    # Container/instance identity for the CURRENT rental, as a Prometheus info
+    # metric (always 1, identifying data carried in labels — same pattern as
+    # gpu_process_info above). Gated on state[mid]["rented"] (this scrape's
+    # live /machines/ snapshot), not just "has a rental_start ever been seen"
+    # -- otherwise a machine whose rental already ended would keep reporting
+    # its last container as if it were still running. Each new rental_start
+    # (a real_instance_id/image change) becomes a new label combination, so
+    # Prometheus timestamps exactly when one rental's container was swapped
+    # for another — that history didn't exist anywhere queryable before this,
+    # only in this rig's local JSONL file.
+    for mid, ev in latest_rental_start.items():
+        if not state.get(mid, {}).get("rented"):
+            continue
+        labels = {
+            "rig": rig,
+            "machine_id": mid,
+            "real_instance_id": str(ev.get("real_instance_id") or ""),
+            "image": ev.get("image") or "",
+            "workload_type": ev.get("workload_type") or "unknown",
+        }
+        m.add("rental_instance_info", "gauge", "1 while this container/instance is the CURRENT rental on this machine (labels carry real_instance_id/image/workload_type).", labels, 1)
 
     # latest_market/latest_price are the LAST-EVER-SEEN event per machine_id
     # from the full JSONL history — a machine deleted from Vast simply stops
