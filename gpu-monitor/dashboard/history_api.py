@@ -32,6 +32,21 @@ _METRICS = {
     "rig_daily_earnings_dollars": "avg",
     "machine_rented": "max",
     "gpu_slot_rented": "max",
+    # Cloudline room climate + fan state (hub-only; see prom_exporter.py).
+    # Labeled by location/device, NOT rig/machine_id/gpu_idx -- these were
+    # queryable in Prometheus directly but never reachable through this
+    # allow-listed proxy (or the History page's hardcoded dropdown) at all.
+    "room_temp_celsius": "avg",
+    "room_humidity_percent": "avg",
+    "room_vpd_kpa": "avg",
+    "fan_speed": "avg",
+    "fan_online": "max",
+    # 1 while a container/instance is the CURRENT rental on a machine (see
+    # prom_exporter.py) -- max_over_time shows whether SOME rental was
+    # active in a given window, not which container; real_instance_id/
+    # image/workload_type are labels, not visible on this line-chart view.
+    # Query Prometheus directly for the label detail across a time range.
+    "rental_instance_info": "max",
 }
 
 _LABEL_RE = re.compile(r'^[A-Za-z0-9_.:-]+$')
