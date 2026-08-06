@@ -10,6 +10,7 @@ backfill-prometheus.py, which reads the same files but emits OpenMetrics
 samples with real historical timestamps instead.
 """
 import json
+import os
 import re
 import socket
 from pathlib import Path
@@ -18,6 +19,12 @@ import cooling_api
 
 _RATE_RE = re.compile(r'[-+]?\d*\.?\d+')
 _CONF_FILE = "/etc/gpu_monitor.conf"
+# Cloudline controllers meter a physical space shared by more than one rig
+# (T6/S6 cover zappa1+zappa2's basement) — tagging room/fan metrics with the
+# polling host's `rig` label would wrongly imply the reading is zappa1-only.
+# CLOUDLINE_LOCATION lets that be corrected per-deployment; same env-var
+# naming convention as CLOUDLINE_TAPO_RIG_NAME in cloudline/scheduler.py.
+CLOUDLINE_LOCATION = os.environ.get("CLOUDLINE_LOCATION", "basement")
 
 
 def _read_energy_rate():
@@ -306,7 +313,7 @@ def render_metrics(data_file, state_file):
     if cooling_api.ENABLED:
         cooling = cooling_api.handle_cooling_get()
         for dev in cooling.get("devices", []) or []:
-            dev_labels = {"rig": rig, "device": dev.get("name") or dev.get("device_id") or ""}
+            dev_labels = {"location": CLOUDLINE_LOCATION, "device": dev.get("name") or dev.get("device_id") or ""}
             if dev.get("temp_c") is not None:
                 m.add("room_temp_celsius", "gauge", "Cloudline controller's ambient temperature reading.", dev_labels, _to_float(dev.get("temp_c")))
             if dev.get("humidity_pct") is not None:
