@@ -97,6 +97,28 @@ def get_image(iid):
             pass
     return last
 
+def docker_running_instance():
+    """Fallback for a D-type dedicated contract that /instances/ has NO
+    record of at all (confirmed live 2026-08-06, machine 138419: docker ps
+    showed a real running C.46992807 container the entire time, but
+    /instances/ never returned a match -- kaalia.log-based get_image()
+    above has nothing to look up without an iid, same gap as gpu_monitor.sh
+    hit live). This script runs on the host, so it can see the one running
+    vastai-managed container directly. Returns (iid, image) or (None, None)
+    if zero or more than one is running -- refuses to guess which container
+    maps to which machine rather than attributing the wrong one."""
+    import subprocess
+    try:
+        out = subprocess.run(['docker', 'ps', '--format', '{{.Names}}\t{{.Image}}'],
+                              capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None, None
+    matches = [line.split('\t', 1) for line in out.splitlines() if re.match(r'^C\.\d+\t', line)]
+    if len(matches) != 1:
+        return None, None
+    name, image = matches[0]
+    return name[len('C.'):], image
+
 # Correct rented count + total $/hr per machine, from live instance data.
 correct = {}
 for m in machines:
@@ -133,12 +155,15 @@ for m in machines:
     print(f"[LIVE] Machine {mid} ({gpu_name}): {count} GPU(s) rented, ${total:.3f}/hr total{fallback_note}")
     if count > 0 and total > 0:
         img = get_image(iid)
-        workload = classify_workload(img)
         # D-type rentals have no iid at all, so get_image() has nothing to look
-        # up (not just a missing kaalia.log entry) — fall back to classifying
-        # whatever's actually running on the GPUs right now (this script runs
-        # on the host, so it sees the same processes gpu_monitor.sh's live
-        # throttle does).
+        # up (not just a missing kaalia.log entry) — recover it straight from
+        # docker before falling back to guessing off running GPU processes.
+        if not iid and not img:
+            docker_iid, docker_img = docker_running_instance()
+            if docker_iid:
+                iid, img = docker_iid, docker_img
+                print(f"  [recovered real_instance_id {iid} / {img} from docker ps — /instances/ had no record at all]")
+        workload = classify_workload(img)
         if workload == 'unknown' and proc_names:
             for p in proc_names:
                 pw = classify_workload(p)
