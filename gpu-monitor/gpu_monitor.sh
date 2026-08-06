@@ -2459,6 +2459,27 @@ get_instance_image() {
         | sed -E 's/.*base_image_: //'
 }
 
+# Fallback for D-type dedicated contracts that Vast's own /instances/ API has
+# no record of at all (confirmed live 2026-08-06, machine 138419: docker ps
+# clearly showed a running "C.46992807" container, but /instances/ never
+# returned a matching entry -- not the transitional "id 0" case, a genuine
+# total absence, so no retry against that same endpoint can ever help).
+# gpu_monitor.sh runs directly on the host, so it can see the real running
+# container the API can't -- prints "<instance_id> <image>" for the single
+# vastai-managed container running right now, or nothing if zero or more
+# than one is running (ambiguous which maps to which machine, so refuse to
+# guess rather than attribute the wrong rental's container).
+docker_running_instance() {
+    command -v docker >/dev/null 2>&1 || return
+    local out
+    out=$(docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null | grep -E '^C\.[0-9]+\s')
+    [[ -z "$out" ]] && return
+    [[ $(wc -l <<< "$out") -eq 1 ]] || return
+    local name image
+    IFS=$'\t' read -r name image <<< "$out"
+    echo "${name#C.} $image"
+}
+
 # Classify a Docker image string into a coarse workload bucket for the
 # rental-analysis dashboard. Vast.ai does not expose renter identity, so
 # image name is the only signal available for "what's this rental doing".
@@ -2923,12 +2944,37 @@ PYEOF
                                 log "  Machine $mid: real_instance_id indexed on retry ($real_iid) -- using live rate $cost instead of an estimate"
                             fi
                         fi
-                        # Still no real_iid after the retry -- fall back to our
-                        # own most recent price_change for this machine, a far
-                        # better one-time estimate than a lagging account-wide
-                        # earn_hour average (we set that listed price ourselves
-                        # moments earlier).
+                        # Still no real_iid -- typical for a D-type dedicated
+                        # contract, which /instances/ can have NO record of at
+                        # all (confirmed live 2026-08-06, machine 138419: a
+                        # real running container was visible in `docker ps`
+                        # the entire time, but /instances/ never returned a
+                        # match, so retrying that same endpoint above can
+                        # never help this case). This host can see what the
+                        # API can't -- recover real_instance_id/image from the
+                        # single running vastai container directly, leaving
+                        # the rate estimate (below) to whatever source it
+                        # already has, since docker has no price info.
                         if [[ -z "$real_iid" ]]; then
+                            local docker_iid docker_image
+                            read -r docker_iid docker_image < <(docker_running_instance)
+                            if [[ -n "$docker_iid" ]]; then
+                                real_iid="$docker_iid"
+                                image="$docker_image"
+                                workload_type=$(classify_workload "$image")
+                                log "  Machine $mid: real_instance_id recovered from docker ps ($real_iid, $image) -- /instances/ had no record at all"
+                            fi
+                        fi
+                        # Rate still needs a real source -- $0.000/hr (the
+                        # placeholder cost_val is initialized to before any
+                        # of the above runs) means no live rate was ever
+                        # found, regardless of whether real_instance_id/image
+                        # got resolved via the docker fallback just now. Fall
+                        # back to our own most recent price_change for this
+                        # machine, a far better one-time estimate than a
+                        # lagging account-wide earn_hour average (we set that
+                        # listed price ourselves moments earlier).
+                        if [[ "$cost" == '$0.000/hr' ]]; then
                             local last_listed_price
                             last_listed_price=$(python3 - "$JSONL_FILE" "$mid" <<'PYEOF' 2>/dev/null
 import sys, json
