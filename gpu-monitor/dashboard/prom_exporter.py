@@ -14,6 +14,8 @@ import re
 import socket
 from pathlib import Path
 
+import cooling_api
+
 _RATE_RE = re.compile(r'[-+]?\d*\.?\d+')
 _CONF_FILE = "/etc/gpu_monitor.conf"
 
@@ -295,5 +297,24 @@ def render_metrics(data_file, state_file):
         if total_power_w > 0:
             m.add("rig_revenue_per_watt_dollars_per_hour", "gauge", "Revenue/hr per watt of GPU power draw.", labels, total_revenue_hr / total_power_w)
             m.add("rig_revenue_per_kwh_dollars", "gauge", "Revenue/hr per kW of GPU power draw.", labels, total_revenue_hr / (total_power_w / 1000.0))
+
+    # --- Cloudline room climate + fan state (hub-only, same as cooling_api.py) ---
+    # No-ops on any rig without AC_INFINITY_EMAIL/PASSWORD set (cooling_api's
+    # own gate) — lets GPU temp/util and room temp/fan speed live on the same
+    # Prometheus time axis for Grafana correlation, without a second exporter
+    # or standing up Home Assistant.
+    if cooling_api.ENABLED:
+        cooling = cooling_api.handle_cooling_get()
+        for dev in cooling.get("devices", []) or []:
+            dev_labels = {"rig": rig, "device": dev.get("name") or dev.get("device_id") or ""}
+            if dev.get("temp_c") is not None:
+                m.add("room_temp_celsius", "gauge", "Cloudline controller's ambient temperature reading.", dev_labels, _to_float(dev.get("temp_c")))
+            if dev.get("humidity_pct") is not None:
+                m.add("room_humidity_percent", "gauge", "Cloudline controller's ambient humidity reading.", dev_labels, _to_float(dev.get("humidity_pct")))
+            for p in dev.get("ports", []) or []:
+                port_labels = dict(dev_labels, port=p.get("port"), port_name=p.get("name") or "")
+                m.add("fan_online", "gauge", "1 if this Cloudline fan port reports online.", port_labels, 1 if p.get("online") else 0)
+                if p.get("speed") is not None:
+                    m.add("fan_speed", "gauge", "Current Cloudline fan speed, 0 (off) - 10 (max).", port_labels, _to_float(p.get("speed")))
 
     return m.render()
