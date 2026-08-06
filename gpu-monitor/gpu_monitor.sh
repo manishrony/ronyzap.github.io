@@ -2425,6 +2425,17 @@ try:
             gpu_ids = list(range(n))
         rate = float(inst.get('dph_total', inst.get('dph_base', 0)) or 0)
         iid  = str(inst.get('id', ''))
+        # A transitional/terminating instance (confirmed live 2026-08-06: a
+        # customer replaced one container with another on the same machine)
+        # can appear in /instances/ with a literal id of 0 rather than being
+        # absent entirely. The string zero is non-empty, so every downstream
+        # truthiness check was treating it as a REAL instance id, poisoning
+        # real_instance_id/rate with a bogus value and skipping the retry and
+        # fallback chain that exists specifically to avoid that. Reject it
+        # here so it is dropped to unresolved instead, same as a slot with no
+        # instances match at all.
+        if iid in ('', '0'):
+            continue
         if mid not in result:
             result[mid] = {}
         for g in gpu_ids:
