@@ -109,12 +109,17 @@ def docker_running_instance():
     maps to which machine rather than attributing the wrong one."""
     import subprocess
     try:
-        out = subprocess.run(['docker', 'ps', '--format', '{{.Names}}\t{{.Image}}'],
-                              capture_output=True, text=True, timeout=10).stdout
-    except Exception:
+        proc = subprocess.run(['docker', 'ps', '--format', '{{.Names}}\t{{.Image}}'],
+                               capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        print(f"  [docker ps fallback: failed to run docker -- {e}]")
         return None, None
-    matches = [line.split('\t', 1) for line in out.splitlines() if re.match(r'^C\.\d+\t', line)]
+    if proc.returncode != 0:
+        print(f"  [docker ps fallback: docker exited {proc.returncode} -- {proc.stderr.strip()[:200]}]")
+        return None, None
+    matches = [line.split('\t', 1) for line in proc.stdout.splitlines() if re.match(r'^C\.\d+\t', line)]
     if len(matches) != 1:
+        print(f"  [docker ps fallback: found {len(matches)} matching container(s), need exactly 1 -- raw output: {proc.stdout.strip()[:200]!r}]")
         return None, None
     name, image = matches[0]
     return name[len('C.'):], image

@@ -2470,11 +2470,25 @@ get_instance_image() {
 # than one is running (ambiguous which maps to which machine, so refuse to
 # guess rather than attribute the wrong rental's container).
 docker_running_instance() {
-    command -v docker >/dev/null 2>&1 || return
-    local out
-    out=$(docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null | grep -E '^C\.[0-9]+\s')
-    [[ -z "$out" ]] && return
-    [[ $(wc -l <<< "$out") -eq 1 ]] || return
+    if ! command -v docker >/dev/null 2>&1; then
+        log "  docker ps fallback: docker command not found"
+        return
+    fi
+    local raw out
+    raw=$(docker ps --format '{{.Names}}\t{{.Image}}' 2>&1)
+    if [[ $? -ne 0 ]]; then
+        log "  docker ps fallback: docker ps failed -- ${raw:0:200}"
+        return
+    fi
+    out=$(grep -E '^C\.[0-9]+\s' <<< "$raw")
+    if [[ -z "$out" ]]; then
+        log "  docker ps fallback: no C.<id>-named container running -- raw: ${raw:0:200}"
+        return
+    fi
+    if [[ $(wc -l <<< "$out") -ne 1 ]]; then
+        log "  docker ps fallback: found $(wc -l <<< "$out") matching containers, need exactly 1 -- ${out:0:200}"
+        return
+    fi
     local name image
     IFS=$'\t' read -r name image <<< "$out"
     echo "${name#C.} $image"
