@@ -228,6 +228,17 @@ def get_period_profit(prom_url, now_ts=None):
     today_str = now.strftime("%Y-%m-%d")
 
     earnings = _earnings_by_rig_date(prom_url, month_start.timestamp(), now_epoch)
+    # Filter by the `date` LABEL itself, not just trusting Prometheus's
+    # temporal windowing to have already scoped results to [month_start,
+    # now] -- confirmed live (2026-08-06): a query_range restricted to
+    # August still returned series labeled date=2026-07-27..07-31 with
+    # non-null values (a stale-sample/backfill-boundary quirk in how
+    # last_over_time resolves near the edge of the requested range), so
+    # five full days of July revenue silently leaked into "month-to-date"
+    # -- MTD showed $991.99 when the real August total was $533.63 (the
+    # extra $458.36 exactly matched summing those five stale July dates).
+    month_start_str = month_start.strftime("%Y-%m-%d")
+    earnings = {k: v for k, v in earnings.items() if month_start_str <= k[1] <= today_str}
     month_revenue = sum(earnings.values())
     day_revenue = sum(v for (rig, date), v in earnings.items() if date == today_str)
 
