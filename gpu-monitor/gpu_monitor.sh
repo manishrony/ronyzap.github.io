@@ -2933,9 +2933,19 @@ m = slots.get(mid, {})
 rented = [s for s in m.values() if s.get('instance_id')]
 iid = rented[0]['instance_id'] if rented else ''
 rate = sum(float(s.get('rate', 0) or 0) for s in rented)
-print(iid, rate)
+# An empty iid printed as "" leaves only ONE whitespace-separated token on
+# the line (e.g. " 0") -- bash's `read` collapses the leading space and
+# assigns that lone token to the FIRST variable, so retry_real_iid silently
+# became the STRING "0" (from the numeric rate) instead of staying empty.
+# Confirmed live 2026-08-06, machine 138419: logged "real_instance_id
+# indexed on retry (0)" and treated it as a real id, right after the
+# vastai_fetch_gpu_slots() fix started correctly leaving `rented` empty
+# more often than before. Always emit a non-empty placeholder for iid so
+# there are always exactly two tokens on the line.
+print(iid or '-', rate)
 PYEOF
 )
+                            [[ "$retry_real_iid" == "-" ]] && retry_real_iid=""
                             if [[ -n "$retry_real_iid" ]]; then
                                 real_iid="$retry_real_iid"
                                 cost="\$$(printf '%.3f' "$retry_rate")/hr"
