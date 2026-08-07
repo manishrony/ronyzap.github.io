@@ -350,9 +350,15 @@ PRICE_ADJUST_UP_MAX=2    # cents to RAISE per cycle when below target (max)
 PRICE_ADJUST_DOWN_MIN=1  # cents to LOWER per cycle when above target (min)
 PRICE_ADJUST_DOWN_MAX=2  # cents to LOWER per cycle when above target (max)
 MAX_RENTAL_DAYS=14   # max rental/listing duration set on every pricing update (2 weeks)
-MIN_CHUNK_DAYS=1     # min rental length (days) Vast will offer a renter — RIG-SPECIFIC,
-                     # override in that rig's /etc/gpu_monitor.conf to bias toward
-                     # longer-term tenants (e.g. MIN_CHUNK_DAYS=3)
+MIN_CHUNK_GPUS=1     # min number of GPUs Vast will bundle into a single rental --
+                     # NOT a duration in days, despite this codebase's earlier name
+                     # for it (MIN_CHUNK_DAYS). Confirmed live 2026-08-06: setting
+                     # it to 3 on zappa3 (a 1-GPU machine) silently blocked all
+                     # rentals there until reverted to 1 -- exactly what an
+                     # impossible "must rent >=3 GPUs on a 1-GPU box" constraint
+                     # would do. RIG-SPECIFIC: override in that rig's
+                     # /etc/gpu_monitor.conf, but NEVER set it above that rig's own
+                     # GPU count.
 
 # Best-effort "no later than" date for the CURRENT listing window (now +
 # MAX_RENTAL_DAYS), used to show a contract-end estimate on the dashboard.
@@ -3266,7 +3272,7 @@ obj = {
 }
 print(json.dumps(obj))
 " "$machine_id" "$new_price" "$floor_price" "$end_ts" \
-  "$PRICE_INET_UP" "$PRICE_INET_DOWN" "$MIN_CHUNK_DAYS" 2>/dev/null)
+  "$PRICE_INET_UP" "$PRICE_INET_DOWN" "$MIN_CHUNK_GPUS" 2>/dev/null)
 
     if [[ -z "$body" ]]; then
         log "  ERROR: could not build create_asks body"; rm -f "$tmpf"; return 1
