@@ -531,6 +531,22 @@ RATCHET_UP_WHILE_FULL="${RATCHET_UP_WHILE_FULL:-1}"
 # straight back up to the $0.423 target with no renter in sight.
 RATCHET_UP_WHILE_VACANT="${RATCHET_UP_WHILE_VACANT:-1}"
 
+# Whether a PARTIALLY rented machine (some GPUs occupied, at least one still
+# free -- distinct from fully_rented and fully_vacant, and NOT covered by
+# either flag above) is allowed to ratchet its re-list ask up toward target
+# (default 1, existing behavior). Set to 0 per-rig for an occupancy-first
+# strategy: confirmed live 2026-08-06 (zappa1, 2-GPU machine): a 1-GPU
+# rental landed at $0.27-0.30, and while that single GPU stayed occupied the
+# re-list ask (for the OTHER, still-free GPU) climbed $0.27 -> $0.30 -> $0.35
+# over the next hour purely from the generic below-target ratchet, unrelated
+# to RATCHET_UP_WHILE_FULL (which only gates the fully-rented branch) or
+# RATCHET_UP_WHILE_VACANT (which only gates the fully-vacant branch). With
+# this off, a partially-rented machine holds its ask flat instead, same
+# reasoning as the full/vacant flags: the current contract's price is
+# already locked in regardless, so this only affects whether the NEXT
+# tenant (for the free GPU) sees a rising or flat ask.
+RATCHET_UP_WHILE_PARTIAL="${RATCHET_UP_WHILE_PARTIAL:-1}"
+
 # Micro-rentals (5-10 min jobs that launch, run briefly, and vanish -- e.g.
 # Promera/Goubli/LatentSync/MusicVideo-style short AI jobs, confirmed live
 # 2026-07-30) were wiping out hours of accumulated vacancy the instant
@@ -3731,7 +3747,7 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
         # actually evaluates against, so the next occurrence pinpoints which
         # branch fired instead of requiring after-the-fact inference from
         # the summary line above.
-        log "  Machine $mid: [TRACE] rented=$rented free_count=$free_count num_gpus=$num_gpus fully_rented=$fully_rented fully_vacant=$fully_vacant vacancy_secs=$vacancy_secs idle_mode=$idle_mode idle_reset_file_exists=$([[ -f "$idle_reset_file" ]] && echo yes || echo no) RATCHET_UP_WHILE_FULL='${RATCHET_UP_WHILE_FULL:-1}' RATCHET_UP_WHILE_VACANT='${RATCHET_UP_WHILE_VACANT:-1}' listed=$listed"
+        log "  Machine $mid: [TRACE] rented=$rented free_count=$free_count num_gpus=$num_gpus fully_rented=$fully_rented fully_vacant=$fully_vacant vacancy_secs=$vacancy_secs idle_mode=$idle_mode idle_reset_file_exists=$([[ -f "$idle_reset_file" ]] && echo yes || echo no) RATCHET_UP_WHILE_FULL='${RATCHET_UP_WHILE_FULL:-1}' RATCHET_UP_WHILE_VACANT='${RATCHET_UP_WHILE_VACANT:-1}' RATCHET_UP_WHILE_PARTIAL='${RATCHET_UP_WHILE_PARTIAL:-1}' listed=$listed"
 
         # Random 1-2¢ step, either direction, applied below whenever more
         # than 2¢ off ${target_label} (or walking up from the start_price
@@ -3834,6 +3850,18 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
             # lower this further, just never raise it.
             log "  Machine $mid: occupancy-confirmed fully vacant, below ${target_label} (\$$target) — RATCHET_UP_WHILE_VACANT=0, holding at \$$cur_bid"
             continue
+        elif [[ "$rented" == "True" ]] && (( ! fully_rented )) && (( ! fully_vacant )) && [[ "${RATCHET_UP_WHILE_PARTIAL:-1}" != "1" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
+            # Partially rented (some GPUs occupied, at least one still free) --
+            # distinct from both branches above, and NOT gated by either of
+            # their flags. Confirmed live 2026-08-06 (zappa1, 2-GPU machine):
+            # a 1-GPU rental landed at $0.27-0.30, then the re-list ask for
+            # the still-free GPU climbed $0.27 -> $0.30 -> $0.35 over the next
+            # hour via this exact branch, unaffected by RATCHET_UP_WHILE_FULL
+            # or RATCHET_UP_WHILE_VACANT. Same reasoning as those flags: the
+            # occupied GPU's contract price is already locked in regardless,
+            # so holding here only affects the free GPU's re-list ask.
+            log "  Machine $mid: partially rented, below ${target_label} (\$$target) — RATCHET_UP_WHILE_PARTIAL=0, holding re-list ask at \$$cur_bid"
+            continue
         elif [[ "$rented" == "True" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
             direction="↑ ${up_cents}¢ (below ${target_label})"
@@ -3888,6 +3916,10 @@ Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median |
         fi
         if (( fully_rented )) && [[ "${RATCHET_UP_WHILE_FULL:-1}" != "1" ]] && (( $(echo "$new_price > $cur_bid" | bc -l) )); then
             log "  Machine $mid: RATCHET_UP_WHILE_FULL=0 safety clamp -- computed \$$new_price > current \$$cur_bid while fully rented, capping at \$$cur_bid"
+            new_price="$cur_bid"
+        fi
+        if [[ "$rented" == "True" ]] && (( ! fully_rented )) && (( ! fully_vacant )) && [[ "${RATCHET_UP_WHILE_PARTIAL:-1}" != "1" ]] && (( $(echo "$new_price > $cur_bid" | bc -l) )); then
+            log "  Machine $mid: RATCHET_UP_WHILE_PARTIAL=0 safety clamp -- computed \$$new_price > current \$$cur_bid while partially rented, capping at \$$cur_bid"
             new_price="$cur_bid"
         fi
 
