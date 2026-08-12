@@ -3557,6 +3557,17 @@ PYEOF
             [[ -z "$market_p75"    ]] && market_p75="0"
             [[ -z "$market_mean"   ]] && market_mean="0"
 
+            # Keep the raw, Vast-advertised (pre-discount) stats around too --
+            # solely so the Telegram alert below can show both figures
+            # clearly labeled. Without this, the alert silently displayed
+            # ONLY the post-MARKET_PRICE_DISCOUNT numbers under plain
+            # "median"/"p75"/"mean" labels, indistinguishable from Vast's
+            # own advertised stats -- misleading, since Vast's own displayed
+            # price already has its listing/commission cut baked in, and a
+            # reader had no way to tell our target was already discounted
+            # further on top of that. Confirmed flagged live 2026-08-06.
+            local market_median_raw="$market_median" market_p75_raw="$market_p75" market_mean_raw="$market_mean"
+
             # Vast.ai displays prices with ~15% platform markup already baked in.
             # Discount our target so we compete at the real post-fee price.
             if [[ "${MARKET_PRICE_DISCOUNT:-1}" != "1" && "$market_price" != "0" ]]; then
@@ -3619,7 +3630,8 @@ PYEOF
                     tg_send "⚠️ <b>Price Below Target</b> — $(hostname)
 Machine <b>$mid</b> | $gpu_name x${num_gpus}
 Your price: <b>\$$cur_bid/hr</b>
-Target (${target_label}): <b>\$$target_value/hr</b> | median: \$$market_median | p75: \$$market_p75 | mean: \$$market_mean$rented_tag"
+Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price): <b>\$$target_value/hr</b> | median: \$$market_median | p75: \$$market_p75 | mean: \$$market_mean
+<i>Vast advertised (before our discount): median \$$market_median_raw | p75 \$$market_p75_raw | mean \$$market_mean_raw</i>$rented_tag"
                     echo "$now_ts" > "$alert_file"
                     log "  BELOW-TARGET ALERT sent: \$$cur_bid < ${target_label} \$$target_value"
                 fi
