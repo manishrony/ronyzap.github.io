@@ -2927,9 +2927,29 @@ PYEOF
                 # vastai_init_state() already backfilled rental_start on startup.
                 log "VAST.AI: Machine $mid | $rented_gpus | $cost | Rented: $rented (first seen)"
             else
-                local old_rented old_cost old_rented_count
-                IFS='|' read -r _ old_rented _ old_cost _ old_rented_count _ _ <<< "$old_line"
-                if [[ "$old_rented" != "$rented" ]]; then
+                local old_rented old_cost old_rented_count old_real_iid
+                IFS='|' read -r _ old_rented _ old_cost old_real_iid old_rented_count _ _ <<< "$old_line"
+                # A D-type dedicated contract can hand off from one renter to
+                # another WITHOUT ever dropping rented=True in between (the
+                # slot stays occupied the whole time), so the False->True
+                # check below never fires for the handoff -- confirmed live
+                # 2026-08-14, machine (zappa3): C.47572309 was replaced by
+                # C.47614434 while gpu_occupancy stayed "D" throughout, and
+                # rental_start silently kept recording the OLD instance id.
+                # Detect a real_instance_id change while still rented and
+                # treat it as an implicit end-of-old/start-of-new, so
+                # attribution and per-rental economics stay accurate.
+                if [[ "$old_rented" == "True" && "$rented" == "True" && -n "$old_real_iid" && -n "$real_iid" && "$old_real_iid" != "$real_iid" ]]; then
+                    log "VAST.AI: Machine $mid — renter CHANGED ($old_real_iid -> $real_iid) while rented continuously"
+                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$old_real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\"}"
+                    local image workload_type
+                    image=$(get_instance_image "$real_iid")
+                    workload_type=$(classify_workload "$image")
+                    tg_send "🔄 <b>Vast.ai Renter Changed</b> — $(hostname)
+Machine: <b>$mid</b> | $old_real_iid → $real_iid
+Rate: <b>$cost</b>"
+                    write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\"}"
+                elif [[ "$old_rented" != "$rented" ]]; then
                     if [[ "$rented" == "True" ]]; then
                         local image workload_type expire_date expire_source
                         image=$(get_instance_image "$real_iid")
