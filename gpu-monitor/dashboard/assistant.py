@@ -297,6 +297,25 @@ def diag_network():
     except (FileNotFoundError, subprocess.TimeoutExpired):
         ip_out = ""
     interfaces = [l.strip() for l in ip_out.splitlines() if l.strip()]
+
+    # Which interface actually carries traffic -- confirmed live 2026-08-14:
+    # the assistant flagged "enp6s0 is down" on zappa1 and "enp129s0f0np0 is
+    # down" on zappa2 as faults, when both were just the UNUSED port on a
+    # multi-NIC card (zappa2's flagged port is literally the sibling np0
+    # port next to its actual np1 uplink) -- a raw `ip -brief addr` dump
+    # gives the LLM no way to tell "the real link failed" from "this port
+    # was never plugged in", so it called both a fault. Tag which
+    # interface owns the default route so the assistant can tell the
+    # difference instead of treating every DOWN line as equally alarming.
+    default_iface = None
+    try:
+        route_out = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"\bdev\s+(\S+)", route_out)
+        if m:
+            default_iface = m.group(1)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
     reachable, rtt_ms = False, None
     try:
         p = subprocess.run(["ping", "-c", "1", "-W", "2", PING_TARGET],
@@ -308,7 +327,9 @@ def diag_network():
                 rtt_ms = float(m.group(1))
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    return {"interfaces": interfaces, "internet_reachable": reachable, "ping_ms": rtt_ms, "ping_target": PING_TARGET}
+    return {"interfaces": interfaces, "internet_reachable": reachable, "ping_ms": rtt_ms,
+            "ping_target": PING_TARGET, "default_iface": default_iface,
+            "note": "Only treat the interface named in default_iface as a real fault if it is down/no-carrier. Other interfaces listed in 'interfaces' may be unused/unplugged secondary NIC ports (e.g. the sibling port on a dual-port NIC) and being DOWN is normal for them, not a fault."}
 
 
 def diag_rental():
@@ -466,7 +487,12 @@ TOOLS = [
     },
     {
         "name": "get_network_status",
-        "description": "Read-only network interface list and internet reachability for one named rig.",
+        "description": ("Read-only network interface list and internet reachability for one named rig. "
+                         "The result's 'default_iface' field names the interface that actually carries "
+                         "traffic (owns the default route) -- only treat THAT interface being down as a "
+                         "fault. Other interfaces in the list may be unused/unplugged secondary NIC ports "
+                         "(e.g. the sibling port on a dual-port NIC card) and being DOWN is normal for "
+                         "them, not something to report as an issue."),
         "parameters": {"type": "object", "properties": {
             "rig": {"type": "string", "description": "Rig name"}},
             "required": ["rig"]},
