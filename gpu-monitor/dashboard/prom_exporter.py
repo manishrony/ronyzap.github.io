@@ -166,10 +166,20 @@ def render_metrics(data_file, state_file):
     # machine is CURRENTLY rented, so a rental that already ended doesn't
     # keep reporting a stale container as if it were still active.
     latest_rental_start = {}
+    # --- Latest pdu_power per rig (real APC PDU / Tapo meter reading) ---
+    # Never exposed to Prometheus before -- profit_api.py's electricity cost
+    # was always GPU-power-draw-only (chip power, not full system draw) even
+    # on rigs with a real meter, since this data simply didn't exist in the
+    # database it queries. Confirmed live 2026-08-14: dashboard's "Previous
+    # Day Summary" electricity ($19.79) vs. real metered wall power for the
+    # same day, off by a wide margin.
+    latest_pdu_power = None
 
     for ev in _read_jsonl(data_file):
         t = ev.get("type")
-        if t == "gpu_status":
+        if t == "pdu_power":
+            latest_pdu_power = ev
+        elif t == "gpu_status":
             latest_gpu_status = ev
         elif t == "gpu_rental_status":
             mid = str(ev.get("machine_id", ""))
@@ -207,6 +217,13 @@ def render_metrics(data_file, state_file):
         cpu_temp = latest_gpu_status.get("cpu_temp")
         if cpu_temp is not None:
             m.add("rig_cpu_temp_celsius", "gauge", "Current host CPU temperature.", {"rig": rig}, _to_float(cpu_temp))
+
+    if latest_pdu_power is not None:
+        # Real meter reading (APC PDU or Tapo plug), NOT GPU-power-draw-only.
+        # On zappa1 this is the FULL shared circuit (zappa1+zappa2 combined,
+        # one physical APC PDU) -- see profit_api.py's SHARED_METER_RIG_LABEL
+        # handling, which relies on that being true rather than per-rig.
+        m.add("rig_pdu_power_watts", "gauge", "Real metered power draw (APC PDU or Tapo plug) -- full wall power, not just GPU chip draw. On a rig with a shared meter (see RIGS.md), this covers every rig on that circuit, not just this one.", {"rig": rig}, _to_float(latest_pdu_power.get("watts")))
 
     for mid, ev in latest_rental_status.items():
         for slot in ev.get("slots", []):

@@ -208,7 +208,53 @@ def _electricity_cost_by_rig(prom_url, start_ts, end_ts):
         kwh = watt_sum / 1000.0 * (step / 3600.0)
         rate = rate_by_rig.get(rig, 0.25)  # matches gpu_monitor.sh's own PDU_ENERGY_RATE default
         out[rig] = out.get(rig, 0.0) + kwh * rate
+
+    # Prefer REAL metered watts (rig_pdu_power_watts -- APC PDU / Tapo) over
+    # the GPU-power-draw-only estimate above wherever available. GPU chip
+    # power was always an undercount (excludes CPU/fans/PSU losses) -- this
+    # was flagged live 2026-08-14 comparing the dashboard's "Previous Day
+    # Summary" electricity figure against the real metered reading for the
+    # same day. Real data only exists from whenever each rig's meter was
+    # installed onward, so this only overrides windows where it's present,
+    # not the whole history.
+    try:
+        real_data = prom_client.query_range(prom_url, f"sum by (rig) (last_over_time(rig_pdu_power_watts[{subwin}s]))", start_ts, end_ts, step)
+    except Exception:
+        real_data = {"result": []}
+
+    real_kwh_by_rig = {}
+    for series in real_data.get("result", []):
+        rig = series.get("metric", {}).get("rig")
+        if rig is None:
+            continue
+        rig = rig.lower()
+        watt_sum = sum(float(v) for _, v in (series.get("values") or []) if _is_num(v))
+        real_kwh_by_rig[rig] = real_kwh_by_rig.get(rig, 0.0) + watt_sum / 1000.0 * (step / 3600.0)
+
+    for rig, kwh in real_kwh_by_rig.items():
+        rate = rate_by_rig.get(rig, 0.25)
+        out[rig] = kwh * rate  # replaces (not adds to) the GPU estimate for this rig
+
+    # zappa1's APC PDU physically covers BOTH zappa1 and zappa2 on one
+    # shared circuit (see RIGS.md) -- zappa2 has no meter of its own, so
+    # its consumption is already fully counted inside zappa1's real reading
+    # above. Once real zappa1 data exists for this window, zappa2 MUST be
+    # dropped entirely rather than also billed its own GPU-draw estimate,
+    # or the shared circuit's cost gets counted twice. Per explicit request
+    # (2026-08-14): combined-only fix -- no attempt to split the shared
+    # meter's total between the two rigs, just avoid double-counting it.
+    if "zappa1" in real_kwh_by_rig:
+        out.pop("zappa2", None)
+
     return out
+
+
+def _is_num(v):
+    try:
+        float(v)
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 def _estimate_electricity_cost(prom_url, start_ts, now_ts):
