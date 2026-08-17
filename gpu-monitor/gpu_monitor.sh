@@ -1499,13 +1499,45 @@ _gpu_busy_clear_idle() {
 }
 
 check_gpus() {
-    local gpu_data
+    local gpu_data gpu_stderr
+    gpu_stderr=$(mktemp)
     gpu_data=$(nvidia-smi \
         --query-gpu=index,name,temperature.gpu,power.draw,power.limit,fan.speed,utilization.gpu \
-        --format=csv,noheader,nounits 2>&1) || {
-        log "ERROR: nvidia-smi failed: $gpu_data"
+        --format=csv,noheader,nounits 2>"$gpu_stderr") || {
+        log "ERROR: nvidia-smi failed: $gpu_data $(cat "$gpu_stderr" 2>/dev/null)"
+        rm -f "$gpu_stderr"
         return 1
     }
+    # A wedged GPU (GSP firmware stuck mid-reset, fallen off the bus) doesn't
+    # make nvidia-smi exit non-zero -- it just silently omits that GPU from
+    # the CSV rows and prints "Unable to determine the device handle for
+    # GPU<n>: ...: Unknown Error" to stderr instead, which the old 2>&1
+    # merge into $gpu_data quietly dropped/mis-parsed as a malformed CSV row.
+    # Confirmed live 2026-08-17 07:15 UTC on zappa1: GPU0's GSP RPC channel
+    # died (NVRM FULLCHIP_RESET asserts in dmesg) and the machine sat
+    # delisted from Vast search for ~11h before anyone noticed, because
+    # check_gpu_count() alone never got a clean signal to alert on quickly.
+    # Catch the handle-loss error directly and alert immediately instead of
+    # waiting on the count/dmesg paths.
+    local handle_err
+    handle_err=$(grep -i "unable to determine the device handle" "$gpu_stderr" 2>/dev/null || true)
+    rm -f "$gpu_stderr"
+    if [[ -n "$handle_err" ]]; then
+        log "  ⚠️ GPU HANDLE ERROR: $handle_err"
+        local alert_file="/var/tmp/gpu_handle_alert"
+        local now_ts last_ts=0
+        now_ts=$(date +%s)
+        [[ -f "$alert_file" ]] && last_ts=$(cat "$alert_file" 2>/dev/null || echo 0)
+        if (( now_ts - last_ts > 3600 )); then
+            local escaped
+            escaped=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$handle_err" 2>/dev/null || echo "\"$handle_err\"")
+            write_event "gpu_fault" "{\"message\":${escaped},\"gpu_hint\":\"HANDLE_LOST\"}"
+            tg_send "🚨 <b>GPU Handle Lost — $(hostname)</b>
+<code>$(echo "$handle_err" | head -c 300)</code>
+GPU likely wedged (GSP stuck in reset) — this can silently delist the machine from Vast search. A reboot is usually required. Check dmesg for NVRM FULLCHIP_RESET/RPC failures."
+            echo "$now_ts" > "$alert_file"
+        fi
+    fi
 
     local -A gpu_proc
     build_gpu_proc_map gpu_proc
@@ -1831,26 +1863,33 @@ check_gpu_faults() {
     [[ -z "$new_lines" ]] && return
 
     log "  GPU FAULT DETECTED in dmesg:"
+    local fault_count=0 first_fault="" all_gpu_hints=""
     while IFS= read -r fault_line; do
         [[ -z "$fault_line" ]] && continue
         log "    $fault_line"
+        fault_count=$(( fault_count + 1 ))
+        [[ -z "$first_fault" ]] && first_fault="$fault_line"
 
-        # Extract GPU index hint if present
         local gpu_hint=""
         if echo "$fault_line" | grep -qiE "GPU([0-9]+)"; then
             gpu_hint=$(echo "$fault_line" | grep -oiE "GPU[0-9]+" | head -1)
+            [[ "$all_gpu_hints" != *"$gpu_hint"* ]] && all_gpu_hints="${all_gpu_hints}${all_gpu_hints:+,}${gpu_hint}"
         fi
 
-        # Write dashboard event
         local escaped
         escaped=$(echo "$fault_line" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null || echo "\"$fault_line\"")
         write_event "gpu_fault" "{\"message\":${escaped},\"gpu_hint\":\"${gpu_hint}\"}"
-
-        # Telegram alert
-        tg_send "⚠️ <b>GPU Fault — $(hostname)</b>
-${gpu_hint:+GPU: <b>$gpu_hint</b>
-}$(echo "$fault_line" | head -c 300)"
     done <<< "$new_lines"
+
+    # A wedged GPU can spew dozens of near-identical NVRM RPC-failure lines in
+    # one burst (confirmed live 2026-08-17 on zappa1: ~50 lines in the same
+    # second) -- sending one Telegram message per line drowns the channel and
+    # makes the real signal easy to miss. Summarize into a single alert.
+    [[ "$fault_count" -eq 0 ]] && return
+    tg_send "⚠️ <b>GPU Fault — $(hostname)</b>
+${all_gpu_hints:+GPU(s): <b>$all_gpu_hints</b>
+}<b>${fault_count} new dmesg line(s)</b> since last check
+<code>$(echo "$first_fault" | head -c 300)</code>"
 }
 
 check_kaalia_faults() {
