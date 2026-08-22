@@ -2574,6 +2574,59 @@ classify_workload() {
     esac
 }
 
+# Every rental_end so far just recorded a bare "ended/gone" status, which made
+# a successful 43-second benchmark job and an actual crash/OOM look identical
+# in the history -- confirmed live 2026-08-20 on zappa1: a wave of "Exited
+# (137)" containers turned out to be normal Vast-initiated `kill -9` cleanup
+# (kaalia.log showed deliberate `Task(Destroy C.xxx)` for each one) plus
+# short-lived serverless jobs that finished cleanly (OOMKilled=false,
+# benchmark+healthcheck 200 OK), not host instability. Exit code 137 alone
+# does NOT mean OOM -- it just means SIGKILL, which Vast's own orchestrator
+# sends on every deliberate destroy. Use the real docker exit state plus the
+# kaalia log's own record of *why* the container was torn down so the history
+# records something meaningful instead of a generic status code.
+classify_rental_exit() {
+    local real_iid="$1"
+    [[ -z "$real_iid" ]] && { echo "UNKNOWN"; return; }
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "UNKNOWN"
+        return
+    fi
+    local cid
+    cid=$(docker ps -a --filter "name=^C\.${real_iid}\$" --format '{{.ID}}' 2>/dev/null | head -1)
+    if [[ -z "$cid" ]]; then
+        echo "UNKNOWN"
+        return
+    fi
+    local exit_code oom
+    read -r exit_code oom < <(docker inspect --format '{{.State.ExitCode}} {{.State.OOMKilled}}' "$cid" 2>/dev/null)
+
+    # A real kernel/GPU fault in the last few minutes outranks any lifecycle
+    # guess below -- a container dying because its GPU fell off the bus looks
+    # exactly like a plain crash otherwise.
+    if dmesg -T 2>/dev/null | tail -200 | grep -qiE "Xid \(|NVRM:.*error|NVRM:.*fault|NVRM:.*GPU[0-9].*(reset|rpc)"; then
+        echo "GPU_ERROR|${exit_code:-}|${oom:-}"
+        return
+    fi
+    if [[ "$oom" == "true" ]]; then
+        echo "OOM|${exit_code:-}|${oom}"
+        return
+    fi
+    if [[ "$exit_code" == "0" ]]; then
+        echo "NORMAL_SHORT_JOB|${exit_code}|${oom:-false}"
+        return
+    fi
+    if grep -aqE "Destroy[^0-9]*C\.${real_iid}\b" "$KAALIA_LOG" 2>/dev/null; then
+        echo "VAST_DESTROY|${exit_code:-}|${oom:-false}"
+        return
+    fi
+    if [[ -n "$exit_code" && "$exit_code" != "0" ]]; then
+        echo "CONTAINER_CRASH|${exit_code}|${oom:-false}"
+        return
+    fi
+    echo "UNKNOWN|${exit_code:-}|${oom:-false}"
+}
+
 # ─────────────────────────────────────────────
 # Vast.ai PER-INSTANCE (C.*) rental tracking
 # ─────────────────────────────────────────────
@@ -2979,8 +3032,10 @@ PYEOF
                 # treat it as an implicit end-of-old/start-of-new, so
                 # attribution and per-rental economics stay accurate.
                 if [[ "$old_rented" == "True" && "$rented" == "True" && -n "$old_real_iid" && -n "$real_iid" && "$old_real_iid" != "$real_iid" ]]; then
-                    log "VAST.AI: Machine $mid — renter CHANGED ($old_real_iid -> $real_iid) while rented continuously"
-                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$old_real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\"}"
+                    local handoff_exit_reason handoff_exit_code handoff_oom
+                    IFS='|' read -r handoff_exit_reason handoff_exit_code handoff_oom <<< "$(classify_rental_exit "$old_real_iid")"
+                    log "VAST.AI: Machine $mid — renter CHANGED ($old_real_iid -> $real_iid) while rented continuously [${handoff_exit_reason}]"
+                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$old_real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\",\"exit_reason\":\"${handoff_exit_reason}\",\"exit_code\":\"${handoff_exit_code:-}\",\"oom_killed\":\"${handoff_oom:-}\"}"
                     local image workload_type
                     image=$(get_instance_image "$real_iid")
                     workload_type=$(classify_workload "$image")
@@ -3132,11 +3187,13 @@ Rate: <b>$cost</b>"
                         # "4x RTX 5090 ended" instead of the machine total.
                         local ended_gpus="$gpus"
                         [[ "${old_rented_count:-0}" -gt 0 ]] && ended_gpus="${old_rented_count}x ${gpu_model}"
-                        log "VAST.AI: Machine $mid — rental ENDED ($ended_gpus)"
+                        local exit_reason exit_code_val oom_val
+                        IFS='|' read -r exit_reason exit_code_val oom_val <<< "$(classify_rental_exit "$old_real_iid")"
+                        log "VAST.AI: Machine $mid — rental ENDED ($ended_gpus) [${exit_reason}]"
                         tg_send "🔴 <b>Vast.ai Rental ENDED</b> — $(hostname)
 Machine: <b>$mid</b> | GPUs freed: $ended_gpus
-Last rate: ${old_cost:-$cost}"
-                        write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$ended_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\"}"
+Last rate: ${old_cost:-$cost} | Reason: <b>${exit_reason}</b>"
+                        write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"${old_real_iid:-}\",\"gpus\":\"$ended_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\",\"exit_reason\":\"${exit_reason}\",\"exit_code\":\"${exit_code_val:-}\",\"oom_killed\":\"${oom_val:-}\"}"
                         profit_override_clear
                     fi
                 fi
@@ -3146,13 +3203,23 @@ Last rate: ${old_cost:-$cost}"
         # Check for machines that disappeared while rented
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS='|' read -r mid old_rented gpus cost _ old_rented_count _ _ <<< "$line"
+            IFS='|' read -r mid old_rented gpus cost gone_real_iid old_rented_count _ _ <<< "$line"
             if ! echo "$current_state" | grep -q "^${mid}|"; then
                 if [[ "$old_rented" == "True" ]]; then
                     local gone_gpus="$gpus"
                     [[ "${old_rented_count:-0}" -gt 0 ]] && gone_gpus="${old_rented_count}x ${gpus#*x }"
-                    log "VAST.AI: Machine $mid disappeared while rented ($gone_gpus)"
-                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"gpus\":\"$gone_gpus\",\"rate\":\"$cost\",\"status\":\"gone\"}"
+                    # A machine vanishing from /machines/ right after THIS host
+                    # rebooted almost always means the reboot, not a real
+                    # rental loss — the API just hasn't reconciled yet.
+                    local gone_exit_reason gone_exit_code gone_oom uptime_secs
+                    uptime_secs=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 999999)
+                    if [[ "$uptime_secs" -lt 600 ]]; then
+                        gone_exit_reason="HOST_REBOOT"; gone_exit_code=""; gone_oom=""
+                    else
+                        IFS='|' read -r gone_exit_reason gone_exit_code gone_oom <<< "$(classify_rental_exit "$gone_real_iid")"
+                    fi
+                    log "VAST.AI: Machine $mid disappeared while rented ($gone_gpus) [${gone_exit_reason}]"
+                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"${gone_real_iid:-}\",\"gpus\":\"$gone_gpus\",\"rate\":\"$cost\",\"status\":\"gone\",\"exit_reason\":\"${gone_exit_reason}\",\"exit_code\":\"${gone_exit_code:-}\",\"oom_killed\":\"${gone_oom:-}\"}"
                     profit_override_clear
                 fi
             fi

@@ -1921,9 +1921,11 @@ function renderRig(idx) {
     rDiv.innerHTML = starts.length ? starts.map(s=>{
       const e=ends.find(x=>x.instance_id===s.instance_id&&x.ts>s.ts);
       const dur=e?((new Date(e.ts)-new Date(s.ts))/3600000).toFixed(1)+"h":"ongoing";
+      const reason=e?.exit_reason;
+      const reasonBadge=reason?` <span class="text-xs ml-2 px-1.5 py-0.5 rounded ${reason==='NORMAL_SHORT_JOB'||reason==='VAST_DESTROY'?'bg-slate-700 text-slate-300':reason==='OOM'||reason==='GPU_ERROR'||reason==='CONTAINER_CRASH'?'bg-red-900 text-red-300':'bg-slate-800 text-slate-500'}">${reason}</span>`:"";
       return `<div class="flex justify-between py-2 border-b border-slate-800/50 text-sm">
         <span><span class="badge-green px-2 py-0.5 rounded text-xs">▶ ${fmtTS(s.ts)}</span> <span class="text-slate-300 ml-2">${s.gpus||""}</span></span>
-        <span><span class="text-emerald-400 font-mono">${s.rate||""}</span> <span class="text-slate-500 text-xs ml-2">${dur}</span></span>
+        <span><span class="text-emerald-400 font-mono">${s.rate||""}</span> <span class="text-slate-500 text-xs ml-2">${dur}</span>${reasonBadge}</span>
       </div>`;
     }).join("") : '<p class="text-slate-500">No rentals today.</p>';
 
