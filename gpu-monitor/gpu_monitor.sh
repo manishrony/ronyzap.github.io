@@ -521,6 +521,17 @@ LAST_SUCCESS_STATE_DIR="/var/tmp/gpu_monitor_last_success"
 # ask upward -- only genuine below-median vacancy-driven demand does.
 RATCHET_UP_WHILE_FULL="${RATCHET_UP_WHILE_FULL:-1}"
 
+# How long a machine must have been CONTINUOUSLY fully rented before the
+# up-ratchet-while-full branch (RATCHET_UP_WHILE_FULL=1) is allowed to raise
+# the re-list ask. Confirmed live 2026-08-23 on zappa1: a 2-GPU machine hit
+# 2/2 for ~10 minutes on a short-lived InvokeAI renter, the ratchet raised
+# $0.32->$0.34 within one cycle, and the InvokeAI slot was destroyed minutes
+# later -- leaving the re-list ask higher for a market that had only proven
+# it could fill a 10-minute serverless job, not sustained demand at the
+# higher price. Default 1800s (30min) requires the full-occupancy signal to
+# actually mean something before chasing it upward.
+RATCHET_FULL_MIN_SECS="${RATCHET_FULL_MIN_SECS:-1800}"
+
 # Whether a machine that's occupancy-confirmed FULLY VACANT (free_count ==
 # num_gpus, regardless of what Vast's own possibly-stale $rented flag says)
 # is allowed to ratchet its price up toward target (default 1, existing
@@ -3797,6 +3808,20 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
             log "  Machine $mid: partially rented — ${free_count} free GPU(s), pricing them toward ${target_label}"
         fi
 
+        # How long this machine has been CONTINUOUSLY fully rented, so the
+        # up-ratchet below (gated by RATCHET_FULL_MIN_SECS) can tell a brief
+        # full-occupancy blip from sustained demand. Mirrors the vacancy_file
+        # pattern above but tracks the opposite state.
+        local full_state_file="$VACANCY_STATE_DIR/${mid}.full_since" fully_rented_secs=0
+        if (( fully_rented )); then
+            [[ -f "$full_state_file" ]] || echo "$now_epoch" > "$full_state_file"
+            local full_since
+            full_since=$(cat "$full_state_file" 2>/dev/null || echo "$now_epoch")
+            fully_rented_secs=$(( now_epoch - full_since ))
+        else
+            rm -f "$full_state_file" 2>/dev/null || true
+        fi
+
         # Occupancy-confirmed fully vacant, independent of Vast's own $rented
         # flag -- that flag can lag the real gpu_occupancy string by a cycle
         # or more (confirmed live 2026-07-31: right after a gpu-monitor
@@ -3887,7 +3912,7 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
         # actually evaluates against, so the next occurrence pinpoints which
         # branch fired instead of requiring after-the-fact inference from
         # the summary line above.
-        log "  Machine $mid: [TRACE] rented=$rented free_count=$free_count num_gpus=$num_gpus fully_rented=$fully_rented fully_vacant=$fully_vacant vacancy_secs=$vacancy_secs idle_mode=$idle_mode idle_reset_file_exists=$([[ -f "$idle_reset_file" ]] && echo yes || echo no) RATCHET_UP_WHILE_FULL='${RATCHET_UP_WHILE_FULL:-1}' RATCHET_UP_WHILE_VACANT='${RATCHET_UP_WHILE_VACANT:-1}' RATCHET_UP_WHILE_PARTIAL='${RATCHET_UP_WHILE_PARTIAL:-1}' listed=$listed"
+        log "  Machine $mid: [TRACE] rented=$rented free_count=$free_count num_gpus=$num_gpus fully_rented=$fully_rented fully_rented_secs=$fully_rented_secs fully_vacant=$fully_vacant vacancy_secs=$vacancy_secs idle_mode=$idle_mode idle_reset_file_exists=$([[ -f "$idle_reset_file" ]] && echo yes || echo no) RATCHET_UP_WHILE_FULL='${RATCHET_UP_WHILE_FULL:-1}' RATCHET_UP_WHILE_VACANT='${RATCHET_UP_WHILE_VACANT:-1}' RATCHET_UP_WHILE_PARTIAL='${RATCHET_UP_WHILE_PARTIAL:-1}' RATCHET_FULL_MIN_SECS='${RATCHET_FULL_MIN_SECS:-1800}' listed=$listed"
 
         # Random 1-2¢ step, either direction, applied below whenever more
         # than 2¢ off ${target_label} (or walking up from the start_price
@@ -4001,6 +4026,15 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
             # occupied GPU's contract price is already locked in regardless,
             # so holding here only affects the free GPU's re-list ask.
             log "  Machine $mid: partially rented, below ${target_label} (\$$target) — RATCHET_UP_WHILE_PARTIAL=0, holding re-list ask at \$$cur_bid"
+            continue
+        elif (( fully_rented )) && (( fully_rented_secs < RATCHET_FULL_MIN_SECS )) && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
+            # Fully rented, below target, and RATCHET_UP_WHILE_FULL=1 (the
+            # branch above already handled ==0) -- but not yet fully rented
+            # long enough to trust it. A brief full-occupancy blip (a short
+            # serverless/benchmark job filling the last slot) isn't evidence
+            # the market supports a higher sustained price; see
+            # RATCHET_FULL_MIN_SECS's setup comment above.
+            log "  Machine $mid: fully rented for only ${fully_rented_secs}s (<${RATCHET_FULL_MIN_SECS}s required), below ${target_label} (\$$target) — holding at \$$cur_bid until occupancy is sustained"
             continue
         elif [[ "$rented" == "True" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
