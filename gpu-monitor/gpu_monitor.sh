@@ -4007,9 +4007,18 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
             # the next cycle on, this machine falls through to the below-target
             # check below — but that only climbs once $rented confirms the
             # discount actually attracted someone (see that branch).
+            #
+            # Must be $start_price (the aggressive low anchor), NOT $target --
+            # $target can be inflated by last_success (max(median,last_success)
+            # for a partial rental) and end up ABOVE the current ask. Confirmed
+            # live 2026-08-25 on zappa1: idle-reset jumped $0.31 -> $0.4347 in
+            # one step (target, not start_price), raising the ask 40% while
+            # SITTING IDLE -- exactly backwards from "re-anchor low to
+            # re-attract a renter". Clamped to never exceed the current price
+            # either, so this branch can only ever move the ask down.
             touch "$idle_reset_file" 2>/dev/null || true
-            new_price="$target"
-            direction="↓/↑ (idle ${vacancy_hours}h+ unrented — re-anchored to ${target_label} \$$target to re-attract)"
+            new_price=$(bc_min "$start_price" "$cur_bid")
+            direction="↓ (idle ${vacancy_hours}h+ unrented — re-anchored to entry point \$$new_price to re-attract)"
         elif (( fully_rented )) && (( $(echo "$cur_bid > $target + 0.02" | bc -l) )); then
             # Fully rented and above target — hold rather than lower. There's
             # no free inventory a lower ask would attract right now, so a
