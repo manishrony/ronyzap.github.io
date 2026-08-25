@@ -3383,7 +3383,22 @@ try:
     # Filter by GPU name similarity when the API returned unfiltered results
     if gpu_filter:
         offers = [o for o in offers if gpu_filter in str(o.get('gpu_name', '')).upper()]
-    prices = sorted([float(o.get('dph_total', 0) or 0) for o in offers if float(o.get('dph_total', 0) or 0) > 0])
+    # dph_total is Vast's price for the WHOLE bundle, not per-GPU -- an 8x
+    # RTX 5090 offer's dph_total (~$2-3/hr total) was being treated as a
+    # single "price" on equal footing with a 1x offer's dph_total (~$0.30/hr)
+    # with no normalization, so multi-GPU bundles entering/leaving the sample
+    # between cycles could swing median/p75/mean by 3x in minutes. Confirmed
+    # live 2026-08-25 on zappa1: market median oscillated $0.29 <-> $0.83
+    # cycle to cycle, which then poisoned the EWMA-smoothed target and drove
+    # the pricing engine to ratchet up while the machine sat vacant. Normalize
+    # every offer to its actual per-GPU price before building the stats.
+    per_gpu_prices = []
+    for o in offers:
+        dph = float(o.get('dph_total', 0) or 0)
+        n_gpus = int(o.get('num_gpus', 1) or 1)
+        if dph > 0 and n_gpus > 0:
+            per_gpu_prices.append(dph / n_gpus)
+    prices = sorted(per_gpu_prices)
     if prices:
         n = len(prices)
         def pct(p): return prices[min(n-1, int(p*(n-1)/100))]
