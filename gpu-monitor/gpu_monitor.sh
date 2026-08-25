@@ -532,6 +532,13 @@ RATCHET_UP_WHILE_FULL="${RATCHET_UP_WHILE_FULL:-1}"
 # actually mean something before chasing it upward.
 RATCHET_FULL_MIN_SECS="${RATCHET_FULL_MIN_SECS:-1800}"
 
+# Cap on how far last_success (the last price that actually landed a rental)
+# is allowed to sit above the CURRENT smoothed mean before it's treated as
+# stale and clamped back down. Without this, a rental that happened to land
+# during a brief market spike anchors last_success there permanently -- see
+# the setup comment where last_success is capped, below.
+LAST_SUCCESS_MAX_MULT="${LAST_SUCCESS_MAX_MULT:-1.3}"
+
 # Whether a machine that's occupancy-confirmed FULLY VACANT (free_count ==
 # num_gpus, regardless of what Vast's own possibly-stale $rented flag says)
 # is allowed to ratchet its price up toward target (default 1, existing
@@ -3862,6 +3869,24 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
         local success_file="$LAST_SUCCESS_STATE_DIR/$mid" last_success="0"
         [[ "$rented" == "True" ]] && echo "$cur_bid" > "$success_file"
         [[ -f "$success_file" ]] && last_success=$(cat "$success_file" 2>/dev/null || echo "0")
+
+        # last_success is meant to keep the ask from resetting all the way to
+        # mean right after a normal rental ends -- but a rental that happened
+        # to land during a brief market spike anchors it there permanently,
+        # since nothing ever lowers it except a NEW (lower) rental actually
+        # landing. Confirmed live 2026-08-24 on zappa1: raw market median
+        # spiked to $1.28/hr for one sample window, a rental landed near
+        # that spike, last_success got pinned at $0.71, and the ask kept
+        # climbing back toward that stale floor for hours afterward even as
+        # the smoothed median settled back to ~$0.30 -- a >2x gap between
+        # what the ask targeted and what the market actually supported. Cap
+        # last_success at LAST_SUCCESS_MAX_MULT x the CURRENT smoothed mean
+        # so a one-off spike can't outlive the market condition that caused
+        # it, while still letting a normal-range last_success do its job.
+        if (( $(echo "$smoothed_mean > 0 && $last_success > $smoothed_mean * $LAST_SUCCESS_MAX_MULT" | bc -l) )); then
+            log "  Machine $mid: last_success \$$last_success is stale (>${LAST_SUCCESS_MAX_MULT}x current mean \$$smoothed_mean) — capping"
+            last_success=$(printf "%.4f" "$(echo "scale=4; $smoothed_mean * $LAST_SUCCESS_MAX_MULT" | bc)")
+        fi
 
         local target target_label
         if (( fully_rented )); then
