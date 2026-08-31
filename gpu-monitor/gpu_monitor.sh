@@ -3547,15 +3547,6 @@ bc_min() { echo "$(( $(echo "$1 < $2" | bc -l) )) $1 $2" | awk '{print ($1==1)?$
 
 vastai_pricing() {
     [[ -z "$VASTAI_API_KEY" ]] && return
-    # Hard kill-switch for the whole pricing engine -- the RATCHET_UP_WHILE_*
-    # flags only ever gated the UP direction; the above-target down-adjust
-    # branch fires unconditionally regardless of those, so they can't actually
-    # freeze the current ask. Set AUTO_PRICING=0 in /etc/gpu_monitor.conf to
-    # stop every price change (up or down) fleet-wide or per-rig.
-    if [[ "${AUTO_PRICING:-1}" == "0" ]]; then
-        log "--- Pricing Check skipped (AUTO_PRICING=0) ---"
-        return
-    fi
 
     log "--- Pricing Check ---"
 
