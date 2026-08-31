@@ -292,6 +292,17 @@ TELEGRAM_CHAT_ID=""      # Auto-populated from /etc/gpu_monitor.conf
 VASTAI_API_KEY=""
 VASTAI_API="https://console.vast.ai/api/v1"
 VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
+# Persists the last KNOWN-GOOD (non-blank) real_instance_id per machine,
+# independent of whatever this cycle's snapshot happens to show. The
+# handoff-detection comparison below used to rely solely on the PREVIOUS
+# cycle's real_iid reading, but Vast's /instances/ API frequently hasn't
+# indexed a brand-new instance yet and returns blank for one or more
+# cycles -- confirmed live 2026-08-31 on zappa1: a single Rental History
+# entry spanned 14 days/334h despite dozens of real renter changes in that
+# window, because the old/new pair was blank on one side often enough that
+# the "old_rented==rented==True but real_iid changed" handoff check almost
+# never actually fired. A blank reading no longer resets this value.
+LAST_REAL_IID_STATE_DIR="/var/tmp/gpu_monitor_last_real_iid"
 # vastai_check caches the /machines/ response it successfully fetches each cycle
 # here; vastai_pricing reuses it instead of hitting /machines/ a second time in
 # the same cycle (Vast rate-limits the repeat call, which would leave pricing
@@ -3039,6 +3050,15 @@ PYEOF
             else
                 local old_rented old_cost old_rented_count old_real_iid
                 IFS='|' read -r _ old_rented _ old_cost old_real_iid old_rented_count _ _ <<< "$old_line"
+
+                # Known-good real_iid, persisted across cycles where this
+                # cycle's own reading is blank -- see LAST_REAL_IID_STATE_DIR's
+                # setup comment above for why old_real_iid alone is unreliable.
+                mkdir -p "$LAST_REAL_IID_STATE_DIR" 2>/dev/null || true
+                local last_real_iid_file="$LAST_REAL_IID_STATE_DIR/$mid" known_real_iid=""
+                [[ -f "$last_real_iid_file" ]] && known_real_iid=$(cat "$last_real_iid_file" 2>/dev/null || true)
+                [[ -z "$known_real_iid" ]] && known_real_iid="$old_real_iid"
+
                 # A D-type dedicated contract can hand off from one renter to
                 # another WITHOUT ever dropping rented=True in between (the
                 # slot stays occupied the whole time), so the False->True
@@ -3049,19 +3069,30 @@ PYEOF
                 # Detect a real_instance_id change while still rented and
                 # treat it as an implicit end-of-old/start-of-new, so
                 # attribution and per-rental economics stay accurate.
-                if [[ "$old_rented" == "True" && "$rented" == "True" && -n "$old_real_iid" && -n "$real_iid" && "$old_real_iid" != "$real_iid" ]]; then
+                if [[ "$old_rented" == "True" && "$rented" == "True" && -n "$known_real_iid" && -n "$real_iid" && "$known_real_iid" != "$real_iid" ]]; then
                     local handoff_exit_reason handoff_exit_code handoff_oom
-                    IFS='|' read -r handoff_exit_reason handoff_exit_code handoff_oom <<< "$(classify_rental_exit "$old_real_iid")"
-                    log "VAST.AI: Machine $mid — renter CHANGED ($old_real_iid -> $real_iid) while rented continuously [${handoff_exit_reason}]"
-                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$old_real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\",\"exit_reason\":\"${handoff_exit_reason}\",\"exit_code\":\"${handoff_exit_code:-}\",\"oom_killed\":\"${handoff_oom:-}\"}"
+                    IFS='|' read -r handoff_exit_reason handoff_exit_code handoff_oom <<< "$(classify_rental_exit "$known_real_iid")"
+                    log "VAST.AI: Machine $mid — renter CHANGED ($known_real_iid -> $real_iid) while rented continuously [${handoff_exit_reason}]"
+                    write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$known_real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"${old_cost:-$cost}\",\"status\":\"ended\",\"exit_reason\":\"${handoff_exit_reason}\",\"exit_code\":\"${handoff_exit_code:-}\",\"oom_killed\":\"${handoff_oom:-}\"}"
                     local image workload_type
                     image=$(get_instance_image "$real_iid")
                     workload_type=$(classify_workload "$image")
                     tg_send "🔄 <b>Vast.ai Renter Changed</b> — $(hostname)
-Machine: <b>$mid</b> | $old_real_iid → $real_iid
+Machine: <b>$mid</b> | $known_real_iid → $real_iid
 Rate: <b>$cost</b>"
                     write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$real_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"$image\",\"workload_type\":\"$workload_type\"}"
-                elif [[ "$old_rented" != "$rented" ]]; then
+                    echo "$real_iid" > "$last_real_iid_file" 2>/dev/null || true
+                elif [[ -n "$real_iid" ]]; then
+                    # Same renter (or no handoff detected this cycle) -- keep
+                    # the known-good value current so a later blank reading
+                    # can't fall back to something even staler.
+                    echo "$real_iid" > "$last_real_iid_file" 2>/dev/null || true
+                fi
+
+                if [[ "$old_rented" != "$rented" ]]; then
+                    if [[ "$rented" != "True" ]]; then
+                        rm -f "$last_real_iid_file" 2>/dev/null || true
+                    fi
                     if [[ "$rented" == "True" ]]; then
                         local image workload_type expire_date expire_source
                         image=$(get_instance_image "$real_iid")
@@ -3238,6 +3269,7 @@ Last rate: ${old_cost:-$cost} | Reason: <b>${exit_reason}</b>"
                     fi
                     log "VAST.AI: Machine $mid disappeared while rented ($gone_gpus) [${gone_exit_reason}]"
                     write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"${gone_real_iid:-}\",\"gpus\":\"$gone_gpus\",\"rate\":\"$cost\",\"status\":\"gone\",\"exit_reason\":\"${gone_exit_reason}\",\"exit_code\":\"${gone_exit_code:-}\",\"oom_killed\":\"${gone_oom:-}\"}"
+                    rm -f "$LAST_REAL_IID_STATE_DIR/$mid" 2>/dev/null || true
                     profit_override_clear
                 fi
             fi
