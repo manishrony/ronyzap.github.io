@@ -303,6 +303,15 @@ VASTAI_LAST_STATE_FILE="/var/tmp/gpu_monitor_vastai_state"
 # the "old_rented==rented==True but real_iid changed" handoff check almost
 # never actually fired. A blank reading no longer resets this value.
 LAST_REAL_IID_STATE_DIR="/var/tmp/gpu_monitor_last_real_iid"
+# Some D-type dedicated machines (confirmed zappa2, machine 143690) get
+# instance_id:null from /instances/ on EVERY slot, EVERY cycle -- real_iid
+# above is then permanently blank, so the handoff comparison never has
+# anything to compare and silently never fires (zappa2's Rental History sat
+# at 0 sessions for 7+ weeks despite real renter changes). Tracks the full
+# SET of locally-running C.<id> containers per machine instead, since an
+# 8-GPU box can have several concurrent renters at once -- see
+# docker_running_instances() below.
+DOCKER_KNOWN_IIDS_DIR="/var/tmp/gpu_monitor_docker_iids"
 # vastai_check caches the /machines/ response it successfully fetches each cycle
 # here; vastai_pricing reuses it instead of hitting /machines/ a second time in
 # the same cycle (Vast rate-limits the repeat call, which would leave pricing
@@ -2586,6 +2595,23 @@ docker_running_instance() {
     echo "${name#C.} $image"
 }
 
+# Like docker_running_instance() but returns ALL currently-running C.<id>
+# containers (one "iid<TAB>image" per line) instead of bailing when more
+# than one is active. Needed on multi-GPU boxes where several renters can
+# be running simultaneously -- the single-container version above always
+# returns nothing in that case, which is normal there but useless for
+# detecting handoffs on an 8-GPU rig.
+docker_running_instances() {
+    if ! command -v docker >/dev/null 2>&1; then
+        return
+    fi
+    local raw
+    raw=$(docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null) || return
+    grep -E '^C\.[0-9]+\s' <<< "$raw" | while IFS=$'\t' read -r name image; do
+        [[ -n "$name" ]] && printf '%s\t%s\n' "${name#C.}" "$image"
+    done
+}
+
 # Classify a Docker image string into a coarse workload bucket for the
 # rental-analysis dashboard. Vast.ai does not expose renter identity, so
 # image name is the only signal available for "what's this rental doing".
@@ -3089,9 +3115,57 @@ Rate: <b>$cost</b>"
                     echo "$real_iid" > "$last_real_iid_file" 2>/dev/null || true
                 fi
 
+                # Vast's own real_iid is blank above -- fall back to diffing
+                # the actual set of C.<id> containers docker sees running
+                # locally. Only engages when Vast gives us nothing (leaves
+                # the real_iid-based path above, which already works fine on
+                # zappa1/zappa3, untouched).
+                if [[ -z "$real_iid" && "$rented" == "True" ]] && command -v docker >/dev/null 2>&1; then
+                    mkdir -p "$DOCKER_KNOWN_IIDS_DIR" 2>/dev/null || true
+                    local docker_known_file="$DOCKER_KNOWN_IIDS_DIR/$mid"
+                    declare -A current_iids=()
+                    local d_iid d_image
+                    while IFS=$'\t' read -r d_iid d_image; do
+                        [[ -n "$d_iid" ]] && current_iids["$d_iid"]="$d_image"
+                    done < <(docker_running_instances)
+
+                    if [[ -f "$docker_known_file" ]]; then
+                        local known_iid known_image
+                        while IFS=$'\t' read -r known_iid known_image; do
+                            [[ -z "$known_iid" ]] && continue
+                            if [[ -z "${current_iids[$known_iid]+x}" ]]; then
+                                local dh_exit_reason dh_exit_code dh_oom
+                                IFS='|' read -r dh_exit_reason dh_exit_code dh_oom <<< "$(classify_rental_exit "$known_iid")"
+                                log "VAST.AI: Machine $mid — docker-detected renter ENDED ($known_iid) [${dh_exit_reason}]"
+                                write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$known_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"ended\",\"exit_reason\":\"${dh_exit_reason}\",\"exit_code\":\"${dh_exit_code:-}\",\"oom_killed\":\"${dh_oom:-}\",\"source\":\"docker_diff\"}"
+                            fi
+                        done < "$docker_known_file"
+                    fi
+
+                    local new_iid
+                    for new_iid in "${!current_iids[@]}"; do
+                        if ! { [[ -f "$docker_known_file" ]] && grep -qF "${new_iid}"$'\t' "$docker_known_file"; }; then
+                            local d_workload="${current_iids[$new_iid]}"
+                            d_workload=$(classify_workload "$d_workload")
+                            log "VAST.AI: Machine $mid — docker-detected renter STARTED ($new_iid, ${current_iids[$new_iid]})"
+                            tg_send "🔄 <b>Vast.ai Renter Changed</b> — $(hostname)
+Machine: <b>$mid</b> | new renter $new_iid (docker-detected)
+Rate: <b>$cost</b>"
+                            write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$new_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"${current_iids[$new_iid]}\",\"workload_type\":\"$d_workload\",\"source\":\"docker_diff\"}"
+                        fi
+                    done
+
+                    : > "$docker_known_file"
+                    for new_iid in "${!current_iids[@]}"; do
+                        printf '%s\t%s\n' "$new_iid" "${current_iids[$new_iid]}" >> "$docker_known_file"
+                    done
+                    unset current_iids
+                fi
+
                 if [[ "$old_rented" != "$rented" ]]; then
                     if [[ "$rented" != "True" ]]; then
                         rm -f "$last_real_iid_file" 2>/dev/null || true
+                        rm -f "$DOCKER_KNOWN_IIDS_DIR/$mid" 2>/dev/null || true
                     fi
                     if [[ "$rented" == "True" ]]; then
                         local image workload_type expire_date expire_source
@@ -3270,6 +3344,7 @@ Last rate: ${old_cost:-$cost} | Reason: <b>${exit_reason}</b>"
                     log "VAST.AI: Machine $mid disappeared while rented ($gone_gpus) [${gone_exit_reason}]"
                     write_event "rental_end" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"${gone_real_iid:-}\",\"gpus\":\"$gone_gpus\",\"rate\":\"$cost\",\"status\":\"gone\",\"exit_reason\":\"${gone_exit_reason}\",\"exit_code\":\"${gone_exit_code:-}\",\"oom_killed\":\"${gone_oom:-}\"}"
                     rm -f "$LAST_REAL_IID_STATE_DIR/$mid" 2>/dev/null || true
+                    rm -f "$DOCKER_KNOWN_IIDS_DIR/$mid" 2>/dev/null || true
                     profit_override_clear
                 fi
             fi
