@@ -112,6 +112,40 @@ explicitly configured to:
 - Re-run `install.sh` on the hub whenever a peer's IP changes (same as the
   `PEER_URLS` proxy — one command updates both)
 
+## Cross-rig heartbeat (opt-in, off by default)
+
+Confirmed live 2026-09-01 on zappa2: the host hit a fatal PCI SERR (BMC SEL:
+`Critical Interrupt #0x80 | PCI SERR | Asserted`) and halted instantly — no
+kernel panic, no shutdown sequence, nothing left for `gpu_monitor.sh` to send
+a Telegram alert with, because it died in the same instant as the kernel. A
+host can never reliably alert on its own death; only another host watching
+it from outside can catch that.
+
+Each rig curls its peers' dashboard HTTP servers (already running on every
+rig for the combined view/API — no new service needed) on the same cadence
+as `vastai_check` (`GPU_CHECK_INTERVAL`, default 300s), and sends a Telegram
+alert if a peer goes unreachable for `HEARTBEAT_MISS_THRESHOLD` consecutive
+checks (default 3 ≈ 15 min), then alerts again on recovery. Set on **every**
+rig, pointing at its own peers (not itself) in `/etc/gpu_monitor.conf`:
+
+```bash
+# on zappa1:
+PEER_HEARTBEAT_URLS="http://192.168.1.196:8081,http://192.168.1.211:8082"
+PEER_HEARTBEAT_NAMES="zappa2,zappa3"
+
+# on zappa2:
+PEER_HEARTBEAT_URLS="http://192.168.1.171:8080,http://192.168.1.211:8082"
+PEER_HEARTBEAT_NAMES="zappa1,zappa3"
+
+# on zappa3:
+PEER_HEARTBEAT_URLS="http://192.168.1.171:8080,http://192.168.1.196:8081"
+PEER_HEARTBEAT_NAMES="zappa1,zappa2"
+```
+
+Restart `gpu-monitor` on each rig after setting these. `HEARTBEAT_MISS_THRESHOLD`
+and `HEARTBEAT_TIMEOUT` (default 8s per check) can also be overridden per rig
+if the LAN is slower/flakier than usual.
+
 ### Dashboard History page (`/history`)
 
 Paginated, DB-backed charts/tables reading from the central Prometheus via a

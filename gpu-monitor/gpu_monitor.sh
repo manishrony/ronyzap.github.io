@@ -352,6 +352,28 @@ PDU_POLL_INTERVAL=300    # seconds between PDU samples (aligned with the 5-min s
 PDU_STATE_FILE="/var/tmp/gpu_monitor_pdu_energy"   # "cumulative_kwh last_epoch"
 PDU_SNMP_WARNED_FILE="/var/tmp/gpu_monitor_pdu_snmp_warned"
 
+# --- Cross-rig heartbeat (optional) --------------------------------------------
+# Confirmed live 2026-09-01 on zappa2: the host hit a fatal PCI SERR (BMC SEL:
+# "Critical Interrupt #0x80 | PCI SERR | Asserted") and halted instantly --
+# no panic, no shutdown sequence, nothing left for THIS host's own monitor or
+# Telegram alerts to send, because gpu_monitor.sh died in the same instant as
+# the kernel. A host can never reliably alert on its own death; only another
+# host watching it from outside can. Each rig curls its peers' dashboards
+# (already running on every rig for the combined view) and alerts via
+# Telegram if one goes unreachable for HEARTBEAT_MISS_THRESHOLD consecutive
+# checks, then alerts again on recovery. Requires no new service -- reuses
+# the existing gpu-dashboard HTTP server every rig already runs.
+#
+# Set on EVERY rig, pointing at its OWN peers (not itself) in
+# /etc/gpu_monitor.conf, e.g. on zappa2:
+#   PEER_HEARTBEAT_URLS="http://192.168.1.171:8080,http://192.168.1.211:8082"
+#   PEER_HEARTBEAT_NAMES="zappa1,zappa3"
+PEER_HEARTBEAT_URLS="${PEER_HEARTBEAT_URLS:-}"
+PEER_HEARTBEAT_NAMES="${PEER_HEARTBEAT_NAMES:-}"
+HEARTBEAT_MISS_THRESHOLD="${HEARTBEAT_MISS_THRESHOLD:-3}"
+HEARTBEAT_TIMEOUT="${HEARTBEAT_TIMEOUT:-8}"
+HEARTBEAT_STATE_DIR="/var/tmp/gpu_monitor_heartbeat"
+
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
 PRICE_FLOORS=(
@@ -672,6 +694,50 @@ tg_send() {
         -d text="$msg" >> "$LOG_FILE" 2>&1 \
         && log "TELEGRAM: sent OK" \
         || log "TELEGRAM ERROR: failed to send"
+}
+
+
+# ─────────────────────────────────────────────
+# Cross-rig heartbeat (no-op unless PEER_HEARTBEAT_URLS is set)
+# ─────────────────────────────────────────────
+check_peer_heartbeats() {
+    [[ -z "$PEER_HEARTBEAT_URLS" ]] && return
+    mkdir -p "$HEARTBEAT_STATE_DIR" 2>/dev/null || true
+
+    local urls names url name i=0
+    IFS=',' read -ra urls <<< "$PEER_HEARTBEAT_URLS"
+    IFS=',' read -ra names <<< "$PEER_HEARTBEAT_NAMES"
+
+    for url in "${urls[@]}"; do
+        url="${url// /}"
+        [[ -z "$url" ]] && { i=$((i+1)); continue; }
+        name="${names[$i]:-$url}"
+        name="${name// /}"
+        i=$((i+1))
+
+        local miss_file="$HEARTBEAT_STATE_DIR/${name}_misses"
+        local alerted_file="$HEARTBEAT_STATE_DIR/${name}_alerted"
+        local misses=0
+        [[ -f "$miss_file" ]] && misses=$(cat "$miss_file" 2>/dev/null || echo 0)
+
+        if curl -sf --max-time "$HEARTBEAT_TIMEOUT" -o /dev/null "${url}/api/data" 2>/dev/null; then
+            if [[ -f "$alerted_file" ]]; then
+                log "HEARTBEAT: $name ($url) is back up"
+                tg_send "✅ <b>$name is back online</b> — $(hostname) can reach it again"
+                rm -f "$alerted_file" 2>/dev/null || true
+            fi
+            [[ "$misses" != "0" ]] && echo 0 > "$miss_file" 2>/dev/null || true
+        else
+            misses=$((misses + 1))
+            echo "$misses" > "$miss_file" 2>/dev/null || true
+            log "HEARTBEAT: $name ($url) unreachable (miss $misses/${HEARTBEAT_MISS_THRESHOLD})"
+            if (( misses >= HEARTBEAT_MISS_THRESHOLD )) && [[ ! -f "$alerted_file" ]]; then
+                log "HEARTBEAT: $name ($url) considered DOWN after $misses consecutive misses"
+                tg_send "🔴 <b>$name appears DOWN</b> — $(hostname) hasn't been able to reach its dashboard for $misses checks in a row. Check the host directly (it may be unresponsive, not just its network)."
+                touch "$alerted_file" 2>/dev/null || true
+            fi
+        fi
+    done
 }
 
 tg_load_chat_id() {
@@ -4414,6 +4480,7 @@ main() {
             fan_floor_adjust
             cpu_freq_adjust
             if (( slept % GPU_CHECK_INTERVAL == 0 )); then
+                check_peer_heartbeats
                 vastai_check
                 check_gpu_rental_changes
                 local pnow; pnow=$(date +%s)
