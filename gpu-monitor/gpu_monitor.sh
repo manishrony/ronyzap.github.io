@@ -2807,6 +2807,17 @@ classify_rental_exit() {
         echo "VAST_DESTROY|${exit_code:-}|${oom:-false}"
         return
     fi
+    # Confirmed live 2026-09-02 on zappa2 (C.49660843): Vast's control plane
+    # dispatched an explicit stop (server_dispatched_cmd ... docker container
+    # stop C.<iid>) -- a normal renter-ended-rental, not a fault -- but
+    # docker's SIGTERM/SIGKILL sequence still produces the same non-zero exit
+    # code (137) as an actual crash, so without this check it was
+    # misclassified as CONTAINER_CRASH and looked like a hardware/software
+    # failure worth investigating when it wasn't.
+    if grep -aqE "server_dispatched_cmd:.*stop.*C\.${real_iid}\b|Task\(Stop C\.${real_iid}\)" "$KAALIA_LOG" 2>/dev/null; then
+        echo "VAST_STOP|${exit_code:-}|${oom:-false}"
+        return
+    fi
     if [[ -n "$exit_code" && "$exit_code" != "0" ]]; then
         echo "CONTAINER_CRASH|${exit_code}|${oom:-false}"
         return
