@@ -50,6 +50,28 @@ done
 echo "  -- recent WORKLOAD THROTTLE lines --"
 grep -a "WORKLOAD THROTTLE" "$LOG" 2>/dev/null | tail -5 | sed 's/^/  /' || true
 
+# ── 2b. Hardware fault watcher (SERR / MCE / Xid / OOM) ──────
+sec "2b. Hardware fault watcher (SERR/MCE/Xid/OOM, last 3 days)"
+if have journalctl; then
+  FAULT_RE='PCI SERR|Machine Check Exception|Hardware Error|Xid|NVRM: Xid|mce: \[Hardware Error\]|Out of memory|Killed process'
+  faults=$(journalctl --since "3 days ago" --no-pager -k 2>/dev/null | grep -aiE "$FAULT_RE")
+  if [ -n "$faults" ]; then
+    echo "  !! fault lines found (last 3 days) !!"
+    echo "$faults" | tail -30 | sed 's/^/  /'
+    n=$(echo "$faults" | wc -l)
+    echo "  total matches: $n"
+  else
+    echo "  none — no SERR/MCE/Xid/OOM lines in kernel log, last 3 days"
+  fi
+else
+  echo "  journalctl not found"
+fi
+echo "  -- PCIe link width sanity (expect GEN4/5 x8 or x16 under load; GEN1 while idle is normal, GEN1 while rented is not) --"
+if have nvidia-smi; then
+  nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current,utilization.gpu \
+    --format=csv,noheader 2>/dev/null | sed 's/^/  /'
+fi
+
 # ── 3. Vast machine / rental snapshot ────────────────────────
 sec "3. Vast machine snapshot (dump-machine-json)"
 if have dump-machine-json; then
