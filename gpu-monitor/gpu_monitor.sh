@@ -2060,6 +2060,27 @@ check_bmc_sel_faults() {
     tg_send "🚨 <b>BMC Hardware Fault — $(hostname)</b>
 SEL logged a hardware-level event (PCI SERR / MCE / critical threshold) — this can crash the host even if it auto-recovers before anyone notices.
 <code>$(echo "$hw_faults" | head -c 500)</code>"
+
+    # Drop a small incident file for the zappa1 triage watcher (Tier 1,
+    # read-only Claude Code automation -- see gpu-monitor/triage/README.md).
+    # zappa1 polls its peers for new files under this pattern over its own
+    # read-only SSH key and kicks off a cross-rig triage run; this host does
+    # nothing else with it. Filename carries the SEL record ID so the watcher
+    # can dedupe without needing its own state on this host.
+    mkdir -p /var/tmp/gpu_monitor_incidents 2>/dev/null
+    python3 - "$hw_faults" "$newest_id" <<'PYEOF' 2>/dev/null || true
+import json, datetime, socket, sys
+hw_faults, newest_id = sys.argv[1], sys.argv[2]
+incident = {
+    "ts": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "host": socket.gethostname(),
+    "sel_record_id": newest_id,
+    "entries": hw_faults,
+}
+path = f"/var/tmp/gpu_monitor_incidents/{newest_id}.json"
+with open(path, "w") as f:
+    json.dump(incident, f)
+PYEOF
 }
 
 check_kaalia_faults() {

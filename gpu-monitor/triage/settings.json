@@ -1,0 +1,72 @@
+{
+  "_comment": "Tier-1 permission scope for the zappa1 cross-rig triage watcher. Read-only diagnostics + Telegram reporting only -- no write/edit tools, no destructive bash. Everything not explicitly allowed is denied by default; the deny list below is defense-in-depth, not the primary boundary. See ../gpu_monitor.sh's check_bmc_sel_faults() for what generates the incidents this reacts to, and README.md in this directory for setup.",
+
+  "permissions": {
+    "defaultMode": "deny",
+
+    "allow": [
+      "Bash(ipmitool sel elist*)",
+      "Bash(ipmitool sel list*)",
+      "Bash(ipmitool sensor list*)",
+      "Bash(ipmitool chassis status*)",
+      "Bash(nvidia-smi*)",
+      "Bash(dmesg*)",
+      "Bash(journalctl -u gpu-monitor*)",
+      "Bash(journalctl -u gpu-dashboard*)",
+      "Bash(journalctl -k*)",
+      "Bash(docker ps*)",
+      "Bash(docker logs*)",
+      "Bash(docker inspect*)",
+      "Bash(docker top*)",
+      "Bash(cat /var/tmp/gpu_monitor_incidents/*)",
+      "Bash(cat /var/log/gpu_monitor.log)",
+      "Bash(tail * /var/log/gpu_monitor.log)",
+      "Bash(cat /var/log/gpu_monitor_data.jsonl)",
+      "Bash(tail * /var/log/gpu_monitor_data.jsonl)",
+      "Bash(grep * /var/log/gpu_monitor.log)",
+      "Bash(grep * /var/log/gpu_monitor_data.jsonl)",
+      "Bash(ssh -i /home/*/.ssh/zappa1_triage_ro zappa2 *)",
+      "Bash(ssh -i /home/*/.ssh/zappa1_triage_ro zappa3 *)",
+      "Bash(bash /home/*/ronyzap.github.io/gpu-monitor/triage/tg_notify.sh *)",
+      "Read(/home/*/ronyzap.github.io/**)",
+      "Read(/var/tmp/gpu_monitor_incidents/**)",
+      "Read(/var/log/gpu_monitor.log)",
+      "Read(/var/log/gpu_monitor_data.jsonl)"
+    ],
+
+    "deny": [
+      "Bash(rm *)",
+      "Bash(reboot*)",
+      "Bash(shutdown*)",
+      "Bash(poweroff*)",
+      "Bash(systemctl restart*)",
+      "Bash(systemctl stop*)",
+      "Bash(systemctl start*)",
+      "Bash(docker stop*)",
+      "Bash(docker restart*)",
+      "Bash(docker rm*)",
+      "Bash(docker kill*)",
+      "Bash(docker run*)",
+      "Bash(git push*)",
+      "Bash(git merge*)",
+      "Bash(git commit*)",
+      "Bash(git checkout*)",
+      "Bash(sudo *)",
+      "Bash(su *)",
+      "Bash(apt *)",
+      "Bash(apt-get *)",
+      "Bash(pip install*)",
+      "Bash(npm install*)",
+      "Bash(nvidia-ctk *)",
+      "Bash(ipmitool *event*)",
+      "Bash(ipmitool sel clear*)",
+      "Bash(ipmitool chassis power*)",
+      "Bash(curl * -X POST * api.telegram.org*)",
+      "Write(*)",
+      "Edit(*)",
+      "NotebookEdit(*)"
+    ]
+  },
+
+  "_note_on_telegram": "curl-to-Telegram is explicitly denied so the agent cannot construct arbitrary POST bodies with the bot token; it must go through tg_notify.sh, which reads the token from /etc/gpu_monitor.conf itself and only accepts a plain message argument."
+}
