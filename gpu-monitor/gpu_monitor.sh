@@ -1883,6 +1883,15 @@ tapo_poll() {
 GPU_FAULT_LAST_SEQ_FILE="/var/tmp/gpu_monitor_fault_seq"
 GPU_COUNT_STATE_FILE="/var/tmp/gpu_monitor_gpu_count"
 
+# Tracks the last BMC SEL record ID (hex, e.g. "308") seen last cycle.
+# Confirmed live 2026-09-01/02 on zappa2 (Tyan S8056GME): recurring "Critical
+# Interrupt | PCI SERR" events auto-recover via the AC-power-restore policy
+# within ~3-7min, so the box comes back up looking like a normal reboot --
+# nothing else here would ever surface that a crash happened at all unless
+# something reads the SEL directly. ipmitool sel elist is the only place
+# these show up.
+BMC_SEL_LAST_ID_FILE="/var/tmp/gpu_monitor_sel_last_id"
+
 # Alert when GPUs silently vanish from PCIe (nvidia-smi reports fewer than expected).
 # Called from check_gpus() with the actual detected count.
 check_gpu_count() {
@@ -1994,6 +2003,63 @@ check_gpu_faults() {
 ${all_gpu_hints:+GPU(s): <b>$all_gpu_hints</b>
 }<b>${fault_count} new dmesg line(s)</b> since last check
 <code>$(echo "$first_fault" | head -c 300)</code>"
+}
+
+# Watches the BMC's own System Event Log for hardware-level faults (PCI SERR,
+# machine check exceptions, critical temperature) that fire and auto-recover
+# faster than a human notices -- see BMC_SEL_LAST_ID_FILE comment above for
+# why this exists. Requires ipmitool + local /dev/ipmi0 access (root); no-ops
+# silently if ipmitool isn't installed so this is safe to ship to every rig
+# regardless of BMC vendor.
+check_bmc_sel_faults() {
+    have ipmitool || return
+
+    local last_id=""
+    [[ -f "$BMC_SEL_LAST_ID_FILE" ]] && last_id=$(cat "$BMC_SEL_LAST_ID_FILE" 2>/dev/null || true)
+
+    local sel_raw
+    sel_raw=$(ipmitool sel elist 2>/dev/null) || { log "BMC SEL: ipmitool read failed"; return; }
+    [[ -z "$sel_raw" ]] && return
+
+    # Record ID is the first "|"-delimited field, e.g. " 307 | 09/02/2026 | ..."
+    local newest_id
+    newest_id=$(echo "$sel_raw" | tail -1 | awk -F'|' '{gsub(/ /,"",$1); print $1}')
+    [[ -z "$newest_id" ]] && return
+
+    # First run ever: just seed the watermark, don't alert on the entire
+    # historical SEL (it can carry years of entries, including the bogus
+    # 2003-dated ones this Tyan board logs from clock-not-yet-synced boots).
+    if [[ -z "$last_id" ]]; then
+        echo "$newest_id" > "$BMC_SEL_LAST_ID_FILE"
+        return
+    fi
+    [[ "$newest_id" == "$last_id" ]] && return
+
+    # New entries are everything after the last-seen record ID, filtered to
+    # the fault types worth waking someone up for. Ignore benign lines like
+    # "Timestamp Clock Sync" and normal ACPI power-state transitions.
+    local new_entries
+    new_entries=$(echo "$sel_raw" | awk -F'|' -v last="$last_id" '
+        { rid=$1; gsub(/ /,"",rid) }
+        found { print; next }
+        rid == last { found=1 }
+    ')
+    [[ -z "$new_entries" ]] && new_entries="$sel_raw"   # last_id fell off the log (SEL wrapped) — scan everything visible
+
+    local hw_faults
+    hw_faults=$(echo "$new_entries" | grep -iE "PCI SERR|Machine Check|Uncorrectable|Critical.*going high|Critical.*Asserted" || true)
+
+    echo "$newest_id" > "$BMC_SEL_LAST_ID_FILE"
+
+    [[ -z "$hw_faults" ]] && return
+
+    log "  BMC SEL HARDWARE FAULT DETECTED:"
+    log "    $hw_faults"
+    write_event "bmc_sel_fault" "{\"entries\":$(echo "$hw_faults" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null || echo '""')}"
+
+    tg_send "🚨 <b>BMC Hardware Fault — $(hostname)</b>
+SEL logged a hardware-level event (PCI SERR / MCE / critical threshold) — this can crash the host even if it auto-recovers before anyone notices.
+<code>$(echo "$hw_faults" | head -c 500)</code>"
 }
 
 check_kaalia_faults() {
@@ -4459,6 +4525,7 @@ main() {
         thermal_adjust
         check_gpus
         check_gpu_faults
+        check_bmc_sel_faults
         check_kaalia_faults
         check_selftest_log
 
@@ -4479,6 +4546,7 @@ main() {
             thermal_adjust
             fan_floor_adjust
             cpu_freq_adjust
+            check_bmc_sel_faults
             if (( slept % GPU_CHECK_INTERVAL == 0 )); then
                 check_peer_heartbeats
                 vastai_check

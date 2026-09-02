@@ -66,6 +66,19 @@ if have journalctl; then
 else
   echo "  journalctl not found"
 fi
+echo "  -- BMC SEL hardware faults, last 15 entries (PCI SERR/MCE fire at BMC level -- kernel log above won't show these) --"
+if have ipmitool; then
+  sel=$(ipmitool sel elist 2>/dev/null | tail -15)
+  if [ -n "$sel" ]; then
+    echo "$sel" | sed 's/^/  /'
+    hw=$(echo "$sel" | grep -aiE "PCI SERR|Machine Check|Uncorrectable|Critical.*Asserted")
+    [ -n "$hw" ] && echo "  !! hardware fault line(s) in the above window !!"
+  else
+    echo "  ipmitool sel elist returned nothing (no BMC access / not root?)"
+  fi
+else
+  echo "  ipmitool not installed — run: sudo apt install ipmitool"
+fi
 echo "  -- PCIe link width sanity (expect GEN4/5 x8 or x16 under load; GEN1 while idle is normal, GEN1 while rented is not) --"
 if have nvidia-smi; then
   nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current,utilization.gpu \
