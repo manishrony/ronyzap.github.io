@@ -3720,6 +3720,11 @@ bc_min() { echo "$(( $(echo "$1 < $2" | bc -l) )) $1 $2" | awk '{print ($1==1)?$
 
 vastai_pricing() {
     [[ -z "$VASTAI_API_KEY" ]] && return
+    # PRICING_ENABLED=0 in /etc/gpu_monitor.conf fully disables dynamic
+    # re-pricing (e.g. zappa2, 2026-09-02, while its GPU-load stability is
+    # still under investigation) without touching rental/occupancy syncing.
+    # Defaults to 1 (on) so every other rig's existing behavior is unchanged.
+    [[ "${PRICING_ENABLED:-1}" == "0" ]] && { log "PRICING: disabled via PRICING_ENABLED=0 — skipping"; return; }
 
     log "--- Pricing Check ---"
 
