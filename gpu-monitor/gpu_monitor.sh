@@ -376,8 +376,13 @@ HEARTBEAT_STATE_DIR="/var/tmp/gpu_monitor_heartbeat"
 
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
+# RIG-SPECIFIC like GPU_POWER_OVERRIDE/WORKLOAD_THROTTLE_LIMITS: the whole
+# array can be overridden per rig by simply re-declaring it in that rig's own
+# /etc/gpu_monitor.conf (e.g. PRICE_FLOORS=("5090:35")) — main() sources that
+# file once at startup, before this array is ever read, so the conf's
+# assignment wins for that rig only.
 PRICE_FLOORS=(
-    "5090:35"
+    "5090:30"
     "5080:18"
     "4090:20"
     "4080:15"
