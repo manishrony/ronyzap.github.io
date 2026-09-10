@@ -377,7 +377,7 @@ HEARTBEAT_STATE_DIR="/var/tmp/gpu_monitor_heartbeat"
 # --- Pricing rules ---
 # Format: "GPU_NAME_SUBSTRING:MIN_PRICE_CENTS"  (price in cents/hr)
 PRICE_FLOORS=(
-    "5090:30"
+    "5090:35"
     "5080:18"
     "4090:20"
     "4080:15"
