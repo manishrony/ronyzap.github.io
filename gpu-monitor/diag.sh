@@ -71,8 +71,13 @@ if have ipmitool; then
   sel=$(ipmitool sel elist 2>/dev/null | tail -15)
   if [ -n "$sel" ]; then
     echo "$sel" | sed 's/^/  /'
-    hw=$(echo "$sel" | grep -aiE "PCI SERR|Machine Check|Uncorrectable|Critical.*Asserted")
+    hw=$(echo "$sel" | grep -aiE "PCI SERR|Machine Check|Uncorrectable" | grep -aviE "Temperature")
+    temp=$(echo "$sel" | grep -aiE "Temperature.*Asserted")
     [ -n "$hw" ] && echo "  !! hardware fault line(s) in the above window !!"
+    if [ -n "$temp" ]; then
+      tcount=$(echo "$temp" | wc -l)
+      echo "  note: $tcount temperature-threshold assertion(s) in this window (not a hardware fault — check airflow if frequent/sustained)"
+    fi
   else
     echo "  ipmitool sel elist returned nothing (no BMC access / not root?)"
   fi
