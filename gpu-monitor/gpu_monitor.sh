@@ -586,6 +586,18 @@ RATCHET_FULL_MIN_SECS="${RATCHET_FULL_MIN_SECS:-1800}"
 # the setup comment where last_success is capped, below.
 LAST_SUCCESS_MAX_MULT="${LAST_SUCCESS_MAX_MULT:-1.3}"
 
+# Cap on how far smoothed_mean/smoothed_p75 are allowed to sit above
+# smoothed_median before being treated as outlier-polluted and clamped back
+# down. Vast's market-stats endpoint has no outlier filtering, so a handful
+# of misconfigured/premium listings (seen live 2026-09-11 on zappa1: p75
+# spiked to $42.67 and mean to $16.28 while median stayed at $0.43-0.75) can
+# drag mean/p75 to 10-50x median in one poll. Since the fully_rented ratchet
+# target is min(mean,p75), that outlier pollution feeds straight into the
+# ask even though the "capped at p75" design (see fully_rented branch below)
+# assumed mean/p75 diverging, not both spiking together. Median has no such
+# failure mode observed so far, so it's the trusted anchor here.
+MARKET_STAT_MAX_MULT="${MARKET_STAT_MAX_MULT:-2.0}"
+
 # Whether a machine that's occupancy-confirmed FULLY VACANT (free_count ==
 # num_gpus, regardless of what Vast's own possibly-stale $rented flag says)
 # is allowed to ratchet its price up toward target (default 1, existing
@@ -4137,6 +4149,24 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
             read -r smoothed_median smoothed_mean smoothed_p75 < "$smooth_file" 2>/dev/null
         fi
         smoothed_median="${smoothed_median:-0}"; smoothed_mean="${smoothed_mean:-0}"; smoothed_p75="${smoothed_p75:-0}"
+
+        # Clamp smoothed_mean/smoothed_p75 to MARKET_STAT_MAX_MULT x
+        # smoothed_median before they're used for anything below. See
+        # MARKET_STAT_MAX_MULT's setup comment -- without this, a handful of
+        # outlier listings can drag mean/p75 to 10-50x median in one poll and
+        # feed straight into the fully_rented ratchet target.
+        if (( $(echo "$smoothed_median > 0" | bc -l) )); then
+            local market_stat_cap
+            market_stat_cap=$(printf "%.4f" "$(echo "scale=4; $smoothed_median * $MARKET_STAT_MAX_MULT" | bc)")
+            if (( $(echo "$smoothed_mean > $market_stat_cap" | bc -l) )); then
+                log "  Machine $mid: smoothed_mean \$$smoothed_mean is outlier-polluted (>${MARKET_STAT_MAX_MULT}x median \$$smoothed_median) — capping to \$$market_stat_cap"
+                smoothed_mean="$market_stat_cap"
+            fi
+            if (( $(echo "$smoothed_p75 > $market_stat_cap" | bc -l) )); then
+                log "  Machine $mid: smoothed_p75 \$$smoothed_p75 is outlier-polluted (>${MARKET_STAT_MAX_MULT}x median \$$smoothed_median) — capping to \$$market_stat_cap"
+                smoothed_p75="$market_stat_cap"
+            fi
+        fi
 
         # Remember the last price that actually had a renter attached, so a
         # vacancy right after a rental ends starts near what just worked
