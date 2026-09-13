@@ -72,7 +72,7 @@ if have ipmitool; then
   if [ -n "$sel" ]; then
     echo "$sel" | sed 's/^/  /'
     hw=$(echo "$sel" | grep -aiE "PCI SERR|Machine Check|Uncorrectable" | grep -aviE "Temperature")
-    temp=$(echo "$sel" | grep -aiE "Temperature.*Asserted")
+    temp=$(echo "$sel" | grep -aiE "Temperature.*Asserted" | grep -aviE "Deasserted")
     [ -n "$hw" ] && echo "  !! hardware fault line(s) in the above window !!"
     if [ -n "$temp" ]; then
       tcount=$(echo "$temp" | wc -l)
