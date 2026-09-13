@@ -73,7 +73,16 @@ if have ipmitool; then
     echo "$sel" | sed 's/^/  /'
     hw=$(echo "$sel" | grep -aiE "PCI SERR|Machine Check|Uncorrectable" | grep -aviE "Temperature")
     temp=$(echo "$sel" | grep -aiE "Temperature.*Asserted" | grep -aviE "Deasserted")
-    [ -n "$hw" ] && echo "  !! hardware fault line(s) in the above window !!"
+    if [ -n "$hw" ]; then
+      echo "  !! hardware fault line(s) in the above window !!"
+      last_fault_line=$(echo "$hw" | tail -1)
+      last_fault_ts=$(echo "$last_fault_line" | awk -F'|' '{print $2, $3}' | sed 's/UTC//;s/  */ /g')
+      last_fault_epoch=$(date -u -d "$last_fault_ts" +%s 2>/dev/null)
+      if [ -n "$last_fault_epoch" ]; then
+        mins_ago=$(( ($(date -u +%s) - last_fault_epoch) / 60 ))
+        echo "  most recent fault: $mins_ago min ago ($last_fault_ts UTC)"
+      fi
+    fi
     if [ -n "$temp" ]; then
       tcount=$(echo "$temp" | wc -l)
       echo "  note: $tcount temperature-threshold assertion(s) in this window (not a hardware fault — check airflow if frequent/sustained)"
@@ -86,8 +95,11 @@ else
 fi
 echo "  -- PCIe link width sanity (expect GEN4/5 x8 or x16 under load; GEN1 while idle is normal, GEN1 while rented is not) --"
 if have nvidia-smi; then
-  nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current,utilization.gpu \
-    --format=csv,noheader 2>/dev/null | sed 's/^/  /'
+  pcie=$(nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current,utilization.gpu \
+    --format=csv,noheader 2>/dev/null)
+  echo "$pcie" | sed 's/^/  /'
+  stuck=$(echo "$pcie" | awk -F', ' '$2=="1" && $4+0>0 {print}')
+  [ -n "$stuck" ] && echo "  !! GPU(s) above are GEN1 while showing non-zero utilization — link failed to retrain under load, investigate slot/riser !!"
 fi
 
 # ── 3. Vast machine / rental snapshot ────────────────────────
