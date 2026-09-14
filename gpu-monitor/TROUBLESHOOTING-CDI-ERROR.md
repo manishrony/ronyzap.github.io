@@ -11,6 +11,10 @@
 - `vastai self-test machine <ID> --ignore-requirements` fails with `Root state: zero_active_offers`
   ("no on-demand offer found") even though the machine is listed and hardware is healthy.
 
+> If the banner instead reads `--storage-opt is supported only for overlay over xfs with
+> "pquota" mount option`, that is a different fault -- see TROUBLESHOOTING-STORAGE-OPT.md.
+> Root cause #1 below (stray self-rented instance) still applies to both.
+
 ## Root causes seen (check in this order)
 
 1. **Leftover self-test/self-rented instance holding the GPUs.**
