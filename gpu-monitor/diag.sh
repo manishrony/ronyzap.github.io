@@ -159,7 +159,19 @@ for p in /usr/local/bin/gpu_monitor.sh /opt/gpu-monitor/dashboard; do
   [ -e "$p" ] && ls -la "$p" 2>/dev/null | sed 's/^/  /'
 done
 echo "  -- config override (/etc/gpu_monitor.conf) --"
-grep -a -E "WORKLOAD_THROTTLE_LIMITS|GPU_POWER_OVERRIDE|POWER_LIMITS" /etc/gpu_monitor.conf 2>/dev/null | sed 's/^/  /' || echo "  (no throttle/power override in conf — using script defaults)"
+# Allow-list only. NEVER cat this file or widen to a catch-all: it holds
+# VASTAI_API_KEY, TELEGRAM_TOKEN and TELEGRAM_CHAT_ID.
+CONF_KEYS='WORKLOAD_THROTTLE_LIMITS|GPU_POWER_OVERRIDE|POWER_LIMITS|GPU_FAN_FLOOR'
+CONF_KEYS="$CONF_KEYS|PRICING_ENABLED|PRICE_TARGET_STAT|MARKET_PRICE_DISCOUNT"
+CONF_KEYS="$CONF_KEYS|RATCHET_UP_WHILE_FULL|RATCHET_UP_WHILE_VACANT|RATCHET_UP_WHILE_PARTIAL"
+CONF_KEYS="$CONF_KEYS|DECAY_PRICING|DECAY_GRACE_HOURS|DECAY_HOURS"
+CONF_KEYS="$CONF_KEYS|IDLE_LISTING_THRESHOLD|VACANCY_RESUME_WINDOW_SECS|MIN_PRICE|MAX_PRICE"
+conf=$(grep -a -E "^[[:space:]]*(export[[:space:]]+)?($CONF_KEYS)=" /etc/gpu_monitor.conf 2>/dev/null)
+if [ -n "$conf" ]; then
+  echo "$conf" | sed 's/^/  /'
+else
+  echo "  (no recognised override in conf — using script defaults)"
+fi
 echo "  -- repo HEAD (compare across rigs) --"
 REPO=/home/ronyzap/ronyzap.github.io
 if [ -d "$REPO/.git" ]; then
