@@ -64,6 +64,59 @@ proof:
 mountpoint /var/lib/docker
 ```
 
+## Check the whole disk before rebuilding anything
+
+Before creating a loopback or blaming a missing drive, look at what is actually
+on the surviving disks. On zappa2 the Docker store was a **6.28 TB LV spanning
+BOTH NVMes** (`vg0/lv-0`, created by the curtin installer), so pulling one drive
+left the other drive's 2.6 TB stranded inside an unassemblable volume group --
+and `df` showed only the 768 GB root partition, which looks like "the disk is
+small" rather than "2.6 TB is sitting right there".
+
+```bash
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT     # look for unmounted LVM2_member
+parted /dev/nvme0n1 print free                # look for unallocated space
+pvs; vgs; lvs                                 # "missing PV" / partial (p) attrs
+vgdisplay vg0 | grep -E 'Cur PV|Act PV'       # Cur 2 / Act 1 = spanned + broken
+```
+
+`Cur PV 2, Act PV 1` with `lvs` showing a `p` attribute means the VG spans a
+drive that is gone. The LV cannot activate, and any fstab entry pointing at it
+silently does nothing (see the nofail trap above).
+
+Two ways out:
+
+1. **Reinstall the missing drive** -- the VG completes, the LV activates, and
+   the original filesystem comes back with its data.
+2. **Abandon the LV and reformat the present partition standalone** -- loses
+   the LV's contents, but recovers that drive's capacity immediately with no
+   hardware work.
+
+Option 2 on zappa2 (2026-09-14) took the advertised disk from 140 GB to
+2031 GB in about ten minutes:
+
+```bash
+systemctl stop docker docker.socket
+umount /var/lib/docker                  # if a loopback was mounted there
+vgchange -an vg0
+vgremove -ff vg0                        # warns about the missing PV: expected
+pvremove -ff /dev/nvme0n1p4
+wipefs -a /dev/nvme0n1p4
+mkfs.xfs -f -n ftype=1 /dev/nvme0n1p4
+cp -a /etc/fstab /etc/fstab.bak-$(date +%Y%m%d-%H%M)
+sed -i '\|/var/lib/docker|d' /etc/fstab          # drop ALL old docker lines
+echo "UUID=$(blkid -s UUID -o value /dev/nvme0n1p4) /var/lib/docker xfs defaults,pquota 0 2" >> /etc/fstab
+systemctl daemon-reload && mount /var/lib/docker
+grep nvme0n1p4 /proc/mounts                      # must show prjquota
+systemctl start docker
+rm -f /var/docker-xfs.img                        # reclaim any loopback
+```
+
+**Do not recreate a spanning LV when adding the second drive back.** A linear LV
+across two NVMes means either drive failing destroys the whole filesystem, which
+is a poor trade on a rig that already has one suspect M.2 port. Give the second
+drive its own filesystem.
+
 ## Fix A: dedicated XFS drive (preferred)
 
 ```bash
