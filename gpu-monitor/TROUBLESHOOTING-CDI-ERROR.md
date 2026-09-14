@@ -58,8 +58,52 @@
    ```
 
 4. **Orphaned kaalia processes** from repeated `systemctl restart vastai.service` can cause
-   inconsistent status reporting. Check with `ps -ef | grep kaalia` — should be exactly one
-   process. A reboot cleans this up naturally.
+   inconsistent status reporting. Check with `pgrep -a kaalia` — should be exactly one
+   `launch_kaalia.sh` and one `kaalia`.
+
+   **Kill the orphan by PID. Do NOT stop the service, and do NOT reboot for this.**
+   ```bash
+   pgrep -a kaalia          # identify the extra PID by its shorter elapsed time
+   kill <orphan_pid>
+   pgrep -a kaalia          # confirm one pair remains
+   ```
+
+   An orphaned kaalia on its own costs nothing measurable — it is untidiness, not a fault.
+   Taking the machine offline to clean it up costs real reliability score (see below), so
+   the cure is worse than the disease unless the machine is genuinely misreporting.
+
+## Reliability score: do not spend it on cosmetics
+
+The console's thumbs-up percentage is a rolling window that Vast weights heavily in search
+ranking. Every minute the agent is not reporting counts against it.
+
+On 2026-09-14 zappa2 climbed 57.86% -> 88.01% over ~20 hours of clean uptime after the PCI
+SERR fix, then gave some of it back because `systemctl stop vastai` was used to clear a
+duplicate kaalia — about four minutes offline for a cleanup that was not urgent.
+
+Rules:
+
+- **Never `systemctl stop vastai` for non-urgent work.** Target the specific process instead.
+- Only an actual fault, or a deliberately scheduled test (e.g. the reboot test after fstab
+  changes), justifies an offline window.
+- Batch anything that *does* need downtime into one window rather than several.
+- Do not try to compensate for a dip. The score recovers by itself as uptime accrues, the
+  same way it climbed in the first place.
+
+## Benign log noise that is NOT a fault
+
+`gpu_monitor.sh`'s fault watcher greps broadly for `NVRM`, so some harmless driver messages
+page as "GPU Fault". Before acting, check the BMC SEL (`ipmitool sel elist`) — a real fault
+leaves a trace there; these do not.
+
+```
+NVRM: GPU7 gpuValidateRegOffset_IMPL: User does not have permission to access register offset 0x...
+```
+
+The driver **denying** an unprivileged register read. Mining and tuning software inside a
+renter's container tries to poke GPU registers directly and cannot, so each attempt logs a
+line — across 8 GPUs that is easily hundreds of lines. Seen on zappa2 2026-09-14 from a
+`quantus-mining-fleet` rental. No Xid, no MCE, nothing in the SEL. Nothing to fix.
 
 ## Diagnostics to run (in order, before escalating)
 

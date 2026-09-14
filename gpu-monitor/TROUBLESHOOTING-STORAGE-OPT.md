@@ -169,7 +169,9 @@ Keep `/var/lib/docker.bak` until it passes, then remove it.
 ## After the fix
 
 1. `systemctl restart vastai` and watch `tail -f /var/lib/vastai_kaalia/kaalia.log` for clean
-   heartbeats and no storage-opt errors.
+   heartbeats and no storage-opt errors. A restart is brief; do NOT `systemctl stop` and
+   leave it stopped -- offline minutes cost reliability score (see
+   TROUBLESHOOTING-CDI-ERROR.md, "Reliability score: do not spend it on cosmetics").
 2. The machine relists on its own once the agent reports healthy -- watch `listed_gpu_cost`
    in `dump-machine-json` go from `None` to a price.
 3. **The red banner is a cached last-error string, not a live check.** It can persist after
