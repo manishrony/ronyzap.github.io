@@ -112,6 +112,56 @@ explicitly configured to:
 - Re-run `install.sh` on the hub whenever a peer's IP changes (same as the
   `PEER_URLS` proxy — one command updates both)
 
+## zappa2 hardware notes (as of 2026-09-14)
+
+**CPU: AMD EPYC 9B14, 96-core, SP5.** A `9Bxx` is a semi-custom contract SKU, not a retail
+part — it reached us via a system integrator selling decommissioned hardware. `dmidecode`
+reports `Serial Number: Unknown`. **There is no AMD warranty path**; a replacement means
+buying another 9B14 on the surplus market (confirm the seller states it is NOT vendor-locked
+/ PSB-fused, or it will not POST).
+
+**PCI SERR — root port `00:01.4` is dead. Leave it empty.**
+
+Five SERRs on 2026-09-13/14, all with byte-identical event data `a5000c`, decoding to root
+port `00:01.4` (bus 03). Each one halted the host instantly. An A/B swap of the two NVMes
+proved the fault follows the **slot**, not the drive. Moving the OS drive to `00:01.5` and
+leaving `00:01.4` empty took it from failing every 4-7 minutes after boot to 20+ hours clean
+through a full 8-GPU stress test and multiple rentals.
+
+Root cause is narrowed but not settled. The path is CPU I/O die -> LGA6096 socket -> board
+traces -> M.2 connector, and the SEL only names the root port. Key datum: the **old** board
+faulted on GPU slots 0/1, the **new** board on `00:01.4` — a *different* link. A single bad
+root port in the CPU silicon would not move when the board changed, so the leading theory is
+the **CPU-to-socket interface** (pins, pads, or uneven ILM clamping), where a reseat changes
+which lanes end up marginal.
+
+When fitting the next board:
+
+- Inspect the socket pin field under magnification and photograph it before seating.
+- Check the CPU package pads for contamination.
+- Use a torque-limiting driver and the ILM screw order stamped on the frame (verify the spec
+  in the board manual). Loosen in reverse order.
+- Put a drive in the slot equivalent to `00:01.4` and load it hard. SERR returns on any link
+  -> the CPU is implicated. Clean -> it was board-side.
+- **Verify by parent root port, never by bus number** — buses renumber when a port is empty:
+  ```bash
+  for d in /sys/block/nvme*n1; do n=$(basename $d); p=$(readlink -f $d/device/device); \
+    echo "$n @ $(basename $p) parent=$(basename $(dirname $p))"; done
+  ```
+
+**Storage layout.** `nvme0n1` is a 4TB Crucial T705: p1 `/boot/efi`, p2 swap, p3 `/` (ext4,
+768G), p4 `/var/lib/docker` (XFS, 2.6T, mounted `pquota`). Docker **must** be on XFS with
+project quotas or every Vast rental fails — see TROUBLESHOOTING-STORAGE-OPT.md.
+
+The second NVMe (`2529E9C6B11E`) is out of the machine. It was half of a 6.28TB LV spanning
+both drives; that VG was destroyed on 2026-09-14. **When it goes back in, give it its own
+filesystem** — a linear LV across two drives loses everything if either one fails, and this
+rig already has one known-bad M.2 port.
+
+**GPU 5 is MSI** and runs a quieter stock fan curve than the others, so it sits warmest at
+idle. That is the card, not a fault. `GPU_FAN_FLOOR=("5:80")` needs an X server with Coolbits
+to take effect and is currently inert.
+
 ## Cross-rig heartbeat (opt-in, off by default)
 
 Confirmed live 2026-09-01 on zappa2: the host hit a fatal PCI SERR (BMC SEL:

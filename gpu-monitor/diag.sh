@@ -72,8 +72,17 @@ if have ipmitool; then
   if [ -n "$sel" ]; then
     echo "$sel" | sed 's/^/  /'
     hw=$(echo "$sel" | grep -aiE "PCI SERR|Machine Check|Uncorrectable" | grep -aviE "Temperature")
-    temp=$(echo "$sel" | grep -aiE "Temperature.*Asserted")
-    [ -n "$hw" ] && echo "  !! hardware fault line(s) in the above window !!"
+    temp=$(echo "$sel" | grep -aiE "Temperature.*Asserted" | grep -aviE "Deasserted")
+    if [ -n "$hw" ]; then
+      echo "  !! hardware fault line(s) in the above window !!"
+      last_fault_line=$(echo "$hw" | tail -1)
+      last_fault_ts=$(echo "$last_fault_line" | awk -F'|' '{print $2, $3}' | sed 's/UTC//;s/  */ /g')
+      last_fault_epoch=$(date -u -d "$last_fault_ts" +%s 2>/dev/null)
+      if [ -n "$last_fault_epoch" ]; then
+        mins_ago=$(( ($(date -u +%s) - last_fault_epoch) / 60 ))
+        echo "  most recent fault: $mins_ago min ago ($last_fault_ts UTC)"
+      fi
+    fi
     if [ -n "$temp" ]; then
       tcount=$(echo "$temp" | wc -l)
       echo "  note: $tcount temperature-threshold assertion(s) in this window (not a hardware fault — check airflow if frequent/sustained)"
@@ -86,8 +95,11 @@ else
 fi
 echo "  -- PCIe link width sanity (expect GEN4/5 x8 or x16 under load; GEN1 while idle is normal, GEN1 while rented is not) --"
 if have nvidia-smi; then
-  nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current,utilization.gpu \
-    --format=csv,noheader 2>/dev/null | sed 's/^/  /'
+  pcie=$(nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current,utilization.gpu \
+    --format=csv,noheader 2>/dev/null)
+  echo "$pcie" | sed 's/^/  /'
+  stuck=$(echo "$pcie" | awk -F', ' '$2=="1" && $4+0>0 {print}')
+  [ -n "$stuck" ] && echo "  !! GPU(s) above are GEN1 while showing non-zero utilization — link failed to retrain under load, investigate slot/riser !!"
 fi
 
 # ── 3. Vast machine / rental snapshot ────────────────────────
@@ -147,7 +159,19 @@ for p in /usr/local/bin/gpu_monitor.sh /opt/gpu-monitor/dashboard; do
   [ -e "$p" ] && ls -la "$p" 2>/dev/null | sed 's/^/  /'
 done
 echo "  -- config override (/etc/gpu_monitor.conf) --"
-grep -a -E "WORKLOAD_THROTTLE_LIMITS|GPU_POWER_OVERRIDE|POWER_LIMITS" /etc/gpu_monitor.conf 2>/dev/null | sed 's/^/  /' || echo "  (no throttle/power override in conf — using script defaults)"
+# Allow-list only. NEVER cat this file or widen to a catch-all: it holds
+# VASTAI_API_KEY, TELEGRAM_TOKEN and TELEGRAM_CHAT_ID.
+CONF_KEYS='WORKLOAD_THROTTLE_LIMITS|GPU_POWER_OVERRIDE|POWER_LIMITS|GPU_FAN_FLOOR'
+CONF_KEYS="$CONF_KEYS|PRICING_ENABLED|PRICE_TARGET_STAT|MARKET_PRICE_DISCOUNT"
+CONF_KEYS="$CONF_KEYS|RATCHET_UP_WHILE_FULL|RATCHET_UP_WHILE_VACANT|RATCHET_UP_WHILE_PARTIAL"
+CONF_KEYS="$CONF_KEYS|DECAY_PRICING|DECAY_GRACE_HOURS|DECAY_HOURS"
+CONF_KEYS="$CONF_KEYS|IDLE_LISTING_THRESHOLD|VACANCY_RESUME_WINDOW_SECS|MIN_PRICE|MAX_PRICE"
+conf=$(grep -a -E "^[[:space:]]*(export[[:space:]]+)?($CONF_KEYS)=" /etc/gpu_monitor.conf 2>/dev/null)
+if [ -n "$conf" ]; then
+  echo "$conf" | sed 's/^/  /'
+else
+  echo "  (no recognised override in conf — using script defaults)"
+fi
 echo "  -- repo HEAD (compare across rigs) --"
 REPO=/home/ronyzap/ronyzap.github.io
 if [ -d "$REPO/.git" ]; then
