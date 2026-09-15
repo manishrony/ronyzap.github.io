@@ -189,7 +189,7 @@ Keep `/var/lib/docker.bak` until it passes, then remove it.
    vastai show instances-v1
    vastai destroy instance <INSTANCE_ID>
    ```
-   See also TROUBLESHOOTING-CDI-ERROR.md, root cause #1 -- same class of problem.
+   See also TROUBLESHOOTING-CDI-ERROR.md, root cause #2 -- same class of problem.
 
 ## Reboot test
 
