@@ -238,6 +238,28 @@ MINING_HEURISTIC_MIN_UTIL="${MINING_HEURISTIC_MIN_UTIL:-95}"     # % GPU compute
 MINING_HEURISTIC_MAX_ENCDEC="${MINING_HEURISTIC_MAX_ENCDEC:-2}"  # % — miners don't use NVENC/NVDEC
 MINING_HEURISTIC_MAX_MEM_GROWTH_MIB="${MINING_HEURISTIC_MAX_MEM_GROWTH_MIB:-256}"  # vs. previous sample
 MINING_HEURISTIC_SUSTAIN_SECONDS="${MINING_HEURISTIC_SUSTAIN_SECONDS:-1800}"  # 30 min
+# Absolute per-GPU VRAM ceiling. A miner's working set is tiny and fixed -- the
+# hash state, not a model. Real GPU work (LLM inference, diffusion, data
+# curation) holds gigabytes. Measured live 2026-09-16:
+#   zappa3 `./miner`            502 MiB   ← mining
+#   zappa1 llama-server      25,360 MiB   ← inference, NOT mining
+#   zappa1 ComfyUI           31,456 MiB   ← diffusion, NOT mining
+#   zappa2 ray::StageWorker 2,000-10,600 MiB per worker  ← NeMo-Curator, NOT mining
+# A GPU holding more than this is doing real work whatever its utilization
+# looks like, so it disqualifies outright. This is the signal that separates a
+# miner from sustained legitimate load -- utilization alone does not.
+MINING_HEURISTIC_MAX_MEM_MIB="${MINING_HEURISTIC_MAX_MEM_MIB:-4096}"
+# How many consecutive below-threshold utilization samples to tolerate before
+# giving up on the streak. Real miners are not pegged at 100%: pool handoffs,
+# share submission and stale-work restarts show up as brief dips. Zeroing the
+# streak on the first dip means a dipping miner NEVER accumulates the window --
+# confirmed on zappa3 2026-09-16, where a process literally named ./miner ran
+# 90+ minutes at 550W and was never flagged because samples swung 100% -> 20%.
+# A dip holds the streak instead of resetting it; the streak only grows on
+# qualifying samples, so a genuinely idle GPU still can't creep to a match.
+# Encoder/decoder activity, VRAM growth and the VRAM ceiling still reset
+# immediately -- those are positive evidence of real work, not noise.
+MINING_HEURISTIC_UTIL_DIP_TOLERANCE="${MINING_HEURISTIC_UTIL_DIP_TOLERANCE:-5}"
 
 # --- Profitability-based power throttle (opt-in, runs every THERMAL_CHECK_INTERVAL) ---
 # Ties the GPU power cap to what the CURRENT rental is actually EARNING, for
@@ -925,9 +947,10 @@ workload_throttle_active() {
 # no state file needed); ANY disqualifying tick resets it to 0.
 _MINING_HEURISTIC_STREAK=0
 _MINING_HEURISTIC_PREV_MEM=""
+_MINING_HEURISTIC_DIPS=0
 mining_heuristic_active() {
     [[ "$MINING_HEURISTIC" == "1" ]] || return 1
-    _profit_currently_rented || { _MINING_HEURISTIC_STREAK=0; _MINING_HEURISTIC_PREV_MEM=""; return 1; }
+    _profit_currently_rented || { _MINING_HEURISTIC_STREAK=0; _MINING_HEURISTIC_PREV_MEM=""; _MINING_HEURISTIC_DIPS=0; return 1; }
 
     local -A _procs; build_gpu_proc_map _procs
     local gi cat any_unknown=0 unknown_gpus=""
@@ -937,21 +960,26 @@ mining_heuristic_active() {
     done
     # Nothing unclassified running (idle, or already a named match) — this
     # fallback has nothing to add.
-    (( any_unknown )) || { _MINING_HEURISTIC_STREAK=0; _MINING_HEURISTIC_PREV_MEM=""; return 1; }
+    (( any_unknown )) || { _MINING_HEURISTIC_STREAK=0; _MINING_HEURISTIC_PREV_MEM=""; _MINING_HEURISTIC_DIPS=0; return 1; }
 
-    local idx util enc dec mem qualifies=1 total_mem=0
+    local idx util enc dec mem qualifies=1 total_mem=0 util_dip=0
     while IFS=',' read -r idx util enc dec mem; do
         idx=$(echo "$idx" | xargs)
         [[ -n "${_procs[$idx]:-}" ]] || continue   # only judge GPUs with an active compute process
         util=$(echo "$util" | xargs); enc=$(echo "$enc" | xargs)
         dec=$(echo "$dec" | xargs); mem=$(echo "$mem" | xargs)
         if [[ "$util" =~ ^[0-9]+$ ]]; then
-            (( util < MINING_HEURISTIC_MIN_UTIL )) && qualifies=0
+            # A util dip is noise, not evidence against mining -- flag it
+            # separately so it holds the streak rather than zeroing it.
+            (( util < MINING_HEURISTIC_MIN_UTIL )) && util_dip=1
         else
             qualifies=0
         fi
         [[ "$enc" =~ ^[0-9]+$ ]] && (( enc > MINING_HEURISTIC_MAX_ENCDEC )) && qualifies=0
         [[ "$dec" =~ ^[0-9]+$ ]] && (( dec > MINING_HEURISTIC_MAX_ENCDEC )) && qualifies=0
+        # Absolute VRAM ceiling: gigabytes resident means a model is loaded,
+        # which no miner needs. Hard disqualifier regardless of utilization.
+        [[ "$mem" =~ ^[0-9]+$ ]] && (( mem > MINING_HEURISTIC_MAX_MEM_MIB )) && qualifies=0
         [[ "$mem" =~ ^[0-9]+$ ]] && total_mem=$(( total_mem + mem ))
     done < <(nvidia-smi --query-gpu=index,utilization.gpu,utilization.encoder,utilization.decoder,memory.used \
                          --format=csv,noheader,nounits 2>/dev/null)
@@ -961,10 +989,22 @@ mining_heuristic_active() {
     fi
     _MINING_HEURISTIC_PREV_MEM="$total_mem"
 
-    if (( qualifies )); then
-        _MINING_HEURISTIC_STREAK=$(( _MINING_HEURISTIC_STREAK + THERMAL_CHECK_INTERVAL ))
-    else
+    if (( ! qualifies )); then
+        # Hard disqualifier (encode/decode, VRAM growth, VRAM ceiling, or an
+        # unreadable utilization figure) -- positive evidence of real work.
         _MINING_HEURISTIC_STREAK=0
+        _MINING_HEURISTIC_DIPS=0
+    elif (( util_dip )); then
+        # Below threshold but nothing says "real work". Hold the streak; give
+        # up only if the dips persist past the tolerance.
+        _MINING_HEURISTIC_DIPS=$(( _MINING_HEURISTIC_DIPS + 1 ))
+        if (( _MINING_HEURISTIC_DIPS > MINING_HEURISTIC_UTIL_DIP_TOLERANCE )); then
+            _MINING_HEURISTIC_STREAK=0
+            _MINING_HEURISTIC_DIPS=0
+        fi
+    else
+        _MINING_HEURISTIC_DIPS=0
+        _MINING_HEURISTIC_STREAK=$(( _MINING_HEURISTIC_STREAK + THERMAL_CHECK_INTERVAL ))
     fi
     if (( _MINING_HEURISTIC_STREAK >= MINING_HEURISTIC_SUSTAIN_SECONDS )); then
         # The suspected miners are the unknown-classified processes the streak
@@ -1221,9 +1261,9 @@ thermal_adjust() {
     if (( throttle_cap > 0 )) && (( _WORKLOAD_THROTTLE_STATE == 0 )); then
         _WORKLOAD_THROTTLE_STATE=1
         if [[ "$throttle_src" == "heuristic" ]]; then
-            log "  WORKLOAD THROTTLE: unnamed process behaves like mining (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ util, ~0% encode/decode, stable VRAM for ${MINING_HEURISTIC_SUSTAIN_SECONDS}s) → capping GPU(s) ${_WORKLOAD_OFFENDER_GPUS} to their model's mining-throttle limit (other GPUs unaffected; see the THERMAL log line below for the actual watts applied per GPU)"
+            log "  WORKLOAD THROTTLE: unnamed process behaves like mining (${MINING_HEURISTIC_MIN_UTIL}%+ util allowing ${MINING_HEURISTIC_UTIL_DIP_TOLERANCE} dips, ~0% encode/decode, VRAM stable and under ${MINING_HEURISTIC_MAX_MEM_MIB}MiB for ${MINING_HEURISTIC_SUSTAIN_SECONDS}s) → capping GPU(s) ${_WORKLOAD_OFFENDER_GPUS} to their model's mining-throttle limit (other GPUs unaffected; see the THERMAL log line below for the actual watts applied per GPU)"
             write_event "workload_throttle" "{\"state\":\"on\",\"source\":\"heuristic\",\"gpus\":\"$_WORKLOAD_OFFENDER_GPUS\"}"
-            tg_send "⚠️ $(hostname): suspected UNNAMED miner (sustained ${MINING_HEURISTIC_MIN_UTIL}%+ GPU util, ~0% encode/decode, stable VRAM) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS} — auto-capped those to their model's mining-throttle limit. Check nvidia-smi / use profit-override if this is wrong."
+            tg_send "⚠️ $(hostname): suspected UNNAMED miner (${MINING_HEURISTIC_MIN_UTIL}%+ GPU util, ~0% encode/decode, VRAM under ${MINING_HEURISTIC_MAX_MEM_MIB}MiB) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS} — auto-capped those to their model's mining-throttle limit. Check nvidia-smi / use profit-override if this is wrong."
         else
             log "  WORKLOAD THROTTLE: not-ideal workload (${WORKLOAD_THROTTLE_TYPES}) on GPU(s) ${_WORKLOAD_OFFENDER_GPUS}, past the ${WORKLOAD_THROTTLE_GRACE_SECS}s grace period → capping those to their model's mining-throttle limit (other GPUs unaffected)"
             write_event "workload_throttle" "{\"state\":\"on\",\"types\":\"$WORKLOAD_THROTTLE_TYPES\",\"gpus\":\"$_WORKLOAD_OFFENDER_GPUS\"}"
