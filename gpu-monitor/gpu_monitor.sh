@@ -1933,6 +1933,102 @@ tapo_poll() {
 }
 
 # ─────────────────────────────────────────────
+# Container runtime fault detection
+# ─────────────────────────────────────────────
+# A renter whose container cannot START or STOP looks, from the console, like
+# nothing more than "the renter left quickly" -- the only visible trace is a
+# short rental and a container in Exited(137). The host-side cause is invisible
+# unless you go looking in dmesg and the docker journal, which nobody does
+# unprompted. Confirmed live on zappa3 2026-09-16: two renters lost in two
+# hours because AppArmor's docker-default profile was denying runc permission
+# to deliver SIGTERM/SIGKILL into containers:
+#
+#   apparmor="DENIED" operation="signal" class="signal" profile="docker-default"
+#     comm="runc" requested_mask="receive" denied_mask="receive" peer="runc"
+#   kaalia_docker_shim did not terminate successfully: unable to signal init:
+#     permission denied
+#
+# A stale docker-default profile was pinned in the kernel (AppArmor logged
+# "same as current profile, skipping" when docker tried to reload it), and
+# `systemctl restart docker` regenerated it. zappa3 is the fleet's only
+# Ubuntu 26.04 / kernel 7.0 / Docker 29.x host, which is why only it was hit.
+#
+# These three patterns are host faults with no legitimate cause -- unlike a
+# short rental, which is normal renter behaviour and would false-positive
+# constantly. Alerts fire once per episode and a recovery message follows when
+# a later cycle comes back clean, the same shape as the peer-down watcher.
+CONTAINER_RUNTIME_ALERTS="${CONTAINER_RUNTIME_ALERTS:-1}"
+CONTAINER_FAULT_SEQ_FILE="/var/tmp/gpu_monitor_container_fault_seq"
+CONTAINER_FAULT_ACTIVE_FILE="/var/tmp/gpu_monitor_container_fault_active"
+
+check_container_runtime_faults() {
+    [[ "${CONTAINER_RUNTIME_ALERTS:-1}" == "1" ]] || return
+    command -v docker >/dev/null 2>&1 || return
+
+    local last_seq=0 cur_count
+    [[ -f "$CONTAINER_FAULT_SEQ_FILE" ]] && last_seq=$(cat "$CONTAINER_FAULT_SEQ_FILE" 2>/dev/null || echo 0)
+    [[ "$last_seq" =~ ^[0-9]+$ ]] || last_seq=0
+    cur_count=$(dmesg 2>/dev/null | wc -l || echo 0)
+
+    # dmesg was cleared (dmesg -C) or rotated -- restart the watermark rather
+    # than re-reading the whole buffer and re-alerting on old events.
+    (( cur_count < last_seq )) && last_seq=0
+
+    local apparmor_hits=0
+    if (( cur_count > last_seq )); then
+        apparmor_hits=$(dmesg 2>/dev/null | tail -n +"$((last_seq + 1))" \
+            | grep -cE 'apparmor="DENIED".*class="signal"' || true)
+    fi
+    echo "$cur_count" > "$CONTAINER_FAULT_SEQ_FILE"
+
+    # Docker's own journal, over the window we just covered. Deliberately a
+    # fixed lookback rather than a timestamp watermark: these errors repeat
+    # while the condition holds, so a missed window self-corrects next cycle.
+    local shim_hits=0 hc_hits=0
+    if command -v journalctl >/dev/null 2>&1; then
+        shim_hits=$(journalctl -u docker --since "${CHECK_INTERVAL:-3600} seconds ago" --no-pager 2>/dev/null \
+            | grep -c 'unable to signal init' || true)
+        hc_hits=$(journalctl -u docker --since "${CHECK_INTERVAL:-3600} seconds ago" --no-pager 2>/dev/null \
+            | grep -c 'healthcheck failed fatally' || true)
+    fi
+
+    [[ "$apparmor_hits" =~ ^[0-9]+$ ]] || apparmor_hits=0
+    [[ "$shim_hits"     =~ ^[0-9]+$ ]] || shim_hits=0
+    [[ "$hc_hits"       =~ ^[0-9]+$ ]] || hc_hits=0
+    local total=$(( apparmor_hits + shim_hits + hc_hits ))
+
+    if (( total == 0 )); then
+        if [[ -f "$CONTAINER_FAULT_ACTIVE_FILE" ]]; then
+            rm -f "$CONTAINER_FAULT_ACTIVE_FILE"
+            log "  CONTAINER RUNTIME: fault cleared — containers signalling normally again"
+            tg_send "✅ <b>Container runtime recovered — $(hostname)</b>
+No AppArmor signal denials or docker shim errors this cycle. Rentals should start and stop cleanly again."
+        fi
+        return
+    fi
+
+    # Already alerted and still broken -- log it, but don't re-page every cycle.
+    if [[ -f "$CONTAINER_FAULT_ACTIVE_FILE" ]]; then
+        log "  CONTAINER RUNTIME: still faulting (apparmor=$apparmor_hits shim=$shim_hits healthcheck=$hc_hits) — already alerted"
+        return
+    fi
+    touch "$CONTAINER_FAULT_ACTIVE_FILE"
+
+    log "  CONTAINER RUNTIME FAULT: apparmor-signal-denials=$apparmor_hits shim-signal-errors=$shim_hits fatal-healthchecks=$hc_hits"
+    tg_send "🚨 <b>Container Runtime Fault — $(hostname)</b>
+Renters' containers cannot be started or stopped cleanly. This looks like short rentals / renters leaving fast, but the cause is host-side.
+
+AppArmor signal denials: <b>$apparmor_hits</b>
+Docker shim signal errors: <b>$shim_hits</b>
+Fatal healthchecks: <b>$hc_hits</b>
+
+Most likely a stale <code>docker-default</code> AppArmor profile. Fix (safe while vacant):
+<code>sudo systemctl restart docker</code>
+Then confirm: <code>sudo dmesg | grep -cE 'apparmor.*DENIED.*signal'</code> → expect 0.
+See TROUBLESHOOTING-CONTAINER-RUNTIME.md"
+}
+
+# ─────────────────────────────────────────────
 # GPU fault detection (Xid / NVRM PCIe errors)
 # ─────────────────────────────────────────────
 
@@ -4616,6 +4712,7 @@ main() {
         thermal_adjust
         check_gpus
         check_gpu_faults
+        check_container_runtime_faults
         check_bmc_sel_faults
         check_kaalia_faults
         check_selftest_log
