@@ -46,6 +46,7 @@ intervention.
 | 09/17 15:55 | 14× PERR at boot | after power cycle |
 | 09/17 ~21:42 | **Second hard hang, zero logs anywhere** | `pcie_ports=native` active |
 | 09/17 21:50 | 14× PERR at boot | after power cycle |
+| 09/17 23:31 | `MB_Air_Inlet_T` **Upper Critical**, 50°C | 8/8 rented, ~3.1kW load |
 
 The single most important row is **09/17 ~21:42**, explained below.
 
@@ -193,6 +194,40 @@ controller, DPC containment of the NVMe becomes survivable instead of a wedge.
 
 ---
 
+### Inlet air reaches the board's critical threshold under full load
+
+First observed 2026-09-17 23:31, with all 8 GPUs rented and drawing ~390W each:
+
+```
+448 | 09/17/2026 | 11:31:42 PM UTC | Temperature MB_Air_Inlet_T |
+     Upper Critical going high | Asserted | Reading 50 > Threshold 50 degrees C
+```
+
+That is the air entering the board, not a component temperature. The CPU sat at
+63°C, which looks fine until you note it is being cooled by 50°C intake — there
+is no headroom left, and every rail regulator and socket contact on the board is
+sitting in that air.
+
+This is not itself a fault, and it is not the cause of the hangs: the 15:07 and
+21:42 hangs both happened while the machine was **idle and cool**. But it belongs
+in the record for two reasons:
+
+- Marginal contact resistance and rail droop both worsen with temperature. If the
+  root cause is power delivery or socket seating (leads 1 and 2), a 50°C intake
+  is the condition that turns marginal into failing.
+- It is a rig-level problem, not a board-level one. ~3.1kW of GPU heat into the
+  room comes back around as intake air. **Replacing the motherboard will not fix
+  it**, so it needs handling separately from the board swap.
+
+Related, and visible in the same diag: **GPU 5 runs hottest while holding the
+lowest fan speed** — 75°C at 36% fan, against 63–67°C at 64–71% on its
+neighbours. It has already crossed the 78°C knee in
+`POWER_LIMITS=("5090:500:78@475:80@450")` and been capped to 475W, so it is
+losing throughput. `GPU_FAN_FLOOR=("5:80")` exists to correct this and is
+**inert** — fan control needs an X server and the host is headless. This went
+unnoticed for a long time because GPU 5 is the *coolest* card at idle; it only
+becomes the limiting one under a full 8-GPU load.
+
 ## Open leads
 
 Ranked by how well each explains *both* boards and *both* failure modes.
@@ -216,6 +251,10 @@ rails nominal.
 
 Aggravating: **all PSU sensors report `Disabled`** — there is no PMBus telemetry,
 so PSU-side voltage and current are invisible.
+
+Also aggravating: 50°C intake air under full load (see above). Regulator droop
+is temperature-dependent, so the `VDD_5_RUN` reading above was taken under
+favourable conditions and is likely a best case.
 
 **The measurement that settles it**, with a DMM between an HP breakout board
 ground terminal and the Corsair ground:
@@ -302,6 +341,7 @@ Before teardown:
       Losing it resets reliability history.
 - [ ] Back up `/etc/gpu_monitor.conf`.
 - [ ] Measure PSU ground potential (see lead #1) — idle and under load.
+      Take the loaded reading while intake air is hot; that is the worst case.
 - [ ] BIOS screenshots via iKVM: Above 4G Decoding, Resizable BAR, IOMMU, PCIe
       settings.
 
@@ -310,6 +350,13 @@ On arrival:
 - [ ] Socket inspection under raking light, photographed, before the CPU goes in.
 - [ ] BMC standby test before installing anything.
 - [ ] Firmware updates (BIOS newer than `5411B0030009` exists).
+
+Separately from the board swap, because a new board will not change it:
+
+- [ ] Address intake air. `MB_Air_Inlet_T` hitting 50°C is a room/airflow
+      problem — ~3.1kW leaving 8 GPUs comes back as intake.
+- [ ] Decide on GPU 5 fan control. Either a minimal X stub so `GPU_FAN_FLOOR`
+      works, or accept the `POWER_LIMITS` cap and drop the inert setting.
 
 During the rebuild:
 
