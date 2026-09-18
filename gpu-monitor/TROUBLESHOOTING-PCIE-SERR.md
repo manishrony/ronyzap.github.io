@@ -208,16 +208,39 @@ That is the air entering the board, not a component temperature. The CPU sat at
 is no headroom left, and every rail regulator and socket contact on the board is
 sitting in that air.
 
-This is not itself a fault, and it is not the cause of the hangs: the 15:07 and
-21:42 hangs both happened while the machine was **idle and cool**. But it belongs
-in the record for two reasons:
+**Heat is not the trigger.** The event timeline runs the wrong way, and it is
+worth stating plainly because it is easy to re-assume later:
 
-- Marginal contact resistance and rail droop both worsen with temperature. If the
-  root cause is power delivery or socket seating (leads 1 and 2), a 50°C intake
-  is the condition that turns marginal into failing.
-- It is a rig-level problem, not a board-level one. ~3.1kW of GPU heat into the
-  room comes back around as intake air. **Replacing the motherboard will not fix
-  it**, so it needs handling separately from the board swap.
+| Event | Machine state | Thermal state |
+|---|---|---|
+| 14× PERR, every boot | just powered on | **coldest it ever is** |
+| Hang #1, 09/17 15:07 | vacant | cool |
+| Hang #2, 09/17 ~21:42 | near-idle, docker churn, GPUs at P8 | cool |
+| 09/17 23:31 – 09/18 03:54, intake at 50°C twice, 8 GPUs at ~390W | full load | **hottest on record** |
+| → outcome of that hottest stretch | **no hang, no SERR, no PERR** | — |
+
+The hottest documented period produced nothing. Both hangs happened cool and
+idle. The PERR bursts fire during boot-time link training, when every component
+is at room temperature. If marginal contact were being pushed over the edge by
+heat, faults would cluster in the hot hours; they do the opposite.
+
+Contact resistance and rail droop *are* temperature-dependent, so heat remains a
+plausible **long-term degradation** factor — sustained 50°C intake and repeated
+thermal cycling age solder joints, connectors and capacitors. That could help
+explain why a board became marginal over months. It does not explain why a given
+hang happened at 21:42 on a cool, idle machine.
+
+This also sharpens the ranking below: a **ground potential offset is present
+whenever the machine is powered**, idle or not, and tracks neither load nor
+temperature. That fits an idle-machine hang better than any thermal mechanism.
+
+So the airflow work stands on its own merits — protecting the hardware, stopping
+the GPU 5 power-limit throttling, keeping the alarm quiet. It should **not** be
+expected to fix the SERRs or the hangs.
+
+It is also a rig-level problem, not a board-level one. ~3.1kW of GPU heat into
+the room comes back around as intake air. **Replacing the motherboard will not
+fix it**, so it needs handling separately from the board swap.
 
 Related, and visible in the same diag: **GPU 5 runs hottest while holding the
 lowest fan speed** — 75°C at 36% fan, against 63–67°C at 64–71% on its
@@ -252,18 +275,88 @@ rails nominal.
 Aggravating: **all PSU sensors report `Disabled`** — there is no PMBus telemetry,
 so PSU-side voltage and current are invisible.
 
-Also aggravating: 50°C intake air under full load (see above). Regulator droop
-is temperature-dependent, so the `VDD_5_RUN` reading above was taken under
-favourable conditions and is likely a best case.
+Also relevant: the `VDD_5_RUN` reading above was taken under favourable thermal
+conditions, so it is a best case rather than a worst one.
 
-**The measurement that settles it**, with a DMM between an HP breakout board
-ground terminal and the Corsair ground:
+#### Why this theory outranks the others
 
-- Near 0 V, idle and under load → theory dead.
-- Tens of mV or more, especially load-dependent → root cause found.
+It is the only mechanism that survives all four constraints at once:
 
-Do this before the rebuild. It is the single highest-value outstanding test, and
-it is non-destructive.
+1. **Crosses motherboards.** Board #1 faulted on the GPU slots; board #2 on the
+   NVMe ports. The PSUs are the only part that did not change.
+2. **Crosses subsystems.** A ground offset rides on every link that spans the two
+   domains, so it is not tied to any one slot, device or controller.
+3. **Independent of load.** A ground offset exists whenever the machine is
+   powered. Both hangs happened idle.
+4. **Independent of temperature.** See the heat section above — the hottest
+   stretch on record produced no faults at all.
+
+Nothing else on the list satisfies more than two of those.
+
+#### The measurement
+
+**What you are looking for:** a voltage difference between the GPU PSU ground
+domain and the motherboard PSU ground domain. In a correctly bonded system this
+is essentially zero. Anything above a few tens of mV, especially if it moves with
+load, means return current is finding a path it should not — and that path is
+through the PCIe connectors' ground pins, which is exactly where it would corrupt
+signalling.
+
+**Tools:** any decent DMM on DC millivolts. An oscilloscope would be better (it
+would show noise and transients a DMM averages away), but a DMM answers the
+question well enough to act on.
+
+**Safety first.** Mains-connected supplies, high current, exposed terminals:
+
+- Measure **ground-to-ground only**. Never probe between a ground and a 12V rail
+  with a meter set to a low range.
+- Keep one hand behind your back on live work. Do not let a probe slip across
+  adjacent terminals — an accidental short on an HP 1500W breakout board is
+  violent.
+- Use the DC millivolt range, not AC, not ohms. Never use continuity/ohms on a
+  powered system.
+- If anything feels wrong, power down and use test point (A) below instead — it
+  is safe and still informative.
+
+**Where to probe.** Three reference points, in increasing order of usefulness:
+
+- **(A) Chassis-to-chassis, powered off.** Ohms between a GPU breakout board
+  ground screw and the motherboard standoff. Should be well under 1 Ω. A high or
+  unstable reading here means the bonding is bad and you have your answer without
+  ever powering on.
+- **(B) Breakout ground → PSU ground, idle.** DMM in DC mV between a ground
+  terminal on one Acxico breakout board and a black wire / ground terminal on the
+  Corsair. Machine powered, GPUs idle.
+- **(C) Same two points, under full load.** The reading that matters. Needs all 8
+  GPUs working, so take it while a renter is hammering the machine.
+
+**Also worth taking:** between two *different* HP breakout boards. The HP units
+are daisy-chained, so current sharing between them is itself a suspect, and a
+difference here would point at the daisy-chain rather than the HP/Corsair split.
+
+**Reading the result:**
+
+| Idle | Under load | Interpretation |
+|---|---|---|
+| < 10 mV | < 10 mV | Theory dead. Move to lead #2 (socket/CPU). |
+| < 10 mV | 50 mV+ | **Strong hit.** Load-dependent offset — return current is sharing a path it should not. |
+| 50 mV+ | 50 mV+ | Static offset. Bonding problem, present at all times — fits idle hangs well. |
+| Unstable / jumping | any | Intermittent bond. Worst case for diagnosis, best fit for intermittent faults. |
+
+Record the actual numbers, idle and loaded, whatever they are. A clean near-zero
+result is just as valuable — it eliminates the leading theory and promotes socket
+seating to the top before the rebuild.
+
+**If it confirms:** the fix is bonding the ground domains together — a heavy
+(12–14 AWG) ground strap between the GPU PSU ground and the motherboard PSU
+ground, keeping the connection short and low-impedance. Do this at the rebuild.
+Note that bonding fixes the *symptom*; if one supply is faulty it still needs
+replacing, which the PMBus blindness (all PSU sensors `Disabled`) makes harder to
+determine.
+
+**Timing.** Do this before the 09/25 swap, while the machine is still assembled
+and under real load. Once the rig is apart the loaded reading is gone, and it is
+the one that matters. It is non-destructive and does not disturb the rental.
 
 ### 2. CPU / socket seating
 
@@ -340,8 +433,9 @@ Before teardown:
 - [ ] Back up `/var/lib/vastai_kaalia/machine_id` — **this is the Vast identity**.
       Losing it resets reliability history.
 - [ ] Back up `/etc/gpu_monitor.conf`.
-- [ ] Measure PSU ground potential (see lead #1) — idle and under load.
-      Take the loaded reading while intake air is hot; that is the worst case.
+- [ ] **Measure PSU ground potential (see lead #1) — idle AND under load.**
+      The loaded reading is the one that matters and it is only available while
+      the rig is assembled and rented. Once it is apart, that data is gone.
 - [ ] BIOS screenshots via iKVM: Above 4G Decoding, Resizable BAR, IOMMU, PCIe
       settings.
 
