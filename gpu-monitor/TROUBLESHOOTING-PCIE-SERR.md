@@ -46,6 +46,8 @@ intervention.
 | 09/17 15:55 | 14× PERR at boot | after power cycle |
 | 09/17 ~21:42 | **Second hard hang, zero logs anywhere** | `pcie_ports=native` active |
 | 09/17 21:50 | 14× PERR at boot | after power cycle |
+| 09/18 23:28, 09/19 03:21 | two cgroup OOM kills, tenants at ~170–178 GB | 8 tenants |
+| 09/19 ~17:20 | **Third hang — memory-exhaustion livelock, cause identified** | heavy multi-tenant load |
 | 09/17 23:31 | `MB_Air_Inlet_T` **Upper Critical**, 50°C | 8/8 rented, ~3.1kW load |
 
 The single most important row is **09/17 ~21:42**, explained below.
@@ -251,9 +253,81 @@ losing throughput. `GPU_FAN_FLOOR=("5:80")` exists to correct this and is
 unnoticed for a long time because GPU 5 is the *coolest* card at idle; it only
 becomes the limiting one under a full 8-GPU load.
 
+### The third hang was memory exhaustion, not hardware
+
+09/19 ~17:20, after 1 day 6 hours of heavy multi-tenant load. Unlike the first
+two, **this one left a trail**, and it points somewhere else entirely.
+
+```
+17:14:59  systemd-journald: Under memory pressure, flushing caches.
+17:15:05  Under memory pressure, flushing caches.
+17:17:58  Under memory pressure, flushing caches.
+   ...    (accelerating)
+17:19:34  Under memory pressure, flushing caches.
+17:19:36  ... every 2 seconds ...
+17:20:15  Under memory pressure, flushing caches.
+          [host stops responding]
+```
+
+Five minutes of escalating memory pressure ending in silence. That is a
+**reclaim livelock**: the kernel is alive but spending all its time trying to
+free memory and never making progress. It is not a crash, which is why nothing
+panicked and nothing was logged beyond journald's own complaints.
+
+**The BMC was queried while the host was hung** — the first time this was done
+during a live hang — and every rail was in spec:
+
+```
+VCC_12_RUN    12.000 V   ok      CPU_CORE0     0.820 V   ok
+VDD_12_RUN    11.826 V   ok      CPU_SOC       1.014 V   ok
+VDD_5_RUN      4.624 V   ok      VDD_33_RUN    3.300 V   ok
+```
+
+plus `Main Power Fault: false`, `Power Control Fault: false`, `Cooling/Fan
+Fault: false`, and no new SEL entry. The board was electrically healthy
+throughout.
+
+**Correction to an earlier finding in this document.** `VDD_5_RUN = 4.62V` was
+recorded above as "below the ATX 4.75V minimum" and treated as supporting
+evidence for the power-delivery theory. The board's own lower critical threshold
+is **4.487V**, so the BMC considers 4.624V normal — and it reads *identically*
+whether the host is running or hung. That steadiness indicates it is simply
+where this board's 5V sensor sits, not an anomaly. It should not have been
+counted as evidence.
+
+**What this rules out:** sustained rail droop or sag as the hang mechanism.
+
+**What it does not rule out:** the BMC cannot see the HP PSU rails at all (all
+PSU sensors report `Disabled`), a common-mode ground offset would not appear in
+single-ended rail readings, and the BMC samples far too slowly to catch a
+microsecond transient.
+
+**What it does not explain:** the 09/17 hangs. That boot's log ended mid-routine
+(`nvidia-smi -pm 1` at 21:42:27) with no pressure messages at all, and the
+machine was idle. Either there are two distinct failure modes here, or the
+earlier ones livelocked before journald could complain. Treat them as separate
+until evidence says otherwise.
+
+**Context.** Two cgroup OOM kills preceded it (09/18 23:28 and 09/19 03:21),
+each on a tenant holding 170–178 GB of a 503 GB host, with 26 GB already in
+swap. The kernel OOM killer fired successfully on those two occasions; on the
+third it did not arrive before the system wedged. Swap thrashing to the root
+NVMe under reclaim pressure makes livelock more likely, not less, since reclaim
+then stalls on disk I/O.
+
+**Mitigation** (software, available now, independent of the board swap):
+`systemd-oomd` or `earlyoom` kills a runaway cgroup using pressure-stall
+information *before* the kernel's own OOM killer would act, which is precisely
+the gap that produced this hang.
+
 ## Open leads
 
-Ranked by how well each explains *both* boards and *both* failure modes.
+Ranked by how well each explains the **SERR/PERR events and the two 09/17
+hangs**. The 09/19 hang has its own explanation (see above) and is excluded.
+
+The nominal-rail reading taken during that hang weakens lead #1 as a *sag*
+mechanism while leaving the ground-offset variant intact, and correspondingly
+strengthens lead #2.
 
 ### 1. Ground potential offset between PSU domains (leading)
 
@@ -368,6 +442,21 @@ Inspection of the removed CPU showed no visibly bent pins and it seated with a
 normal click, so this is not confirmed — but "looks flat" does not rule out
 marginal contact, and the rebuild is the opportunity to eliminate it via correct
 torque sequence.
+
+**The CPU is as much a constant as the cabling is.** This was raised early in the
+investigation and under-weighted: the same CPU moved from board #1 to board #2.
+Any theory built on "what did not change between the two boards" applies to it
+exactly as well as it applies to the PSUs and wiring.
+
+The 09/19 BMC snapshot sharpens this. A host that stops executing while its
+board reports clean power, no faults, and normal temperatures fits a fault
+inside the CPU complex — core, IO die, or socket contact — better than anything
+external. A failure there also destroys the thing that would have logged it,
+which matches three hangs producing no kernel output.
+
+This makes the socket inspection and torque work on 09/25 the **most important**
+part of the rebuild rather than a secondary precaution. Photograph the socket
+under raking light before the CPU goes in, and follow the SP5 sequence exactly.
 
 ### 3. Drive / M.2 / retimer marginality
 
