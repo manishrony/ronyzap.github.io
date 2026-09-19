@@ -16,6 +16,73 @@ demoted — see "What the evidence ruled out".
 
 ---
 
+## Current diagnosis (2026-09-19)
+
+Three hangs and two classes of PCIe error have been investigated. They are
+**not one fault**. Best current reading:
+
+| Observation | Status | Cause |
+|---|---|---|
+| 14× PERR at every cold boot | **Explained, benign** | Marginal Gen5 x2 link through 2 retimers, negotiating during training. Corrected, Advisory Non-Fatal, endpoint-only. |
+| Hang 09/19 17:20 | **Explained** | Memory-exhaustion reclaim livelock. Unrelated to PCIe. Fixable in software. |
+| Runtime SERRs on `00:01.4` / `00:01.5` | **Unexplained** | — |
+| Hangs 09/17 15:07 and ~21:42 | **Unexplained** | — |
+
+### Leading hypothesis for what remains
+
+**A marginal CPU IO die or SP5 socket contact affecting one root complex.**
+
+The reasoning, in the order the evidence supports it:
+
+1. **The fault localizes to one root complex, not to devices.** Every runtime
+   SERR has landed on `00:01.4` or `00:01.5` — sibling *functions of the same
+   Genoa IO-die root complex*, not independent slots. Swapping drives and
+   removing one NVMe moved the fault between siblings rather than eliminating
+   it. That pattern points upstream of the devices.
+
+2. **It crossed motherboards.** Board #1 faulted on GPU slots 0/1; board #2 on
+   these NVMe ports. The CPU moved between them, as did the PSUs and cabling.
+
+3. **Localization discriminates between the two survivors.** A PSU ground offset
+   would be diffuse — it rides every link spanning the domains, so faults should
+   scatter across slots. They do not. A fault inside one root complex produces
+   exactly the clustering observed.
+
+4. **The silence fits.** Three hangs, zero kernel output, even on a boot running
+   `pcie_ports=native` with the kernel explicitly watching for PCIe errors. A
+   failure inside the CPU complex destroys the thing that would record it.
+
+5. **The board was electrically healthy during a hang.** BMC queried live on
+   09/19: all rails in spec, no power, cooling or chassis faults, no SEL entry.
+
+**Confidence: moderate. This is not proven**, and two alternatives remain live:
+
+- **PSU ground offset** (lead #1 below) — weakened by the localization argument
+  and the nominal rails, but the BMC cannot see the HP PSU rails, common-mode
+  offsets, or fast transients, so it is not excluded.
+- **Two independently marginal boards** — improbable, but both are used units and
+  coincidence has not been ruled out.
+
+### The test that would settle it
+
+The 09/25 rebuild changes **two variables at once**: new board *and* corrected
+socket torque. That makes its result ambiguous in one direction:
+
+| Outcome after rebuild | Interpretation |
+|---|---|
+| Faults **persist** | **CPU indicted.** It is the only major component unchanged across three boards' worth of evidence. |
+| Faults **stop** | Ambiguous — could be the board, could be the torque. Does not clear the CPU. |
+
+To get a clean answer, the CPU would have to be swapped independently. If a
+spare SP5 part is ever available, that is the decisive experiment.
+
+**Practical consequence:** treat socket preparation on 09/25 as the highest-value
+work of the rebuild — raking-light inspection photographed before the CPU goes
+in, and the SP5 torque sequence followed exactly. It is the only variable you can
+influence that the leading hypothesis depends on.
+
+---
+
 ## Symptom
 
 Two distinct things happen, and it took a while to establish they may not be the
