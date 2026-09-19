@@ -7,10 +7,12 @@ This is a diagnosis record, not a runbook — the fault is not resolved. It exis
 so the evidence survives the board swap, and so the same ground isn't re-covered
 from scratch on the replacement.
 
-Status as of **2026-09-17**: root cause **not identified**. The leading theories
-are power delivery and CPU/socket seating. The NVMe-link theory, which drove most
-of the early work, has been substantially demoted — see "What the evidence ruled
-out".
+Status as of **2026-09-19**: root cause of the **SERR/PERR events and the two
+09/17 hangs** is still **not identified**; the leading theory is now CPU/socket,
+with a PSU ground offset second. The **third hang (09/19) is explained** — a
+memory-exhaustion livelock, unrelated to the PCIe fault and fixable in software.
+The NVMe-link theory, which drove most of the early work, has been substantially
+demoted — see "What the evidence ruled out".
 
 ---
 
@@ -46,11 +48,13 @@ intervention.
 | 09/17 15:55 | 14× PERR at boot | after power cycle |
 | 09/17 ~21:42 | **Second hard hang, zero logs anywhere** | `pcie_ports=native` active |
 | 09/17 21:50 | 14× PERR at boot | after power cycle |
+| 09/17 23:31 | `MB_Air_Inlet_T` **Upper Critical**, 50°C | 8/8 rented, ~3.1kW load |
 | 09/18 23:28, 09/19 03:21 | two cgroup OOM kills, tenants at ~170–178 GB | 8 tenants |
 | 09/19 ~17:20 | **Third hang — memory-exhaustion livelock, cause identified** | heavy multi-tenant load |
-| 09/17 23:31 | `MB_Air_Inlet_T` **Upper Critical**, 50°C | 8/8 rented, ~3.1kW load |
 
-The single most important row is **09/17 ~21:42**, explained below.
+The two rows that matter most are **09/17 ~21:42** (a hang on a kernel watching
+for PCIe errors that logged none) and **09/19 ~17:20** (a hang with an
+identified, unrelated cause). Both are explained below.
 
 ---
 
