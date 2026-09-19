@@ -386,10 +386,48 @@ third it did not arrive before the system wedged. Swap thrashing to the root
 NVMe under reclaim pressure makes livelock more likely, not less, since reclaim
 then stalls on disk I/O.
 
-**Mitigation** (software, available now, independent of the board swap):
-`systemd-oomd` or `earlyoom` kills a runaway cgroup using pressure-stall
-information *before* the kernel's own OOM killer would act, which is precisely
-the gap that produced this hang.
+**Mitigation — implemented 2026-09-19.** Swap disabled and `earlyoom` installed.
+
+The swap partition (`/dev/nvme0n1p2`, 256 GB) was `swapoff`'d and its fstab entry
+commented. On a 503 GB host with cgroup-limited containers, swap mostly granted
+the kernel 256 GB of runway to thrash into before admitting defeat — and that
+thrash, on the same NVMe as root and `/var/lib/docker`, is the livelock. A tenant
+exceeding its limit should be OOM-killed promptly instead.
+
+```bash
+sudo swapoff -a
+sudo sed -i '/swap/s/^/#/' /etc/fstab
+sudo apt install -y earlyoom
+sudo tee /etc/default/earlyoom >/dev/null <<'CONF'
+EARLYOOM_ARGS="-m 10 -s 10 -r 3600 --avoid ^(systemd|sshd|dockerd|containerd|kaalia|monitor|launch_kaalia|gpu_monitor) --prefer ^(python|python3|ray|pt_main_thread)"
+CONF
+sudo systemctl restart earlyoom
+```
+
+Verified armed:
+
+```
+mem total: 515442 MiB, swap total:    0 MiB
+sending SIGTERM when mem <= 10.00% and swap <= 10.00%
+mem avail: 410063 of 515442 MiB (79.56%), swap free:    0 of    0 MiB ( 0.00%)
+```
+
+SIGTERM at ~50 GB available, SIGKILL at ~25 GB.
+
+**Two gotchas worth remembering:**
+
+- earlyoom requires free memory **and** free swap below threshold. With swap
+  present and largely unused it will *never fire*, which is how it looked
+  installed but inert on the first attempt. `swap total: 0 MiB` in its startup
+  log is the line that confirms memory alone governs.
+- `apt install` starts the service immediately, so it snapshots swap and reads
+  `/etc/default/earlyoom` **before** you have written either. Always `systemctl
+  restart earlyoom` afterwards and re-read the startup lines.
+
+`--avoid` keeps it away from sshd, docker and kaalia, so a kill never costs
+remote access or the Vast agent. Expect tenants to be OOM-killed sooner and more
+often: the trade is one dead container instead of eight lost rentals and a manual
+power cycle.
 
 ## Open leads
 
