@@ -1,7 +1,13 @@
 # Case file: zappa2 PCIe SERR/PERR and unexplained hard hangs
 
-Board under investigation: **TYAN S8056GME**, AMD Genoa/SP5, BIOS `5411B0030009`,
+Board under investigation: **TYAN S8056GME**, SP5, BIOS `5411B0030009`,
 8× RTX 5090, `machine_id 143690`.
+
+CPU: **AMD EPYC 9B14**, 96 cores / 192 threads. A cloud/OEM SKU rather than a
+retail part — worth knowing if a spare is ever needed for the swap test below,
+since these come from the secondary market.
+
+RAM: 515,443 MiB (503 GiB) against 260,856 MiB of VRAM — a **1.98× ratio**.
 
 This is a diagnosis record, not a runbook — the fault is not resolved. It exists
 so the evidence survives the board swap, and so the same ground isn't re-covered
@@ -30,7 +36,9 @@ Three hangs and two classes of PCIe error have been investigated. They are
 
 ### Leading hypothesis for what remains
 
-**A marginal CPU IO die or SP5 socket contact affecting one root complex.**
+**Marginal contact at the SP5 socket affecting one root complex** — most likely
+from uneven seating or torque, with a CPU die fault the less likely variant of
+the same lead.
 
 The reasoning, in the order the evidence supports it:
 
@@ -40,8 +48,15 @@ The reasoning, in the order the evidence supports it:
    removing one NVMe moved the fault between siblings rather than eliminating
    it. That pattern points upstream of the devices.
 
-2. **It crossed motherboards.** Board #1 faulted on GPU slots 0/1; board #2 on
-   these NVMe ports. The CPU moved between them, as did the PSUs and cabling.
+2. **It crossed motherboards** — and seating explains that better than silicon
+   does. A bad die travels with the part. Marginal socket contact does not travel
+   at all: it recurs because the same person installs the CPU the same way each
+   time. That accounts for two boards showing faults without requiring either
+   board *or* the CPU to be defective, which is the cheaper explanation.
+
+   SP5 is LGA-6096. Uneven clamping load leaves some pins in one region of the
+   socket making marginal contact, and that region maps to particular root
+   complexes — which is the clustering in point 1.
 
 3. **Localization discriminates between the two survivors.** A PSU ground offset
    would be diffuse — it rides every link spanning the domains, so faults should
@@ -60,6 +75,9 @@ The reasoning, in the order the evidence supports it:
 - **PSU ground offset** (lead #1 below) — weakened by the localization argument
   and the nominal rails, but the BMC cannot see the HP PSU rails, common-mode
   offsets, or fast transients, so it is not excluded.
+- **A CPU die fault** rather than a contact problem. Same lead, worse prognosis:
+  correct torque would not fix it. Considered less likely — EPYC dies rarely fail
+  this way, and the removed CPU showed no damage — but not excluded.
 - **Two independently marginal boards** — improbable, but both are used units and
   coincidence has not been ruled out.
 
@@ -71,7 +89,7 @@ socket torque. That makes its result ambiguous in one direction:
 | Outcome after rebuild | Interpretation |
 |---|---|
 | Faults **persist** | **CPU indicted.** It is the only major component unchanged across three boards' worth of evidence. |
-| Faults **stop** | Ambiguous — could be the board, could be the torque. Does not clear the CPU. |
+| Faults **stop** | Ambiguous — could be the board, could be the torque. Does not clear the CPU, but is consistent with the seating hypothesis being right. |
 
 To get a clean answer, the CPU would have to be swapped independently. If a
 spare SP5 part is ever available, that is the decisive experiment.
