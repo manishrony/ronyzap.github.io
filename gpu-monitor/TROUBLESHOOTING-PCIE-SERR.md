@@ -13,7 +13,7 @@ This is a diagnosis record, not a runbook — the fault is not resolved. It exis
 so the evidence survives the board swap, and so the same ground isn't re-covered
 from scratch on the replacement.
 
-Status as of **2026-09-19**: root cause of the **SERR/PERR events and the two
+Status as of **2026-09-21**: root cause of the **SERR/PERR events and the two
 09/17 hangs** is still **not identified**; the leading theory is now CPU/socket,
 with a PSU ground offset second. The **third hang (09/19) is explained** — a
 memory-exhaustion livelock, unrelated to the PCIe fault and fixable in software.
@@ -32,7 +32,20 @@ Three hangs and two classes of PCIe error have been investigated. They are
 | 14× PERR at every cold boot | **Explained, benign** | Marginal Gen5 x2 link through 2 retimers, negotiating during training. Corrected, Advisory Non-Fatal, endpoint-only. |
 | Hang 09/19 17:20 | **Explained** | Memory-exhaustion reclaim livelock. Unrelated to PCIe. Fixable in software. |
 | Runtime SERRs on `00:01.4` / `00:01.5` | **Unexplained** | — |
-| Hangs 09/17 15:07 and ~21:42 | **Unexplained** | — |
+| Hangs 09/17 15:07, 09/17 ~21:42, 09/20 ~23:49 | **Unexplained** | — |
+
+The 09/20 hang is the control that separates the two classes. It happened
+**after** swap was disabled and `earlyoom` armed, and its crashed boot log ends
+at `23:48:56` on a routine `containerd: shim disconnected` with **no memory
+pressure messages at all** — unlike 09/19, which logged five minutes of them.
+So the memory mitigation worked, and what remains is the original fault on its
+third occurrence.
+
+It also retires an assumption held earlier in this document: the unexplained
+hangs are **not** idle-only. 09/20 had container churn and an active renter.
+Load appears to be irrelevant in both directions, which is consistent with the
+temperature finding and with a contact-level fault that does not care what the
+machine is doing.
 
 ### Leading hypothesis for what remains
 
@@ -75,6 +88,11 @@ The reasoning, in the order the evidence supports it:
 - **PSU ground offset** (lead #1 below) — weakened by the localization argument
   and the nominal rails, but the BMC cannot see the HP PSU rails, common-mode
   offsets, or fast transients, so it is not excluded.
+
+  **Note on capturing rails during a hang:** the BMC reading must be taken
+  *before* the power cycle. On 09/20 it was taken afterwards and is therefore a
+  normal running value, not hang data. The 09/19 set remains the only
+  during-hang rail snapshot.
 - **A CPU die fault** rather than a contact problem. Same lead, worse prognosis:
   correct torque would not fix it. Considered less likely — EPYC dies rarely fail
   this way, and the removed CPU showed no damage — but not excluded.
@@ -136,6 +154,8 @@ intervention.
 | 09/17 23:31 | `MB_Air_Inlet_T` **Upper Critical**, 50°C | 8/8 rented, ~3.1kW load |
 | 09/18 23:28, 09/19 03:21 | two cgroup OOM kills, tenants at ~170–178 GB | 8 tenants |
 | 09/19 ~17:20 | **Third hang — memory-exhaustion livelock, cause identified** | heavy multi-tenant load |
+| 09/19 | swap disabled, `earlyoom` armed | mitigation for the above |
+| 09/20 ~23:49 | **Fourth hang — silent again, no memory pressure** | light container churn, one renter |
 
 The two rows that matter most are **09/17 ~21:42** (a hang on a kernel watching
 for PCIe errors that logged none) and **09/19 ~17:20** (a hang with an
