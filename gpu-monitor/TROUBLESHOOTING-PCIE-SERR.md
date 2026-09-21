@@ -469,8 +469,29 @@ level by `ftgmac100 eth1: NCSI: Handler for packet type 0x82 returned -19`
 
 This is the previously confirmed BMC↔OCP sideband fault. It is **unrelated to
 the NVMe hangs**, but two consequences matter: the BMC sits in a permanent retry
-loop, and any monitoring built on BMC-side NIC telemetry will be unreliable. A
-new motherboard will not necessarily fix it, since the OCP card carries over.
+loop, and any monitoring built on BMC-side NIC telemetry will be unreliable.
+
+**Correction, 2026-09-21, from the new board's BMC dump.** The new S8056 was
+tested at BMC firmware `1.13.0` before any OCP card was installed, and its log
+was clean — no MCTP/NC-SI storm at all. That was read at the time as "the
+sideband bus has nothing to poll without a card," implying the storm was
+specific to the Intel OCP NIC.
+
+That reading is wrong. The same board, **still with no OCP card installed**,
+was then flashed to BMC firmware `4.06.0` and rebooted. The storm reappeared
+immediately (62 CRITICAL lines within 90 seconds of boot), identical signature,
+with no card present to poll. **The fault therefore tracks the BMC firmware
+version, not the OCP card.** `1.13.0` on this board: clean. `4.06.0` on this
+board: storm. `4.06.0`/equivalent on the old board: storm. The Intel X710's
+`VID=0x8086, PID=0x154B` identification lines seen in the old board's dump are
+a red herring for causation — they show the BMC finding *something* to poll
+during its NC-SI init sequence, but the timeout behavior itself does not
+require that card to be present.
+
+Practical effect: don't downgrade BMC firmware just to silence this — it is
+cosmetic, BMC-side only, and unrelated to the NVMe hangs. But stop expecting a
+motherboard swap to change it; the variable that matters is the firmware
+version, and this board is going to run at or above `4.06.0`.
 
 Benign entries also present, requiring no action: `rsyslogd` chown failures
 (read-only BMC rootfs), `ptpd2` startup failure, `ntpd` IPv6 bind failure,
