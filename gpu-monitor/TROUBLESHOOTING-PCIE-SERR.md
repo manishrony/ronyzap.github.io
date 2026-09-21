@@ -22,7 +22,7 @@ demoted — see "What the evidence ruled out".
 
 ---
 
-## Current diagnosis (2026-09-19)
+## Current diagnosis (2026-09-21, revised)
 
 Three hangs and two classes of PCIe error have been investigated. They are
 **not one fault**. Best current reading:
@@ -46,6 +46,74 @@ hangs are **not** idle-only. 09/20 had container churn and an active renter.
 Load appears to be irrelevant in both directions, which is consistent with the
 temperature finding and with a contact-level fault that does not care what the
 machine is doing.
+
+### The hangs are I/O stalls, not crashes — 09/21 console capture
+
+**This supersedes the earlier reading that the hangs were unexplained and
+silent.** On 09/21, a monitor happened to be attached during a hang and showed
+the kernel very much alive:
+
+```
+INFO: task monitor:5022  blocked for more than 122 seconds.
+INFO: task kaalia:5027   blocked for more than 122 seconds.
+INFO: task python:19668  blocked for more than 122 seconds.
+INFO: task python:19665  blocked for more than 122 seconds.
+Tainted: G  OE  6.8.0-124-generic
+zappa2 login:
+```
+
+The kernel was printing to console and getty was still issuing login prompts.
+The blocked tasks are in **uninterruptible sleep (D state)** — waiting on
+something that never returns.
+
+**This is an I/O stall, and it explains every previously inexplicable
+observation:**
+
+| Observation | Explanation under an I/O stall |
+|---|---|
+| No SSH | `sshd` must read from disk to authenticate; it blocks |
+| Nothing in `journalctl -b -1` past the cutoff | `journald` cannot write to a stalled disk |
+| No panic, no oops | Nothing crashed — the kernel is waiting, correctly |
+| No SEL entry | The board is healthy; this is not a hardware fault the BMC can see |
+| Rails nominal during a hang (09/19) | Correct — power was never involved |
+| No AER record despite `pcie_ports=native` | The kernel could not write the record to the disk that had just gone away |
+
+That last row retires the argument this document leaned on hardest. "A kernel
+watching for PCIe errors logged none, therefore no PCIe error occurred" assumed
+the kernel could still write. If the root filesystem's link dropped, it could
+not.
+
+**The stalled device is almost certainly `nvme0n1` at `03:00.0`** — behind root
+port `00:01.5`, the exact device the SERRs have pointed at from the start. Not
+confirmed: the console was photographed but the stack traces were not captured
+(`Alt+SysRq+W` would have dumped them). If this recurs before the rebuild, that
+is the one command worth running.
+
+### This unifies the whole case file
+
+The SERRs and the hangs are **the same fault at two severities**:
+
+```
+marginal contact in one root complex (00:01.x)
+        │
+        ├── mild  → link errors, corrected → SERR/PERR in the BMC SEL
+        │
+        └── severe → link drops → NVMe stops answering
+                         │
+                         └── every task touching the filesystem blocks in D state
+                                 │
+                                 └── host looks dead; nothing can be logged
+                                     because logging needs the dead disk
+```
+
+Board #1's GPU-slot faults fit as the same mechanism on a different root
+complex — which is why swapping drives and slots never helped and why the fault
+"moved" between `00:01.4` and `00:01.5`. It was never about the device.
+
+**The NVMe-link theory demoted earlier was closer to right than the demotion
+allowed**, though not in its original form: the drive is healthy (SMART
+pristine, current firmware), and the drive was never the problem. The *link* is,
+and what makes the link marginal is upstream of it.
 
 ### Leading hypothesis for what remains
 
@@ -112,7 +180,13 @@ socket torque. That makes its result ambiguous in one direction:
 To get a clean answer, the CPU would have to be swapped independently. If a
 spare SP5 part is ever available, that is the decisive experiment.
 
-**Practical consequence:** treat socket preparation on 09/25 as the highest-value
+**Practical consequence #1: get the OS off that link.** This was already
+recommended on DPC grounds and is now much stronger. With root on a SATA SSD, a
+drop of the `00:01.x` link becomes a lost data volume rather than a dead host —
+the kernel stays writable, logs the failure, and you get a diagnosable event
+instead of a silent brick. Do this at the rebuild.
+
+**Practical consequence #2:** treat socket preparation as the highest-value
 work of the rebuild — raking-light inspection photographed before the CPU goes
 in, and the SP5 torque sequence followed exactly. It is the only variable you can
 influence that the leading hypothesis depends on.
