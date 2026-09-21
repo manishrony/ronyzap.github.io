@@ -292,6 +292,48 @@ Gen5 (32GT/s), **Width x2** (not x4), **through 2 retimers**. Gen5 signalling
 across retimers at reduced width is the most marginal configuration this drive
 could be in, which explains the correctable errors — but not the hangs.
 
+### The board's M.2 slots share one root complex — SATA is the only escape
+
+Confirmed on 2026-09-21 from the running host:
+
+```
+$ lspci -tv | head
+ +-01.2-[01]--                              # empty M.2 slot
+ +-01.3-[02]--                              # empty
+ +-01.5-[03]----00.0  Micron/Crucial 542b   # the NVMe, the failing link
+ ...
+ +-07.2-[09]--+-00.0  AMD FCH SATA Controller [AHCI mode]
+              \-00.1  AMD FCH SATA Controller [AHCI mode]
+```
+
+`00:01.2`, `00:01.3` and `00:01.5` are all functions of the **same** `00:01`
+host bridge. Every M.2 slot on this board hangs off the one root complex under
+suspicion, so **a second NVMe provides capacity, not isolation** — both drives
+share the fault and go away together.
+
+The AHCI controller at `00:07.2` sits on a **different host bridge**. It is the
+only storage path on this board that is independent of `00:01.x`. That makes
+"OS on SATA" a hardware-confirmed mitigation rather than an assumption.
+
+Physical connector not yet identified: the board has both a 7-pin SATA header
+near the top edge and two SlimSAS connectors silkscreened `PCIE0-15J/SATA`
+(BIOS-selectable PCIe/SATA, needing an SFF-8654 → 4× SATA breakout cable).
+Settle this from the Tyan S8056 manual's layout diagram before ordering.
+
+### The corrected errors are reported by the drive, not the root port
+
+```
+port_type: 0, PCIe end point
+vendor_id: 0xc0a9, device_id: 0x542b     # Micron/Crucial
+aer_agent=Receiver ID
+```
+
+`Receiver ID` means the **drive's** receiver is the side seeing bad symbols.
+This does not assign fault — marginal contact upstream produces exactly this
+signature at the downstream receiver — but it does keep the drive as a live,
+independently testable variable. Swapping the NVMe is therefore a zero-cost
+experiment worth doing during any teardown.
+
 ### The drive itself is healthy
 
 Crucial T705 4TB, firmware `PACR5111` (confirmed current). SMART pristine, never
@@ -764,10 +806,23 @@ Separately from the board swap, because a new board will not change it:
 
 During the rebuild:
 
-- [ ] Correct SP5 torque sequence.
-- [ ] **OS on a SATA SSD**, not the NVMe (see DPC section).
+- [ ] Correct SP5 torque sequence. **This is the experiment** — see the decision
+      note below.
+- [ ] Swap in a fresh 4TB NVMe in the same slot, to retire the drive as a
+      variable in the same teardown.
 - [ ] Reuse the same OS drive contents to preserve `machine_id`.
-- [ ] Both NVMe slots populated, so slot-vs-drive stays testable.
+- [ ] Record the AER baseline **before** powering down:
+      ```bash
+      cat /sys/bus/pci/devices/0000:03:00.0/aer_dev_correctable
+      ```
+      Re-read at the same uptime after the rebuild. This is the pass/fail
+      signal, and it is far faster than waiting for another hang.
+
+**Decision, 2026-09-21: SATA root is deferred.** The socket reseat is being
+tried first, on the reasoning that if it fixes the fault nothing else was
+needed. The cost accepted is that root stays on `00:01.5`, so a post-reseat
+failure is still a silent, unloggable brick. **A second hang after the reseat
+is the trigger to do the SATA root**, not to attempt a third mechanical fix.
 
 After first boot:
 
