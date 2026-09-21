@@ -230,6 +230,8 @@ intervention.
 | 09/19 ~17:20 | **Third hang — memory-exhaustion livelock, cause identified** | heavy multi-tenant load |
 | 09/19 | swap disabled, `earlyoom` armed | mitigation for the above |
 | 09/20 ~23:49 | **Fourth hang — silent again, no memory pressure** | light container churn, one renter |
+| 09/21 ~00:20 | **Fifth hang** — console showed `INFO: task ... blocked for more than 122 seconds`; the I/O-stall class is identified | one renter |
+| 09/21 ~02:4x | **Sixth hang — the cleanest instance yet, see below** | one renter, idle |
 
 The two rows that matter most are **09/17 ~21:42** (a hang on a kernel watching
 for PCIe errors that logged none) and **09/19 ~17:20** (a hang with an
@@ -340,6 +342,35 @@ variable. It is **not** testable in the same session as the board swap: two
 changes at once make a clean result uninterpretable. The drive stays as-is
 across the rebuild, and only becomes the next experiment if the new board
 reproduces the same AER count.
+
+### The sixth hang closes the question of what the failure is
+
+Measured live, while the host was hung, from another rig (2026-09-21):
+
+| Check | Result | What it means |
+|---|---|---|
+| `ping 192.168.1.196` | **0% loss, 0.22 ms** | kernel alive, servicing interrupts, network stack fine |
+| `ssh` | **cannot log in** | sshd needs the disk; the disk is gone |
+| BMC `sel elist` | **last entry `49a`, 01:52:03** — the boot burst | the BMC saw nothing at the hang |
+| BMC `sensor list` rails | **all nominal**, every rail in spec | no power event |
+
+Rails at hang time: `VCC_12_RUN` 12.000, `VDD_12_RUN` 11.739, `VDD_5_RUN` 4.624
+(lower critical 4.487), `VDD_33_RUN` 3.300, `CPU_SOC` 1.004. Nothing near a
+threshold.
+
+**A host that answers ICMP but cannot start a login shell is not crashed.** The
+kernel is running. Everything that touches the filesystem is blocked in D state.
+This is the I/O stall, and it is now confirmed rather than inferred.
+
+The BMC's silence is itself informative and should not be read as "no evidence".
+The BMC is an independent processor on standby power watching rails, thermals
+and the PCH. If the board were browning out, overheating, or taking a machine
+check, it would log it — it has done so for lesser events throughout this case.
+Six hangs, six times nothing, with every rail in spec, **rules out a power fault,
+a thermal trip, and any hard component fault the BMC can observe.** A downstream
+PCIe link state change is not in its sensor set, so a link drop is exactly the
+kind of failure that would produce this signature: total BMC silence, total
+kernel-log silence, a live network stack, and a dead filesystem.
 
 ### The drive itself is healthy
 
