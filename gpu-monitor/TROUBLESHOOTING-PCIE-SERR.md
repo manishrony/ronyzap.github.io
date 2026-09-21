@@ -372,6 +372,58 @@ PCIe link state change is not in its sensor set, so a link drop is exactly the
 kind of failure that would produce this signature: total BMC silence, total
 kernel-log silence, a live network stack, and a dead filesystem.
 
+### The console capture names the failure: a transport error, not a media error
+
+Photographed from the attached monitor during a hang (console output; the
+timestamps place it ~10h22m into the boot that began Sep 19 17:38, so it is one
+of the silent hangs, not necessarily the most recent):
+
+```
+[37313.714780] I/O error, dev nvme0n1, sector 5030994696 op 0x0:(READ) flags 0x80700 phys_seg 8
+[37313.714805] nvme0n1: I/O Cmd(0x2) @ LBA 5287508016, 256 blocks, I/O Error (sct 0x3 / sc 0x71)
+[37480.679661] INFO: task jbd2/nvme0n1p3-:2372 blocked for more than 122 seconds.
+[37480.681763] INFO: task systemd-journal:2453 blocked for more than 122 seconds.
+[37480.683910] INFO: task rasdaemon:3326        blocked for more than 122 seconds.
+[37480.686109] INFO: task rs:main Q:Reg:3661    blocked for more than 122 seconds.
+[37480.688372] INFO: task bash:3624             blocked for more than 122 seconds.
+[37480.690660] INFO: task monitor:5015          blocked for more than 122 seconds.
+[37480.692856] INFO: task kaalia:5023           blocked for more than 122 seconds.
+[37480.695257] INFO: task python:906201/2/3     blocked for more than 122 seconds.
+[38272.514742] systemd[1]: Failed to start systemd-journald.service - Journal Service.
+```
+
+**Decoding `sct 0x3 / sc 0x71`.** NVMe status code type `0x3` is *Path Related
+Status*. It is **not** `0x2`, *Media and Data Integrity Errors*. Within that
+class, `0x71` is *Host Aborted Command* (`NVME_SC_HOST_ABORTED_CMD` in the Linux
+driver).
+
+The distinction is the whole case:
+
+- The drive did **not** report bad data, a failed read, or a media defect.
+- The **host** cancelled the command because the controller stopped responding.
+- The fault is therefore in the **transport** — the PCIe path between the CPU
+  and the drive — not in the NAND, the drive controller, or the filesystem.
+
+This is independent confirmation of the SMART data, which was pristine, and it
+is what a link drop looks like from the kernel's side.
+
+**The cascade, and why six hangs left no logs.** 167 seconds after the I/O
+error, every disk-touching task is in D state. The list includes:
+
+- `jbd2/nvme0n1p3` — the ext4 journal thread for **root**. Once this blocks,
+  no write to the root filesystem can complete, by anyone.
+- `systemd-journal` — the journal writer. It cannot record what is happening.
+- `rasdaemon` — **the daemon whose sole job is logging hardware errors.**
+
+The logger was blocked by the very event it existed to record. The absence of
+kernel logs across all six hangs was never evidence that nothing happened; it
+was a direct consequence of the failure. Fourteen minutes later systemd gives
+up trying to restart journald entirely.
+
+This also confirms why the host still answers ICMP while refusing a login:
+network interrupts are serviced from memory, while `sshd` must read from a
+filesystem whose journal thread is blocked.
+
 ### The drive itself is healthy
 
 Crucial T705 4TB, firmware `PACR5111` (confirmed current). SMART pristine, never
