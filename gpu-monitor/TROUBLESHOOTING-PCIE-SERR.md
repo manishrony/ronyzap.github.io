@@ -262,7 +262,12 @@ Key properties:
     [ -f "$d/aer_dev_correctable" ] && echo "$d $(grep TOTAL "$d"/aer_dev_*)"
   done
   ```
-  Endpoint: 14. Root port: 0. Downstream-only.
+  Endpoint: 14. Root port: 0 at the time of that reading.
+
+  **Updated 2026-09-21:** the root port now reads
+  `aer_rootport_total_err_cor = 1`. The burst is still overwhelmingly
+  downstream, but "zero upstream" no longer holds exactly, so the baseline
+  to compare against after the rebuild is the **pair 14 / 1**, not 14 alone.
 - `aer_status 0x00002000` = bit 13, **Advisory Non-Fatal**.
 - All fire at t+6.5s, during link training, then stop. Stable for hours after.
 
@@ -775,7 +780,7 @@ The defensible claim, stated in terms the evidence supports:
 > across multiple boots.
 
 An idle box that wedges twice with no logged cause is not a workload or software
-failure. Attach the bundle from `capture-fault-evidence.sh`.
+failure. Attach the bundle from `gpu-monitor/capture-fault-evidence.sh`.
 
 ---
 
@@ -783,7 +788,8 @@ failure. Attach the bundle from `capture-fault-evidence.sh`.
 
 Before teardown:
 
-- [ ] Run `capture-fault-evidence.sh` and archive the tarball off-box.
+- [ ] Run `/home/ronyzap/ronyzap.github.io/gpu-monitor/capture-fault-evidence.sh`
+      (full path — it is not on `$PATH`) and archive the tarball off-box.
 - [ ] Back up `/var/lib/vastai_kaalia/machine_id` — **this is the Vast identity**.
       Losing it resets reliability history.
 - [ ] Back up `/etc/gpu_monitor.conf`.
@@ -815,12 +821,22 @@ During the rebuild:
       one, changing two things at once means a clean result answers nothing.
       One variable: the board.
 - [ ] Reuse the same OS drive contents to preserve `machine_id`.
-- [ ] Record the AER baseline **before** powering down:
-      ```bash
-      cat /sys/bus/pci/devices/0000:03:00.0/aer_dev_correctable
-      ```
-      Re-read at the same uptime after the rebuild. This is the pass/fail
-      signal, and it is far faster than waiting for another hang.
+- [x] **AER baseline captured 2026-09-21 02:21 UTC**, boot
+      `fde9aaf598e34503a3017806116b3f22`, host idle, ~29 min uptime:
+
+      | counter | path | value |
+      |---|---|---|
+      | `NonFatalErr` / `TOTAL_ERR_COR` | endpoint `03:00.0` | **14** |
+      | `aer_rootport_total_err_cor`    | root port `00:01.5` | **1** |
+
+      Every other endpoint counter (`RxErr`, `BadTLP`, `BadDLLP`, `Rollover`,
+      `Timeout`, `CorrIntErr`, `HeaderOF`) reads 0. Stable across three
+      consecutive reads, i.e. not accumulating while idle — the 14 are the
+      link-training burst and nothing since.
+
+      **Re-read both paths after the rebuild, at comparable idle uptime.**
+      Lower or zero = the board or its seating was the fault. Still 14/1 =
+      it was not, and the SATA root becomes the next step.
 
 **Decision, 2026-09-21: SATA root is deferred.** The socket reseat is being
 tried first, on the reasoning that if it fixes the fault nothing else was
