@@ -330,9 +330,11 @@ aer_agent=Receiver ID
 
 `Receiver ID` means the **drive's** receiver is the side seeing bad symbols.
 This does not assign fault — marginal contact upstream produces exactly this
-signature at the downstream receiver — but it does keep the drive as a live,
-independently testable variable. Swapping the NVMe is therefore a zero-cost
-experiment worth doing during any teardown.
+signature at the downstream receiver — but it does keep the drive as a live
+variable. It is **not** testable in the same session as the board swap: two
+changes at once make a clean result uninterpretable. The drive stays as-is
+across the rebuild, and only becomes the next experiment if the new board
+reproduces the same AER count.
 
 ### The drive itself is healthy
 
@@ -808,8 +810,10 @@ During the rebuild:
 
 - [ ] Correct SP5 torque sequence. **This is the experiment** — see the decision
       note below.
-- [ ] Swap in a fresh 4TB NVMe in the same slot, to retire the drive as a
-      variable in the same teardown.
+- [ ] **Move the existing Crucial T705 across untouched.** Do not change the
+      drive in the same session. No spare drives are on hand, and even with
+      one, changing two things at once means a clean result answers nothing.
+      One variable: the board.
 - [ ] Reuse the same OS drive contents to preserve `machine_id`.
 - [ ] Record the AER baseline **before** powering down:
       ```bash
