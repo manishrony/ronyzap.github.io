@@ -424,6 +424,58 @@ This also confirms why the host still answers ICMP while refusing a login:
 network interrupts are serviced from memory, while `sshd` must read from a
 filesystem whose journal thread is blocked.
 
+### The BMC's own log dump: it stayed up, and saw one anomaly
+
+A BMC-internal log dump (`/tmp/tyan_log`, pulled 2026-09-21 12:27 UTC) adds
+three things the IPMI SEL cannot show.
+
+**The BMC never reset.** Its kernel booted at `2026-09-21T01:51:16` and the log
+runs continuously to `12:27:19`, spanning the hang. Its silence during the hang
+was therefore a genuine absence of events, not a lost log or a BMC restart. This
+closes the last loophole in reading "all rails nominal, no SEL entry" as
+evidence.
+
+**KCS transmit failures cluster just before the hang** — the only BMC-side
+anomaly in the dump that is not the known NIC fault:
+
+```
+02:35:21.452  IPMIMain  [KCSIfc.c:519]  Error sending KCS packet - retrying
+02:35:21.452  IPMIMain  [KCSIfc.c:523]  Error sending KCS packet
+02:35:28.592  (same pair)
+02:35:39.782  (same pair)
+```
+
+Three failed transactions inside 18 seconds, with nothing comparable anywhere
+else in the log. KCS is the BMC-to-host CPU interface. **What this does not
+establish:** whether the BMC was failing to reach a host already going under, or
+whether a transaction in flight was interrupted by the fault itself. The
+direction is unknown from these lines alone. It is recorded because it is the
+first BMC-side signal that correlates in time with a hang at all, and because a
+repeat of the pattern on the new board would be meaningful.
+
+**The MCTP/NC-SI fault is unchanged and noisy.** In a seven-minute window:
+
+| count | message |
+|---|---|
+| 111 | `MCTP_ERROR: No Response for Application. Timing-out` |
+| 40 | `Transport MCTP NC-SI package failed` |
+| 40 | `invoke mctp_send_ncsi_pkt() - OEM failed(-3)` |
+
+The cycle repeats every ~11 seconds against the Intel OCP NIC
+(`VID=0x8086, PID=0x154B`, X710 family): `Found Intel OCP Card EID value(0x0a)`
+→ `NCSI -> Clear Initial State OK` → timeout → repeat. Corroborated at host
+level by `ftgmac100 eth1: NCSI: Handler for packet type 0x82 returned -19`
+(`-ENODEV`) in the BMC's boot messages.
+
+This is the previously confirmed BMC↔OCP sideband fault. It is **unrelated to
+the NVMe hangs**, but two consequences matter: the BMC sits in a permanent retry
+loop, and any monitoring built on BMC-side NIC telemetry will be unreliable. A
+new motherboard will not necessarily fix it, since the OCP card carries over.
+
+Benign entries also present, requiring no action: `rsyslogd` chown failures
+(read-only BMC rootfs), `ptpd2` startup failure, `ntpd` IPv6 bind failure,
+`spi-nor: probe of spi1.0 failed with error -2`.
+
 ### The drive itself is healthy
 
 Crucial T705 4TB, firmware `PACR5111` (confirmed current). SMART pristine, never
