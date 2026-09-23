@@ -32,6 +32,28 @@ fi
 
 # ── 2. Throttle monitor state ────────────────────────────────
 sec "2. Throttle state (busy-since files)"
+# classify_current_gpu_proc(): same substring patterns gpu_monitor.sh's
+# classify_workload() uses for mining/cracking, applied to whatever process
+# is CURRENTLY on the GPU right now — a busy-since file only proves the GPU
+# has been continuously busy with SOME process (it doesn't clear on a
+# workload change, only on true idle), so its age alone doesn't mean the
+# throttle actually fired. Confirmed live on Zappa1 (2026-09-23): a
+# wildrig-multi rental was replaced by a ComfyUI rental on the same GPU
+# without an idle gap, leaving a 127m-old busy-since file while the GPU sat
+# uncapped at 550W the whole time — this diag used to print that as
+# "THROTTLED", which was wrong.
+classify_current_gpu_proc() {
+  local idx="$1" pname
+  pname=$(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name --format=csv,noheader 2>/dev/null \
+    | awk -F', ' -v want="$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null | awk -F', ' -v i="$idx" '$1==i{print $2}')" \
+      '$1==want{print $3; exit}')
+  pname="${pname,,}"
+  case "$pname" in
+    *miner*|*srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*|*matador*|*wildrig*) echo "mining" ;;
+    *hashcat*|*hcxdump*|*hcxtools*|*johntheripper*|*john-the-ripper*) echo "cracking" ;;
+    *) echo "$pname" ;;
+  esac
+}
 now=$(date +%s); found=0
 for f in /var/tmp/gpu_monitor_gpu_busy_since_*; do
   [ -e "$f" ] || continue
@@ -41,7 +63,12 @@ for f in /var/tmp/gpu_monitor_gpu_busy_since_*; do
   [[ "$since" =~ ^[0-9]+$ ]] || { echo "  GPU $idx: unreadable ($f)"; continue; }
   elapsed=$(( now - since )); remaining=$(( GRACE_SEC - elapsed ))
   if (( remaining <= 0 )); then
-    echo "  GPU $idx: busy $((elapsed/60))m — THROTTLED (past grace ~$((elapsed/60-60))m ago)"
+    cur_cat=$(classify_current_gpu_proc "$idx")
+    if [[ "$cur_cat" == "mining" || "$cur_cat" == "cracking" ]]; then
+      echo "  GPU $idx: busy $((elapsed/60))m — THROTTLED (past grace ~$((elapsed/60-60))m ago, current: $cur_cat)"
+    else
+      echo "  GPU $idx: busy $((elapsed/60))m — NOT throttled (busy-since is stale from an earlier mining/cracking rental; current workload '${cur_cat:-idle}' isn't mining)"
+    fi
   else
     echo "  GPU $idx: busy $((elapsed/60))m — throttle in ~$((remaining/60))m"
   fi
