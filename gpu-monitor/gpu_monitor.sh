@@ -1245,7 +1245,14 @@ profit_throttle_target() {
 # top — whichever of curve/throttle is lower wins — and lifts automatically when
 # the workload/rental changes.
 thermal_adjust() {
-    [[ -n "$GPU_POWER_LIMIT" ]] && return   # manual override owns power; don't fight it
+    # GPU_POWER_LIMIT (manual override) replaces the thermal curve as the
+    # per-GPU baseline below, but must NOT bypass the workload/profit caps —
+    # those only ever lower target (never raise it), so a mining rental would
+    # otherwise sit at the override wattage forever with no throttle possible.
+    # Confirmed live on Zappa1 (2026-09-23): GPU_POWER_LIMIT=550 in
+    # /etc/gpu_monitor.conf caused this function to return here on every
+    # cycle, so workload_throttle_active() never ran and wildrig-multi mined
+    # uncapped at 549W for 1+ hour past the grace period.
     local throttle_cap=0 throttle_src="" workload_detected=0
     if workload_throttle_active; then
         workload_detected=1; throttle_src="named"
@@ -1298,7 +1305,11 @@ thermal_adjust() {
         temp=$(echo "$temp" | xargs)
         curlimit=$(printf "%.0f" "$(echo "$curlimit" | xargs)" 2>/dev/null || echo 0)
         [[ "$temp" =~ ^[0-9]+$ ]] || continue
-        target=$(thermal_target_power "$name" "$temp" "$curlimit" "$idx")
+        if [[ -n "$GPU_POWER_LIMIT" ]]; then
+            target="$GPU_POWER_LIMIT"   # manual override owns the baseline; workload/profit caps below still apply
+        else
+            target=$(thermal_target_power "$name" "$temp" "$curlimit" "$idx")
+        fi
         # Not-ideal workload: clamp to this GPU's own model's throttle ceiling
         # (never raise above it) — but ONLY the GPU(s) actually running the
         # offending workload. A neighbor GPU's renter must never inherit this
