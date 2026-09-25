@@ -47,6 +47,15 @@
    sudo reboot
    ```
 
+   **`sudo reboot` can hang instead of completing.** The affected GPU's own PCIe device is what
+   `reboot` needs to quiesce, and a card that has already fallen off the bus may not respond to
+   that shutdown handshake — the command (and your SSH session) can just sit there. Confirmed live
+   on zappa1 (2026-09-25): `sudo reboot` after a dual-GPU Xid 79 never returned; only pressing the
+   physical reset button on the motherboard actually cycled the box. **Give `sudo reboot` at most
+   ~30s to drop the SSH session — if it doesn't, stop waiting and power-cycle at the machine**
+   (physical reset/power button, or IPMI/BMC power-cycle if you have remote access to it). Don't
+   keep re-running `sudo reboot` from a hung session; it won't retry, it's just stuck.
+
    **Reboot immediately if the machine is vacant** (`gpu_occupancy` all `x`, no running
    containers). A delisted machine earns $0, so there is no reliability left to protect and
    waiting only extends the outage. This is the one case that overrides the "never reboot for
