@@ -648,6 +648,24 @@ RATCHET_UP_WHILE_VACANT="${RATCHET_UP_WHILE_VACANT:-1}"
 # tenant (for the free GPU) sees a rising or flat ask.
 RATCHET_UP_WHILE_PARTIAL="${RATCHET_UP_WHILE_PARTIAL:-1}"
 
+# When Vast's own reliability2 score for a machine is below this threshold,
+# the price ratchet-up step (PRICE_ADJUST_UP_MIN..MAX cents/cycle) is slowed
+# by RELIABILITY_SLOW_RATCHET_DIVISOR instead of applied at full speed.
+# Rationale: reliability2 < ~0.9 already suppresses the listing's marketplace
+# ranking/visibility (confirmed live, zappa1: reboot churn from a GPU swap +
+# Xid 79 faults dropped reliability2 from 0.97 to 0.72 across a single week),
+# so climbing the price back toward target WHILE reliability is depressed
+# compounds the problem — a renter is already less likely to see the listing,
+# and a higher price makes it less attractive on top of that, extending the
+# time needed to rebuild enough rental history to recover the score. Slowing
+# (not stopping) the ratchet keeps some upward pressure for when reliability
+# does recover, without actively fighting the recovery in the meantime.
+# reliability2 is only available when Vast returns it in the machines
+# payload; if missing for a cycle, ratchet speed is left at normal (no
+# false-positive throttling from a transient field-absence).
+RELIABILITY_RATCHET_THRESHOLD="${RELIABILITY_RATCHET_THRESHOLD:-0.90}"
+RELIABILITY_SLOW_RATCHET_DIVISOR="${RELIABILITY_SLOW_RATCHET_DIVISOR:-3}"
+
 # Micro-rentals (5-10 min jobs that launch, run briefly, and vanish -- e.g.
 # Promera/Goubli/LatentSync/MusicVideo-style short AI jobs, confirmed live
 # 2026-07-30) were wiping out hours of accumulated vacancy the instant
@@ -4041,11 +4059,13 @@ for m in data.get('machines', []):
     else:
         free_count = 0 if rented else num_gpus
     end_date = m.get('end_date') or ''
-    print('%s|%s|%s|%s|%s|%s|%s|%s' % (mid, rented, listed, gpu_name, cur_bid, num_gpus, free_count, end_date))
+    reliability2 = m.get('reliability2')
+    reliability2 = '%.4f' % reliability2 if reliability2 is not None else ''
+    print('%s|%s|%s|%s|%s|%s|%s|%s|%s' % (mid, rented, listed, gpu_name, cur_bid, num_gpus, free_count, end_date, reliability2))
 PYEOF
     [[ -n "$fetched_tmp" ]] && rm -f "$fetched_tmp"
 
-    while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus free_count end_epoch; do
+    while IFS='|' read -r mid rented listed gpu_name cur_bid num_gpus free_count end_epoch reliability2; do
 
         [[ -z "$mid" ]] && continue
 
@@ -4389,13 +4409,24 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
         # actually evaluates against, so the next occurrence pinpoints which
         # branch fired instead of requiring after-the-fact inference from
         # the summary line above.
-        log "  Machine $mid: [TRACE] rented=$rented free_count=$free_count num_gpus=$num_gpus fully_rented=$fully_rented fully_rented_secs=$fully_rented_secs fully_vacant=$fully_vacant vacancy_secs=$vacancy_secs idle_mode=$idle_mode idle_reset_file_exists=$([[ -f "$idle_reset_file" ]] && echo yes || echo no) RATCHET_UP_WHILE_FULL='${RATCHET_UP_WHILE_FULL:-1}' RATCHET_UP_WHILE_VACANT='${RATCHET_UP_WHILE_VACANT:-1}' RATCHET_UP_WHILE_PARTIAL='${RATCHET_UP_WHILE_PARTIAL:-1}' RATCHET_FULL_MIN_SECS='${RATCHET_FULL_MIN_SECS:-1800}' listed=$listed"
+        log "  Machine $mid: [TRACE] rented=$rented free_count=$free_count num_gpus=$num_gpus fully_rented=$fully_rented fully_rented_secs=$fully_rented_secs fully_vacant=$fully_vacant vacancy_secs=$vacancy_secs idle_mode=$idle_mode idle_reset_file_exists=$([[ -f "$idle_reset_file" ]] && echo yes || echo no) RATCHET_UP_WHILE_FULL='${RATCHET_UP_WHILE_FULL:-1}' RATCHET_UP_WHILE_VACANT='${RATCHET_UP_WHILE_VACANT:-1}' RATCHET_UP_WHILE_PARTIAL='${RATCHET_UP_WHILE_PARTIAL:-1}' RATCHET_FULL_MIN_SECS='${RATCHET_FULL_MIN_SECS:-1800}' listed=$listed reliability2=${reliability2:-unknown}"
 
         # Random 1-2¢ step, either direction, applied below whenever more
         # than 2¢ off ${target_label} (or walking up from the start_price
         # anchor computed below, which is also more than 2¢ under target).
         local up_cents=$(( RANDOM % (PRICE_ADJUST_UP_MAX - PRICE_ADJUST_UP_MIN + 1) + PRICE_ADJUST_UP_MIN ))
         local down_cents=$(( RANDOM % (PRICE_ADJUST_DOWN_MAX - PRICE_ADJUST_DOWN_MIN + 1) + PRICE_ADJUST_DOWN_MIN ))
+
+        # Depressed reliability2 already suppresses this listing's marketplace
+        # ranking -- see RELIABILITY_RATCHET_THRESHOLD's setup comment above.
+        # Slow (not stop) the up-step so price doesn't fight the recovery.
+        if [[ -n "$reliability2" ]] && (( $(echo "$reliability2 < ${RELIABILITY_RATCHET_THRESHOLD:-0.90}" | bc -l) )); then
+            local up_cents_before=$up_cents
+            up_cents=$(( (up_cents + RELIABILITY_SLOW_RATCHET_DIVISOR - 1) / RELIABILITY_SLOW_RATCHET_DIVISOR ))
+            (( up_cents < 1 )) && up_cents=1
+            log "  Machine $mid: reliability2=$reliability2 below ${RELIABILITY_RATCHET_THRESHOLD:-0.90} — slowing ratchet-up ${up_cents_before}¢ → ${up_cents}¢"
+        fi
+
         local adjust_up adjust_down
         adjust_up=$(printf "%.4f" "$(echo "scale=4; $up_cents / 100" | bc)")
         adjust_down=$(printf "%.4f" "$(echo "scale=4; $down_cents / 100" | bc)")
