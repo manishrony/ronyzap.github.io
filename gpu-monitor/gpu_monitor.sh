@@ -4480,8 +4480,27 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
             new_price="$start_price"
             direction="↑ (was \$0 — anchored to median-${START_PRICE_DISCOUNT} \$$start_price)"
         elif (( $(echo "$cur_bid < $floor" | bc -l) )); then
-            new_price="$floor"
-            direction="↑ (below floor \$$floor)"
+            if [[ -n "$reliability2" ]] && (( $(echo "$reliability2 < ${RELIABILITY_RATCHET_THRESHOLD:-0.90}" | bc -l) )); then
+                # Same reliability-dampening as the ratchet-up branch below,
+                # applied to the floor-clamp too. Confirmed live 2026-09-30
+                # (zappa1, machine 138419): reliability2 fell 0.80->0.59 in
+                # under an hour (GPU0 handle/power-limit error, renter left
+                # with GPU_ERROR) while vacancy-decay had walked price to
+                # $0.32 (below the $0.42 floor); next cycle snapped straight
+                # back to $0.42 in one step, fighting the reliability
+                # recovery the same way an undamped target-ratchet would.
+                # Step toward the floor gradually instead of snapping.
+                local floor_gap floor_step
+                floor_gap=$(printf "%.4f" "$(echo "scale=4; $floor - $cur_bid" | bc)")
+                floor_step=$(printf "%.4f" "$(echo "scale=4; $floor_gap / ${RELIABILITY_SLOW_RATCHET_DIVISOR:-3}" | bc)")
+                (( $(echo "$floor_step < 0.01" | bc -l) )) && floor_step="0.01"
+                new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $floor_step" | bc)")
+                (( $(echo "$new_price > $floor" | bc -l) )) && new_price="$floor"
+                direction="↑ (below floor \$$floor, reliability2=$reliability2 — stepping toward floor \$$new_price instead of snapping)"
+            else
+                new_price="$floor"
+                direction="↑ (below floor \$$floor)"
+            fi
         elif (( idle_mode )) && [[ ! -f "$idle_reset_file" ]]; then
             # Just crossed IDLE_LISTING_THRESHOLD unrented — re-anchor to the
             # same low entry point a fresh listing gets, once per vacancy
