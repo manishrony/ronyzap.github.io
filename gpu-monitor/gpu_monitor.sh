@@ -708,9 +708,9 @@ SELFTEST_POS_FILE="/var/tmp/gpu_monitor_selftest_pos"
 SELFTEST_LAST_INSTANCE_FILE="/var/tmp/gpu_monitor_selftest_last_instance"
 
 # --- Listing ancillary prices (applied on every price update) ---
-PRICE_INET_UP=0.002    # $/GB upload   (~$2/TB)
-PRICE_INET_DOWN=0.002  # $/GB download (~$2/TB)
-# price_disk is hardcoded to $0.36/GB/month — never adjusted dynamically
+PRICE_INET_UP=0.004    # $/GB upload   (~$4/TB)
+PRICE_INET_DOWN=0.004  # $/GB download (~$4/TB)
+PRICE_DISK=0.39        # $/GB/month storage
 
 # ─────────────────────────────────────────────
 # Logging + structured JSON events
@@ -3782,7 +3782,7 @@ vastai_market_stats() {
     local encoded_q
     encoded_q=$(python3 -c "
 import urllib.parse, json, sys
-q = json.dumps({'gpu_name': {'eq': sys.argv[1]}, 'rentable': {'eq': True}})
+q = json.dumps({'gpu_name': {'eq': sys.argv[1]}, 'rentable': {'eq': True}, 'datacenter': {'eq': False}})
 print(urllib.parse.quote(q))
 " "$gpu_name" 2>/dev/null || echo "")
     local raw=""
@@ -3815,6 +3815,11 @@ try:
     # Filter by GPU name similarity when the API returned unfiltered results
     if gpu_filter:
         offers = [o for o in offers if gpu_filter in str(o.get('gpu_name', '')).upper()]
+    # Belt-and-suspenders: exclude datacenter hosts even if the API's own
+    # datacenter:false query param isn't honored server-side. We compete
+    # against community/non-datacenter listings, not enterprise bulk hosts,
+    # so letting those into the sample skews the median/mean down.
+    offers = [o for o in offers if not o.get('datacenter', False)]
     # dph_total is Vast's price for the WHOLE bundle, not per-GPU -- an 8x
     # RTX 5090 offer's dph_total (~$2-3/hr total) was being treated as a
     # single "price" on equal footing with a 1x offer's dph_total (~$0.30/hr)
@@ -3871,7 +3876,7 @@ import json, sys
 obj = {
     'machine':            int(sys.argv[1]),
     'price_gpu':          float(sys.argv[2]),
-    'price_disk':         0.36,
+    'price_disk':         float(sys.argv[8]),
     'price_inetu':        float(sys.argv[5]),
     'price_inetd':        float(sys.argv[6]),
     'price_min_bid':      float(sys.argv[3]),
@@ -3881,7 +3886,7 @@ obj = {
 }
 print(json.dumps(obj))
 " "$machine_id" "$new_price" "$floor_price" "$end_ts" \
-  "$PRICE_INET_UP" "$PRICE_INET_DOWN" "$MIN_CHUNK_GPUS" 2>/dev/null)
+  "$PRICE_INET_UP" "$PRICE_INET_DOWN" "$MIN_CHUNK_GPUS" "$PRICE_DISK" 2>/dev/null)
 
     if [[ -z "$body" ]]; then
         log "  ERROR: could not build create_asks body"; rm -f "$tmpf"; return 1
