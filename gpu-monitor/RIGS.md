@@ -162,6 +162,36 @@ rig already has one known-bad M.2 port.
 idle. That is the card, not a fault. `GPU_FAN_FLOOR=("5:80")` needs an X server with Coolbits
 to take effect and is currently inert.
 
+**Power limit override: 535W, not the repo default of 575W.** `/etc/gpu_monitor.conf` carries
+`POWER_LIMITS=("5090:535:78@475:80@450")`, deliberately below `gpu_monitor.sh`'s own baseline
+(575W). History:
+
+- Ran at 500W for a long time (well below the card's true `power.max_limit` of 600W, confirmed
+  via `nvidia-smi --query-gpu=power.limit,power.max_limit`). A miner (TensorCash) rented the
+  whole 8-GPU box on 2026-09-28, ran ~1h50m at a clean, uncapped 500W/GPU (no dynamic
+  `WORKLOAD_THROTTLE` ever fired — `busy-since` never armed), then left. Leading theory: a
+  power-sensitive miner checked `power.limit` vs `power.max_limit`, saw a 100W/16.7% deficit
+  from stock, reconciled it against real-time yield, and churned out — not a hardware or
+  pricing problem, just a visible power ceiling a yield-driven renter can check in seconds.
+- Raised **500W → 535W** same day (2026-09-28) as a middle ground: materially closer to stock
+  for renter retention, without fully undoing the reasons 500W was chosen in the first place —
+  this rig's intake air (`MB_Air_Inlet_T`) was already flapping at the 50°C threshold
+  intermittently at 500W, and it sits on a 30A@240V circuit shared with zappa1 (confirmed
+  live 2026-09-27: both rigs rebooted within the same minute on a breaker trip, well before
+  hitting the circuit's math on paper — see the breaker-trip note below if one gets added).
+  535W was picked to narrow the gap to stock without pushing straight to 575W into either of
+  those constraints.
+- The thermal safety steps (`78@475:80@450`) are unchanged — they're the overheat floor, not
+  the normal ceiling, and still apply as a derate curve above 535W's base.
+- Applying it requires editing `POWER_LIMITS` in `/etc/gpu_monitor.conf` directly (there is
+  no separate per-rig watts-only variable) and restarting `gpu-monitor.service`; confirm with
+  `nvidia-smi --query-gpu=power.limit,power.max_limit --format=csv` since the conf is only
+  sourced inside `tg_load_chat_id()` at startup, ahead of `set_power_limits()`, not at every
+  cycle.
+- If airflow or the shared-circuit trip recurs at 535W, that's the signal to drop back toward
+  500W rather than push higher — this rig has less thermal/electrical headroom than a clean
+  575W baseline assumes.
+
 ## Cross-rig heartbeat (opt-in, off by default)
 
 Confirmed live 2026-09-01 on zappa2: the host hit a fatal PCI SERR (BMC SEL:
