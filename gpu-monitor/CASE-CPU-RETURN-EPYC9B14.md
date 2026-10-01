@@ -97,6 +97,12 @@ that dispute.
 | ~09/25 | #3 | Board swap #2, CPU reseated with corrected torque |
 | 10/01 08:03 | #3 | Hard reboot. BMC SEL: 14× `PCI PERR` burst immediately preceding reboot. Kernel AER log: `device_id 0000:03:00.0`, corrected, same signature as board #2 |
 | 10/01 11:22 | #3 | `lspci -vv -s 03:00.0` shows NVMe link downgraded to x2 (rated x4) |
+| 10/01 ~13:50 | #3 | **Second silent hang, same day as the 08:03 crash.** Pre-crash kernel log (`journalctl -k -b -1`) ends cleanly at 13:45:43 on routine Docker veth churn — then nothing. No panic, no AER, no OOM, no soft lockup. ~8 min gap before the freeze was noticed and power-cycled via BMC from zappa1. Boot-time PERR burst on the recovery boot (13:53:51–52, ~14 events) is the known-benign link-training signature, not a separate fault. Clean SEL export captured post-recovery (775 lines, stable across two reads 2 min apart). |
+
+**Frequency note:** two independent hangs in one calendar day (08:03 and
+~13:50) is a step up from the prior cadence of roughly one every few days.
+If this pace continues, it strengthens the case that whatever is marginal
+(CPU lane/socket contact) is actively degrading rather than static.
 
 ---
 
@@ -107,8 +113,12 @@ that dispute.
 - Kernel log excerpt, 10/01 08:03:22, `device_id: 0000:03:00.0` corrected
   AER records
 - `lspci -vv -s 03:00.0` output, 10/01 11:22, showing the x4→x2 downgrade
-- `diagnostics` output bundle for the 10/01 incident (uptime, GPU state,
-  fault watcher section)
+- `diagnostics` output bundle for the 10/01 08:03 incident (uptime, GPU
+  state, fault watcher section)
+- `sel-elist-2026-10-01_1357.txt` — clean BMC SEL export covering the
+  second 10/01 hang (~13:50) and its recovery boot
+- `journalctl -k -b -1` excerpt for the ~13:50 hang, showing the silent
+  cutoff at 13:45:43
 - Photographs of CPU socket seating/torque at each of the 3 builds, if
   available
 
