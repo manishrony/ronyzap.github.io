@@ -10,16 +10,48 @@ claim was filed, but a **bank/card dispute** is being prepared as a fallback
 if the seller does not resolve it. This document is the evidence package for
 that dispute.
 
+**Important scope note (added 2026-10-01, after checking rasdaemon's
+persisted error database — see "What is confirmed vs. not" below): this
+case rests on two distinct phenomena, and only one of them is actually
+proven localized to the CPU.** The corrected SERR/PERR pattern is confirmed
+and localizes cleanly. The silent hangs — the failure that actually costs
+rentals/uptime — currently have **zero** AER/MCE/extlog signature across
+three separate occurrences, despite OS-managed AER (`pcie_ports=native`)
+being active and rasdaemon running throughout. That means the hangs cannot
+yet be attributed to the CPU, or to PCIe at all, by log evidence. The CPU
+swap test is still the right next step — it's mechanism-agnostic — but the
+dispute filing should not claim the hangs as CPU-localized evidence until
+that test confirms it.
+
+---
+
+## What is confirmed vs. not (read this before the sections below)
+
+| | Confirmed | Status |
+|---|---|---|
+| Corrected SERR/PERR burst at cold boot | Localizes to the CPU's root complex (`00:01.4`/`00:01.5`), reproducible across 3 boards | **Confirmed, CPU-consistent.** Independently corroborated as benign link-training noise, not itself causing an outage — see `TROUBLESHOOTING-PCIE-SERR.md`. |
+| Silent host hangs (the actual outage/reliability2 impact) | Checked `ras-mc-ctl --errors` / `/var/lib/rasdaemon/ras-mc_event.db` on 2026-10-01: **no new entries since 2026-09-03** — neither the 08:03 nor the ~13:50 hang produced an AER, MCE, or extlog record, despite rasdaemon running continuously and `pcie_ports=native` active | **Not confirmed as a PCIe or CPU-root-complex event.** A kernel configured to watch that logs nothing during the hang is evidence *no PCIe error occurred at the point of failure* — this was already found once before on board #2 (`TROUBLESHOOTING-PCIE-SERR.md`, "The hang is not arriving through the PCIe error path") and is now reconfirmed independently on board #3. |
+
+**Practical consequence:** the "why the CPU" argument below is solid for
+the SERR/PERR pattern itself. It is **not** solid for the hangs — those
+remain in the harder-to-diagnose bucket (power delivery, socket/CPU
+seating, IO-die silicon) that leaves no log trail at all. The swap test
+is the only evidence that will actually settle the hangs, regardless of
+mechanism.
+
 ---
 
 ## The claim, stated plainly
 
-> The same PCIe fault signature (corrected SERR/PERR bursts, and at least one
-> silent host hang, on the CPU's own IO-die root complex) has now been
-> observed across **three different motherboards**. The motherboard has been
-> replaced twice and the fault persists. The CPU is the only major component
-> that has remained constant across all three builds. By elimination, the
-> motherboard is cleared and the CPU is the leading suspect.
+> The same corrected PCIe fault signature (SERR/PERR bursts on the CPU's
+> own IO-die root complex) has now been observed across **three different
+> motherboards**. The motherboard has been replaced twice and the fault
+> persists. The CPU is the only major component that has remained constant
+> across all three builds. By elimination for *this specific signature*,
+> the motherboard is cleared and the CPU is the leading suspect. **The
+> separate question of what is causing the silent hangs is still open —
+> see "What is confirmed vs. not" above — and is being settled by the CPU
+> swap test, not by this log-based argument.**
 
 ---
 
@@ -50,13 +82,16 @@ that dispute.
    throughout (see `TROUBLESHOOTING-PCIE-SERR.md`, "The drive itself is
    healthy").
 
-4. **A board-level defect would not explain the hang's silence.** On board
-   #2, a host hang occurred with the BMC fully responsive, all rails
-   nominal, no SEL entry, and the kernel itself alive (serving ICMP,
-   printing D-state task dumps) but unable to complete disk I/O. That is
-   consistent with a fault inside the CPU's IO die taking down the one
-   link that happened to be carrying root, not a motherboard component
-   failing outright.
+4. **The hangs themselves are not yet attributable to the CPU — flagged
+   here for honesty, not to support the claim.** On board #2 and again on
+   board #3 (2026-10-01), a host hang occurred with the BMC fully
+   responsive, all rails nominal, no SEL entry, kernel alive (serving ICMP,
+   printing D-state task dumps) but unable to complete disk I/O — and
+   **no AER/MCE/extlog record at all**, confirmed via rasdaemon's own
+   persisted database. That absence of a PCIe signature means the hang
+   cannot currently be pinned on the CPU's IO die specifically, or on
+   PCIe as the failure path at all. It remains possible, but unproven —
+   the swap test is what will actually decide it.
 
 5. **The PERR burst pattern is consistent across all three boards** — ~14
    `Critical Interrupt #0x80 | PCI PERR` events in the BMC SEL, all within
@@ -101,8 +136,10 @@ that dispute.
 
 **Frequency note:** two independent hangs in one calendar day (08:03 and
 ~13:50) is a step up from the prior cadence of roughly one every few days.
-If this pace continues, it strengthens the case that whatever is marginal
-(CPU lane/socket contact) is actively degrading rather than static.
+If this pace continues, it strengthens the case that *something* is
+actively degrading rather than static — but per the scope note above, the
+hangs themselves have no log signature yet, so this is evidence of
+worsening frequency, not evidence of which component is degrading.
 
 ---
 
@@ -119,6 +156,10 @@ If this pace continues, it strengthens the case that whatever is marginal
   second 10/01 hang (~13:50) and its recovery boot
 - `journalctl -k -b -1` excerpt for the ~13:50 hang, showing the silent
   cutoff at 13:45:43
+- `ras-mc-ctl --errors` output and `/var/lib/rasdaemon/ras-mc_event.db`
+  state (2026-10-01) showing no AER/MCE/extlog entry for either hang —
+  documents the scope limit above, attach alongside the SERR evidence,
+  not as evidence *for* the CPU claim
 - Photographs of CPU socket seating/torque at each of the 3 builds, if
   available
 
@@ -159,8 +200,15 @@ physical evidence for the claim.
       moved across all 3 motherboards (this is the load-bearing assumption
       of the whole case — verify and state explicitly in the dispute filing)
 - [ ] Attach this file + the evidence list above to the bank dispute if the
-      seller does not resolve the existing defect claim
+      seller does not resolve the existing defect claim — **state the SERR
+      vs. hang distinction explicitly** (see "What is confirmed vs. not")
+      rather than presenting both as equally CPU-attributed
 - [x] ~~Decide whether to pursue CPU replacement in parallel~~ — ordered,
       see above
 - [ ] Run the swap-test procedure once the new CPU arrives (Oct 3–6) and
-      record the outcome in this file
+      record the outcome in this file — **this is now the only evidence
+      that will settle the hangs**, since log-based localization doesn't
+      reach them
+- [ ] If the swap test clears the CPU (fault persists), do not retroactively
+      claim the hangs as CPU evidence anywhere this file has been
+      referenced or attached
