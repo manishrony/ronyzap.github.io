@@ -122,6 +122,37 @@ If this pace continues, it strengthens the case that whatever is marginal
 - Photographs of CPU socket seating/torque at each of the 3 builds, if
   available
 
+## Replacement CPU ordered — the decisive swap test
+
+**Ordered 2026-10-01.** AMD EPYC 9B14, unlocked (`100-000000782`), from
+eGoods Supply (ebay.com, 25,784 feedback, 99.9% positive), $1,599, used
+condition, expected delivery **Oct 3–6**.
+
+This is being bought to run the **decisive test** called for in
+`TROUBLESHOOTING-PCIE-SERR.md`: swap only the CPU, keep board #3, the same
+Crucial T705 NVMe, and the same seating/torque procedure. See "The decisive
+swap test — procedure" below. **Do not dispose of or return the current
+CPU** until this test is complete and the dispute is resolved — it is the
+physical evidence for the claim.
+
+### Procedure, once the new CPU arrives
+
+1. Capture a final AER baseline and full `diagnostics` output on the
+   **current** CPU immediately before teardown, for a clean before/after.
+2. Change **only** the CPU. Same board, same NVMe, same slot, same SP5
+   torque sequence used on the board #2→#3 rebuild.
+3. First boot: capture AER baseline (`aer_dev_correctable` on `03:00.0`,
+   `aer_rootport_total_err_cor` on the root port) at comparable idle
+   uptime, same method as the 2026-09-21 baseline.
+4. Run the rig normally and watch for recurrence over the following days.
+
+### Reading the result
+
+| Outcome | Verdict |
+|---|---|
+| Fault clears on the new CPU, same board | **CPU confirmed defective.** Also exonerates board #3 (and retroactively boards #1/#2). Strongest possible evidence for the dispute — attach this test's before/after logs directly. |
+| Fault persists on the new CPU, same board | CPU is cleared. Points back at board #3 or a rig-level cause (see lead #1, PSU ground offset, in `TROUBLESHOOTING-PCIE-SERR.md`). **Do not proceed with the CPU dispute on weak grounds** if this happens — the Mitac board case (`CASE-MOTHERBOARD-RETURN-MITAC.md`) becomes the live one instead. |
+
 ## Open items
 
 - [ ] Confirm with seller/dispute whether the **same physical CPU** was
@@ -129,6 +160,7 @@ If this pace continues, it strengthens the case that whatever is marginal
       of the whole case — verify and state explicitly in the dispute filing)
 - [ ] Attach this file + the evidence list above to the bank dispute if the
       seller does not resolve the existing defect claim
-- [ ] Decide whether to pursue CPU replacement in parallel (see sourcing
-      notes in chat — EPYC 9B14 is OEM-exclusive; eBay/pulled-parts market
-      only) or wait on dispute outcome before spending on a replacement
+- [x] ~~Decide whether to pursue CPU replacement in parallel~~ — ordered,
+      see above
+- [ ] Run the swap-test procedure once the new CPU arrives (Oct 3–6) and
+      record the outcome in this file
