@@ -4149,16 +4149,29 @@ print(f"{d.get('p25', 0):.4f}")
 print(f"{d.get('median', 0):.4f}")
 print(f"{d.get('p75', 0):.4f}")
 print(f"{d.get('mean', 0):.4f}")
+print(int(d.get('count', 0)))
 PYEOF
 )
             market_price=$(printf '%s\n' "$mraw" | sed -n '1p')
             market_median=$(printf '%s\n' "$mraw" | sed -n '2p')
             market_p75=$(printf '%s\n' "$mraw" | sed -n '3p')
             market_mean=$(printf '%s\n' "$mraw" | sed -n '4p')
+            market_count=$(printf '%s\n' "$mraw" | sed -n '5p')
             [[ -z "$market_price"  ]] && market_price="0"
             [[ -z "$market_median" ]] && market_median="0"
             [[ -z "$market_p75"    ]] && market_p75="0"
             [[ -z "$market_mean"   ]] && market_mean="0"
+            [[ -z "$market_count" || ! "$market_count" =~ ^[0-9]+$ ]] && market_count="0"
+
+            # Visibility into actual 5090 (or whatever model) availability
+            # behind the percentiles above -- a price increase driven by a
+            # thin sample (a handful of offers) isn't the same evidence as
+            # one driven by a deep, liquid market. Flag thin samples so a
+            # rising target can be sanity-checked against real scarcity
+            # instead of taken at face value.
+            if (( market_count > 0 && market_count < "${MIN_MARKET_SAMPLE:-5}" )); then
+                log "  Machine $mid: market sample is thin (${market_count} non-datacenter ${gpu_name} offers) — percentiles less reliable than usual"
+            fi
 
             # Keep the raw, Vast-advertised (pre-discount) stats around too --
             # solely so the Telegram alert below can show both figures
@@ -4246,6 +4259,7 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
             market_median="0"
             market_p75="0"
             market_mean="0"
+            market_count="0"
             target_value="0"
             target_label="median"
             log "  Machine $mid: market data unavailable"
@@ -4404,7 +4418,7 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
         local idle_mode=0
         [[ "${free_count:-0}" -gt 0 ]] && (( vacancy_secs >= IDLE_LISTING_THRESHOLD )) && idle_mode=1
 
-        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | smoothed median=\$$smoothed_median mean=\$$smoothed_mean | last_success=\$$last_success | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid | vacant=${vacancy_hours}h$([[ $idle_mode -eq 1 ]] && echo ' (idle mode)')"
+        log "  Machine $mid: market p25=\$$market_price | median=\$$market_median | p75=\$$market_p75 | mean=\$$market_mean | available=${market_count:-0} offers | smoothed median=\$$smoothed_median mean=\$$smoothed_mean | last_success=\$$last_success | target(${target_label})=\$$target | floor=\$$floor | current=\$$cur_bid | vacant=${vacancy_hours}h$([[ $idle_mode -eq 1 ]] && echo ' (idle mode)')"
 
         # Trace-level decision inputs -- added 2026-07-31 to diagnose a
         # reproducible case (zappa1, machine 138419) where a manually-set
