@@ -10,24 +10,29 @@ claim was filed, but a **bank/card dispute** is being prepared as a fallback
 if the seller does not resolve it. This document is the evidence package for
 that dispute.
 
-**Scope note, updated 2026-10-02 after a fourth hang produced the first
-direct hardware-error evidence for the hangs themselves (see "The 2026-10-02
-hang: a fatal AER error, finally captured" below).** This case rests on two
-distinct phenomena. The corrected SERR/PERR pattern has been confirmed and
-localized since board #2. The silent hangs were, as of 2026-10-01, unproven
-by log evidence — three occurrences produced zero AER/MCE/extlog record
-despite rasdaemon running and `pcie_ports=native` active. **That changed on
+**Scope note, updated 2026-10-02 (second update, same day) after the fatal
+AER error recurred a second time with an identical signature, roughly an
+hour after the first capture.** This case rests on two distinct phenomena.
+The corrected SERR/PERR pattern has been confirmed and localized since
+board #2. The silent hangs were, as of 2026-10-01, unproven by log
+evidence — three occurrences produced zero AER/MCE/extlog record despite
+rasdaemon running and `pcie_ports=native` active. **That changed on
 2026-10-02**: a fourth hang was caught live on the physical console showing
 a `severity=Uncorrectable (Fatal)` PCIe error on `pcieport 0000:00:01.4` —
 the same CPU root-complex port implicated by every SERR burst since board
 #2 — seconds before the same I/O-stall cascade (jbd2, systemd-journal,
-rasdaemon itself all blocked). This is the first hang with a confirmed
-PCIe/CPU-root-complex signature. It does not retroactively explain the
-prior three silent hangs by itself, but it establishes that this root
-complex *can and does* produce fatal errors that lead directly into the
-hang pattern, which previously had to be inferred by elimination alone.
-The CPU swap test remains the decisive, mechanism-independent confirmation
-— run it as planned — but the dispute filing can now cite direct hardware
+rasdaemon itself all blocked). **A fifth hang, roughly an hour later, produced
+the byte-for-byte identical error** (`pcieport 0000:00:01.4`,
+`severity=Uncorrectable (Fatal)`, `device [1022:14ab]`, `[5] SDES (First)`),
+confirmed via a second console photograph. This is no longer a single
+captured incident — it is a **reproducible, recurring fatal fault on the
+same CPU-internal PCIe port**, twice within about an hour. It does not
+retroactively explain the three silent hangs from 10/01 by itself, but it
+establishes that this root complex *reliably* produces fatal errors that
+lead directly into the hang pattern, which previously had to be inferred by
+elimination alone. The CPU swap test remains the decisive, mechanism-independent
+confirmation — run it as planned — but the dispute filing can now cite direct,
+repeated hardware
 evidence for the hangs, not just for the boot-time SERR pattern.
 
 ---
