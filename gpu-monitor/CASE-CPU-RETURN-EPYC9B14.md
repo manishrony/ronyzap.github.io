@@ -10,18 +10,25 @@ claim was filed, but a **bank/card dispute** is being prepared as a fallback
 if the seller does not resolve it. This document is the evidence package for
 that dispute.
 
-**Important scope note (added 2026-10-01, after checking rasdaemon's
-persisted error database — see "What is confirmed vs. not" below): this
-case rests on two distinct phenomena, and only one of them is actually
-proven localized to the CPU.** The corrected SERR/PERR pattern is confirmed
-and localizes cleanly. The silent hangs — the failure that actually costs
-rentals/uptime — currently have **zero** AER/MCE/extlog signature across
-three separate occurrences, despite OS-managed AER (`pcie_ports=native`)
-being active and rasdaemon running throughout. That means the hangs cannot
-yet be attributed to the CPU, or to PCIe at all, by log evidence. The CPU
-swap test is still the right next step — it's mechanism-agnostic — but the
-dispute filing should not claim the hangs as CPU-localized evidence until
-that test confirms it.
+**Scope note, updated 2026-10-02 after a fourth hang produced the first
+direct hardware-error evidence for the hangs themselves (see "The 2026-10-02
+hang: a fatal AER error, finally captured" below).** This case rests on two
+distinct phenomena. The corrected SERR/PERR pattern has been confirmed and
+localized since board #2. The silent hangs were, as of 2026-10-01, unproven
+by log evidence — three occurrences produced zero AER/MCE/extlog record
+despite rasdaemon running and `pcie_ports=native` active. **That changed on
+2026-10-02**: a fourth hang was caught live on the physical console showing
+a `severity=Uncorrectable (Fatal)` PCIe error on `pcieport 0000:00:01.4` —
+the same CPU root-complex port implicated by every SERR burst since board
+#2 — seconds before the same I/O-stall cascade (jbd2, systemd-journal,
+rasdaemon itself all blocked). This is the first hang with a confirmed
+PCIe/CPU-root-complex signature. It does not retroactively explain the
+prior three silent hangs by itself, but it establishes that this root
+complex *can and does* produce fatal errors that lead directly into the
+hang pattern, which previously had to be inferred by elimination alone.
+The CPU swap test remains the decisive, mechanism-independent confirmation
+— run it as planned — but the dispute filing can now cite direct hardware
+evidence for the hangs, not just for the boot-time SERR pattern.
 
 ---
 
@@ -30,14 +37,16 @@ that test confirms it.
 | | Confirmed | Status |
 |---|---|---|
 | Corrected SERR/PERR burst at cold boot | Localizes to the CPU's root complex (`00:01.4`/`00:01.5`), reproducible across 3 boards | **Confirmed, CPU-consistent.** Independently corroborated as benign link-training noise, not itself causing an outage — see `TROUBLESHOOTING-PCIE-SERR.md`. |
-| Silent host hangs (the actual outage/reliability2 impact) | Checked `ras-mc-ctl --errors` / `/var/lib/rasdaemon/ras-mc_event.db` on 2026-10-01: **no new entries since 2026-09-03** — neither the 08:03 nor the ~13:50 hang produced an AER, MCE, or extlog record, despite rasdaemon running continuously and `pcie_ports=native` active | **Not confirmed as a PCIe or CPU-root-complex event.** A kernel configured to watch that logs nothing during the hang is evidence *no PCIe error occurred at the point of failure* — this was already found once before on board #2 (`TROUBLESHOOTING-PCIE-SERR.md`, "The hang is not arriving through the PCIe error path") and is now reconfirmed independently on board #3. |
+| Silent host hangs, 2026-10-01 (x2) | Checked `ras-mc-ctl --errors` / `/var/lib/rasdaemon/ras-mc_event.db`: **no new entries since 2026-09-03** — neither hang produced an AER, MCE, or extlog record, despite rasdaemon running continuously and `pcie_ports=native` active | **Not confirmed as a PCIe event by log evidence.** A kernel configured to watch that logs nothing during the hang means no PCIe error completed/reported at the point of failure — consistent with a link dying too abruptly for the error itself to be reported. |
+| Host hang, 2026-10-02 | Physical console (photographed, not recoverable from `journalctl` — see below) shows `pcieport 0000:00:01.4: PCIe Bus Error: severity=Uncorrectable (Fatal)`, `device [1022:14ab]` (AMD root port), immediately followed by the same D-state cascade (`jbd2`, `systemd-journal`, `rasdaemon` all blocked) | **Confirmed, CPU-root-complex-localized.** First hang with a direct hardware-error signature, on the exact port already implicated by the SERR pattern. |
 
-**Practical consequence:** the "why the CPU" argument below is solid for
-the SERR/PERR pattern itself. It is **not** solid for the hangs — those
-remain in the harder-to-diagnose bucket (power delivery, socket/CPU
-seating, IO-die silicon) that leaves no log trail at all. The swap test
-is the only evidence that will actually settle the hangs, regardless of
-mechanism.
+**Why this one hang shows a signature and the other three didn't:** `systemd-journal` is itself in the blocked-task list in the 2026-10-02 capture — journald froze mid-cascade, so this error never reached the persisted journal (`journalctl -k -b -1` genuinely has nothing, confirmed by direct check) even though `printk` wrote it straight to the console before the freeze completed. The three earlier hangs likely died too fast/completely for even that much to be written anywhere, console included. Different severity or timing of the same underlying fault, not a different fault — but this is inference, not something further log digging can confirm, since the only surviving record of the 10/02 event is the console photograph itself.
+
+**Practical consequence:** the "why the CPU" argument is now evidenced
+for both the SERR/PERR pattern *and* at least one of the hangs — not just
+inferred by elimination. The swap test is still the cleanest, most
+complete confirmation (it would settle all four incidents at once,
+mechanism aside) and should still be run and recorded as planned.
 
 ---
 
@@ -133,13 +142,14 @@ mechanism.
 | 10/01 08:03 | #3 | Hard reboot. BMC SEL: 14× `PCI PERR` burst immediately preceding reboot. Kernel AER log: `device_id 0000:03:00.0`, corrected, same signature as board #2 |
 | 10/01 11:22 | #3 | `lspci -vv -s 03:00.0` shows NVMe link downgraded to x2 (rated x4) |
 | 10/01 ~13:50 | #3 | **Second silent hang, same day as the 08:03 crash.** Pre-crash kernel log (`journalctl -k -b -1`) ends cleanly at 13:45:43 on routine Docker veth churn — then nothing. No panic, no AER, no OOM, no soft lockup. ~8 min gap before the freeze was noticed and power-cycled via BMC from zappa1. Boot-time PERR burst on the recovery boot (13:53:51–52, ~14 events) is the known-benign link-training signature, not a separate fault. Clean SEL export captured post-recovery (775 lines, stable across two reads 2 min apart). |
+| 10/02 ~12:1x–12:29 | #3 | **Third/fourth hang, first with a direct hardware-error signature.** Physical console shows `pcieport 0000:00:01.4: PCIe Bus Error: severity=Uncorrectable (Fatal)`, `device [1022:14ab]`, at uptime t=675s, then the same D-state cascade (`jbd2/nvme0n1p3`, `systemd-journal`, `rasdaemon`, `cron`, `kaalia`, `monitor` all "blocked for more than 122 seconds") starting at t=862s — 187s later. Confirmed via `uptime -s` (new boot 12:29:09) and a direct `journalctl -k -b -1` check that the persisted journal has **no record of the error** (`systemd-journal` itself was in the blocked list, so it never got flushed to disk) — the console photograph is the only surviving record. Recovered via BMC chassis power cycle from zappa1. |
 
-**Frequency note:** two independent hangs in one calendar day (08:03 and
-~13:50) is a step up from the prior cadence of roughly one every few days.
-If this pace continues, it strengthens the case that *something* is
-actively degrading rather than static — but per the scope note above, the
-hangs themselves have no log signature yet, so this is evidence of
-worsening frequency, not evidence of which component is degrading.
+**Frequency note:** four hangs across roughly 36 hours (two on 10/01, one
+more on 10/02) is a sharp step up from the prior cadence of roughly one
+every few days. Combined with the 10/02 incident's direct hardware-error
+signature on the same root-complex port flagged since board #2, this is
+now evidence both of worsening frequency and of which component is
+implicated — though the swap test remains the cleanest full confirmation.
 
 ---
 
@@ -156,6 +166,12 @@ worsening frequency, not evidence of which component is degrading.
   second 10/01 hang (~13:50) and its recovery boot
 - `journalctl -k -b -1` excerpt for the ~13:50 hang, showing the silent
   cutoff at 13:45:43
+- **Console photograph, 2026-10-02**, showing the fatal `pcieport
+  0000:00:01.4: PCIe Bus Error: severity=Uncorrectable (Fatal)` message and
+  the subsequent D-state task cascade — this is the strongest single piece
+  of evidence in the case; note in the filing that it is a physical console
+  capture, not a log file, because journald itself froze before persisting
+  the event
 - `ras-mc-ctl --errors` output and `/var/lib/rasdaemon/ras-mc_event.db`
   state (2026-10-01) showing no AER/MCE/extlog entry for either hang —
   documents the scope limit above, attach alongside the SERR evidence,
@@ -200,15 +216,15 @@ physical evidence for the claim.
       moved across all 3 motherboards (this is the load-bearing assumption
       of the whole case — verify and state explicitly in the dispute filing)
 - [ ] Attach this file + the evidence list above to the bank dispute if the
-      seller does not resolve the existing defect claim — **state the SERR
-      vs. hang distinction explicitly** (see "What is confirmed vs. not")
-      rather than presenting both as equally CPU-attributed
+      seller does not resolve the existing defect claim — **the 2026-10-02
+      fatal AER capture is now the strongest single piece of evidence;
+      lead with it**, alongside the SERR pattern
 - [x] ~~Decide whether to pursue CPU replacement in parallel~~ — ordered,
       see above
 - [ ] Run the swap-test procedure once the new CPU arrives (Oct 3–6) and
-      record the outcome in this file — **this is now the only evidence
-      that will settle the hangs**, since log-based localization doesn't
-      reach them
+      record the outcome in this file — now a confirming test rather than
+      the sole evidence, since the 10/02 capture already gives direct
+      hardware evidence for at least one hang
 - [ ] If the swap test clears the CPU (fault persists), do not retroactively
       claim the hangs as CPU evidence anywhere this file has been
       referenced or attached
