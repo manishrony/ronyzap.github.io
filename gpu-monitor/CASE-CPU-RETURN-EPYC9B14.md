@@ -244,3 +244,15 @@ physical evidence for the claim.
       unaffected if the IO die itself is failing broadly rather than just
       `00:01.4` specifically — revisit only if the CPU swap is delayed
       significantly past Monday
+- [x] ~~Confirm watchdog actually arms with a real action~~ — 2026-10-02:
+      first attempt (raw `ipmi_watchdog` module reload) left the BMC's
+      live timer at `Action: No action` — armed and counting down, but
+      would not have recovered anything on expiry. Fixed via systemd's
+      native hardware-watchdog integration instead
+      (`/etc/systemd/system.conf.d/watchdog.conf`, `RuntimeWatchdogSec=60`).
+      Confirmed: `WatchdogDevice=/dev/watchdog`, `RuntimeWatchdogUSec=1min`,
+      `ipmitool mc watchdog get` shows `Action: Hard Reset (0x01)` with the
+      countdown repeatedly resetting back toward 60s (54.9 → 60.0 → 56.9),
+      confirming systemd is actively petting it. A hang that stops systemd
+      itself (this failure's signature) will now trigger an automatic BMC
+      hard reset within ~60s instead of requiring manual detection.
