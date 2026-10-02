@@ -147,14 +147,19 @@ mechanism aside) and should still be run and recorded as planned.
 | 10/01 08:03 | #3 | Hard reboot. BMC SEL: 14× `PCI PERR` burst immediately preceding reboot. Kernel AER log: `device_id 0000:03:00.0`, corrected, same signature as board #2 |
 | 10/01 11:22 | #3 | `lspci -vv -s 03:00.0` shows NVMe link downgraded to x2 (rated x4) |
 | 10/01 ~13:50 | #3 | **Second silent hang, same day as the 08:03 crash.** Pre-crash kernel log (`journalctl -k -b -1`) ends cleanly at 13:45:43 on routine Docker veth churn — then nothing. No panic, no AER, no OOM, no soft lockup. ~8 min gap before the freeze was noticed and power-cycled via BMC from zappa1. Boot-time PERR burst on the recovery boot (13:53:51–52, ~14 events) is the known-benign link-training signature, not a separate fault. Clean SEL export captured post-recovery (775 lines, stable across two reads 2 min apart). |
-| 10/02 ~12:1x–12:29 | #3 | **Third/fourth hang, first with a direct hardware-error signature.** Physical console shows `pcieport 0000:00:01.4: PCIe Bus Error: severity=Uncorrectable (Fatal)`, `device [1022:14ab]`, at uptime t=675s, then the same D-state cascade (`jbd2/nvme0n1p3`, `systemd-journal`, `rasdaemon`, `cron`, `kaalia`, `monitor` all "blocked for more than 122 seconds") starting at t=862s — 187s later. Confirmed via `uptime -s` (new boot 12:29:09) and a direct `journalctl -k -b -1` check that the persisted journal has **no record of the error** (`systemd-journal` itself was in the blocked list, so it never got flushed to disk) — the console photograph is the only surviving record. Recovered via BMC chassis power cycle from zappa1. |
+| 10/02 ~12:1x–12:29 | #3 | **Fourth hang, first with a direct hardware-error signature.** Physical console shows `pcieport 0000:00:01.4: PCIe Bus Error: severity=Uncorrectable (Fatal)`, `device [1022:14ab]`, at uptime t=675s, then the same D-state cascade (`jbd2/nvme0n1p3`, `systemd-journal`, `rasdaemon`, `cron`, `kaalia`, `monitor` all "blocked for more than 122 seconds") starting at t=862s — 187s later. Confirmed via `uptime -s` (new boot 12:29:09) and a direct `journalctl -k -b -1` check that the persisted journal has **no record of the error** (`systemd-journal` itself was in the blocked list, so it never got flushed to disk) — the console photograph is the only surviving record. Recovered via BMC chassis power cycle from zappa1. |
+| 10/02 ~13:14 | #3 | **Fifth hang, byte-for-byte identical to the fourth**, roughly an hour later. Same `pcieport 0000:00:01.4: PCIe Bus Error: severity=Uncorrectable (Fatal)`, `device [1022:14ab]`, `[5] SDES (First)`. Second console photograph captured. Confirms the fault is reproducible and recurring, not a one-off. |
+| 10/02 13:40:34 | #3 | **Sixth incident — first since the IPMI/systemd watchdog was armed.** Kernel log shows `device_id: 0000:03:00.0`, `Error 12`/`Error 13, type: corrected` (not fatal this time — severity continues to vary between incidents). BMC SEL shows the familiar 14x `PCI PERR` burst at 13:40:20. **The watchdog worked as designed**: new boot's `gpu-monitor` service started at 13:40:37, a 3-second gap from the fault — automatic recovery, no manual power cycle needed. All active rentals on the machine were dropped (unavoidable on any hard reset, same as manual recovery); `reliability2` dipped 0.78→0.33 then recovered to ~0.59 within the hour as the box re-registered. |
 
-**Frequency note:** four hangs across roughly 36 hours (two on 10/01, one
-more on 10/02) is a sharp step up from the prior cadence of roughly one
-every few days. Combined with the 10/02 incident's direct hardware-error
-signature on the same root-complex port flagged since board #2, this is
-now evidence both of worsening frequency and of which component is
-implicated — though the swap test remains the cleanest full confirmation.
+**Frequency note:** six incidents across roughly 36 hours (two on 10/01,
+four on 10/02) is a sharp step up from the prior cadence of roughly one
+every few days. Combined with the 10/02 fatal AER captures — reproduced
+twice with an identical signature — on the same root-complex port flagged
+since board #2, this is now evidence both of worsening frequency and of
+which component is implicated — though the swap test remains the cleanest
+full confirmation. The watchdog (armed 2026-10-02, see Open Items) is now
+containing the damage per incident to ~1 minute of downtime plus the
+dropped rentals, regardless of how often it recurs before the CPU swap.
 
 ---
 
