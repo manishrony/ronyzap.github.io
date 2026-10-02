@@ -233,3 +233,14 @@ physical evidence for the claim.
 - [ ] If the swap test clears the CPU (fault persists), do not retroactively
       claim the hangs as CPU evidence anywhere this file has been
       referenced or attached
+- [x] ~~Decide on interim mitigation while waiting for the CPU~~ — 2026-10-02:
+      CPU confirmed arriving Monday (10/06), close enough that moving root
+      off the `00:01.4`/NVMe path to SATA was judged not worth the extra
+      downtime/risk for a fix about to become moot. **Interim mitigation is
+      the IPMI/systemd watchdog instead** (`RuntimeWatchdogSec=60` via
+      `/etc/systemd/system.conf.d/watchdog.conf`) — auto-recovers from a
+      hang in ~60s instead of waiting for manual detection, without
+      touching the storage layout. No guarantee SATA would even be
+      unaffected if the IO die itself is failing broadly rather than just
+      `00:01.4` specifically — revisit only if the CPU swap is delayed
+      significantly past Monday
