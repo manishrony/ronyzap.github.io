@@ -154,10 +154,12 @@ mechanism aside) and should still be run and recorded as planned.
 | 10/02 ~21:30 | #3 | **Eighth incident, different signature.** BMC SEL shows `S5/G2: soft-off` at 21:30:25 with **no preceding `IPMI_Power_Cycle` request** — not the watchdog this time. User manually unplugged AC power after observing the machine offline (`Power Unit PWR_Unit_Status \| AC lost` logged at 21:33:10, working again 21:33:13). **The active boot NVMe was moved from the lower slot (`00:01.4`/bus 03) to the upper slot (`00:01.5`/bus 04); an older spare drive was placed in the now-vacant lower slot.** Board topology check (`lspci -tv`) confirms this board has exactly two NVMe-capable M.2 slots, and **both are wired to `00:01.4`/`00:01.5`** — the same sibling root-complex pair already implicated in every SERR burst since board #2 (`00:01.2`/`00:01.3`, initially suspected as a free alternate slot, turn out to be unpopulated bridges for a feature this board doesn't have, not usable M.2 connectors). **This move is a reshuffle between two already-suspect ports, not a test against a clean/untested one** — there is no genuinely independent PCIe slot available on this board. If the fault recurs on the upper slot, that's unsurprising (both ports have history) and not new evidence either way; it does not substitute for the CPU swap test. |
 
 | 10/02 21:35:49 | #3 | **Recovery boot after the eighth incident — fault follows the port, not the physical drive.** Corrected AER (`Error 12`/`Error 13`) logged again on `device_id: 0000:03:00.0` (the lower slot, `00:01.4`) at boot — but that slot now holds the **older spare drive** swapped in during incident #8, not the original boot NVMe (moved to the upper slot). The fault recurred on the same port with a completely different physical drive installed, which rules out the specific NVMe unit as a cause even more strongly than before — this is now independent of both "which slot" and "which physical drive." Machine stable afterward: 26+ min clean uptime, all 8 GPUs under genuine heavy load (100% util, 534W, up to 74°C), no further incidents. |
+| 10/03 13:45:04–13:48:20 | #3 | **Ninth incident, another unplanned reboot.** BMC SEL shows `S0/G0: working` at 13:45:04 (boot complete) followed by the familiar benign 14× `PCI PERR` boot-training burst at 13:48:06. Kernel log again shows the same corrected AER signature on `device_id: 0000:03:00.0` at 13:48:20 — identical device, identical "corrected"/`Error 12`/`Error 13` pattern as every prior incident, confirming the fault is still active on the same port post-slot-swap. System recovered normally: fully rented within minutes (8/8 GPUs), no further faults in the 9 minutes of uptime observed afterward. |
+| 10/03 13:48:41 | #3 | **New, distinct fault class — not PCIe/AER.** The fault-watcher bot posted an automatic Telegram alert for a line that is unrelated in kind to every prior entry in this table: `NVRM: GPU4 gpuHandleSanityCheckRegReadError_GH100: Possible bad register read: addr: 0x110094, regvalue: 0xbadf2100, error code: Unknown SYS_PRI_ERROR_CODE`. This is an **NVIDIA driver-level** sanity check on a GPU-internal MMIO register read, reported by `nvidia.ko` against GPU4 specifically — it is not a `pcieport`/AER record and does not name a root-complex device like `0000:01.4`/`0000:03:00.0`. `0xbadf21xx`-pattern sentinel values are what the driver substitutes when a register read returns all-high or otherwise implausible data, i.e. the read looked electrically/logically broken rather than returning a real value. **Not yet attributed:** this could be (a) an independent GPU4 hardware fault unrelated to the CPU/root-complex case, or (b) a downstream symptom of the same IO-die instability if GPU4's PCIe link also transits a root complex sharing power/clocking domains with `00:01.4`/`00:01.5` — plausible given the timing (23s after the AER event) but not established. Logged here as a new, separately-tracked signal; **do not fold into the CPU dispute evidence** until a repeat on GPU4 (or correlation with further AER events) is observed. No other anomaly reported for GPU4 in the surrounding diagnostics (occupancy/throttle state nominal). |
 
-**Frequency note:** eight incidents across roughly 44 hours (two on 10/01,
-six on 10/02) is a sharp step up from the prior cadence of roughly one
-every few days. Combined with the 10/02 fatal AER captures — reproduced
+**Frequency note:** nine incidents across roughly 44.5 hours (two on 10/01,
+six on 10/02, one so far on 10/03) is a sharp step up from the prior
+cadence of roughly one every few days. Combined with the 10/02 fatal AER captures — reproduced
 twice with an identical signature — on the same root-complex port flagged
 since board #2, this is now evidence both of worsening frequency and of
 which component is implicated — though the swap test remains the cleanest
@@ -242,6 +244,12 @@ physical evidence for the claim.
 - [ ] If the swap test clears the CPU (fault persists), do not retroactively
       claim the hangs as CPU evidence anywhere this file has been
       referenced or attached
+- [ ] Watch for a repeat of the 10/03 13:48:41 `gpuHandleSanityCheckRegReadError_GH100`
+      GPU4 register-read fault. One occurrence is not enough to attribute —
+      if it recurs (on GPU4 or any other GPU), especially in close proximity
+      to an AER event, open a dedicated tracking note; do not merge into
+      this case's CPU evidence unless/until a mechanism linking it to the
+      `00:01.4`/`00:01.5` root complex is established
 - [x] ~~Decide on interim mitigation while waiting for the CPU~~ — 2026-10-02:
       CPU confirmed arriving Monday (10/06), close enough that moving root
       off the `00:01.4`/NVMe path to SATA was judged not worth the extra
