@@ -2934,7 +2934,7 @@ classify_workload() {
     [[ -z "$image" ]] && { echo "unknown"; return; }
     case "$image" in
         *self-test*)                                                  echo "selftest" ;;
-        *miner*|*srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*|*matador*|*wildrig*) echo "mining" ;;
+        *miner*|*srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*|*matador*|*wildrig*|*tsc-engine*|*tensorcash*) echo "mining" ;;
         *hashcat*|*hcxdump*|*hcxtools*|*johntheripper*|*john-the-ripper*) echo "cracking" ;;
         *jupyter*|*linux-desktop*|*vscode*|*desktop*|*vnc*)            echo "desktop" ;;
         *llama*|*vllm*|*ollama*|*text-generation*|*tgi*|*triton*|*comfyui*|*stable-diffusion*|*automatic1111*) echo "inference" ;;
