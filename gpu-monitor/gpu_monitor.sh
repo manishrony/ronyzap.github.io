@@ -4111,6 +4111,10 @@ PYEOF
             [[ -f "$vacancy_file" ]] || echo "$now_epoch" > "$vacancy_file"
             local vacant_since
             vacant_since=$(cat "$vacancy_file" 2>/dev/null || echo "$now_epoch")
+            # An empty or non-numeric vacancy_file (e.g. truncated by a crash
+            # mid-write) would otherwise be treated as 0 by bash arithmetic,
+            # making vacancy_secs equal to the raw epoch timestamp.
+            [[ "$vacant_since" =~ ^[0-9]+$ ]] || { vacant_since="$now_epoch"; echo "$now_epoch" > "$vacancy_file"; }
             vacancy_secs=$(( now_epoch - vacant_since ))
         else
             # Occupied. On the transition edge (vacancy_file still present),
