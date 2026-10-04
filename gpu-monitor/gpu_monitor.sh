@@ -4574,6 +4574,27 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
             # lower this further, just never raise it.
             log "  Machine $mid: occupancy-confirmed fully vacant, below ${target_label} (\$$target) — RATCHET_UP_WHILE_VACANT=0, holding at \$$cur_bid"
             continue
+        elif [[ "$rented" == "True" ]] && (( ! fully_rented )) && (( ! fully_vacant )) && (( vacancy_secs >= STEPDOWN_DELAY_SECS )) && (( $(echo "$cur_bid > $floor" | bc -l) )); then
+            # Partially rented, and the still-free slot(s) have sat unrented
+            # past STEPDOWN_DELAY_SECS -- same instinct as the fully-vacant
+            # step-down below, just missing from this branch until now. An
+            # occupied GPU's contract price is already locked in regardless
+            # of what happens here; this only affects the free slot's re-list
+            # ask, which was otherwise climbing toward target forever with no
+            # step-down, as long as *any* GPU on the machine stayed rented.
+            #
+            # MUST come before the RATCHET_UP_WHILE_PARTIAL hold branch below:
+            # that branch's only condition is cur_bid < target, true almost
+            # always, so with RATCHET_UP_WHILE_PARTIAL=0 (zappa1) it matched
+            # and `continue`d every cycle regardless of vacancy_secs, making
+            # this step-down unreachable dead code since it was added
+            # 2026-10-04. Confirmed live: GPU0 sat unrented a full week
+            # pinned at the $0.42 floor with zero price movement either way.
+            local stepdown_cents_p=$(( RANDOM % (STEPDOWN_CENTS_MAX - STEPDOWN_CENTS_MIN + 1) + STEPDOWN_CENTS_MIN ))
+            local stepdown_amt_p
+            stepdown_amt_p=$(printf "%.4f" "$(echo "scale=4; $stepdown_cents_p / 100" | bc)")
+            new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $stepdown_amt_p" | bc)")
+            direction="↓ ${stepdown_cents_p}¢ (partially rented, free slot vacant ${vacancy_hours}h+ — stepping toward floor \$$floor)"
         elif [[ "$rented" == "True" ]] && (( ! fully_rented )) && (( ! fully_vacant )) && [[ "${RATCHET_UP_WHILE_PARTIAL:-1}" != "1" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             # Partially rented (some GPUs occupied, at least one still free) --
             # distinct from both branches above, and NOT gated by either of
@@ -4595,19 +4616,6 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
             # RATCHET_FULL_MIN_SECS's setup comment above.
             log "  Machine $mid: fully rented for only ${fully_rented_secs}s (<${RATCHET_FULL_MIN_SECS}s required), below ${target_label} (\$$target) — holding at \$$cur_bid until occupancy is sustained"
             continue
-        elif [[ "$rented" == "True" ]] && (( ! fully_rented )) && (( ! fully_vacant )) && (( vacancy_secs >= STEPDOWN_DELAY_SECS )) && (( $(echo "$cur_bid > $floor" | bc -l) )); then
-            # Partially rented, and the still-free slot(s) have sat unrented
-            # past STEPDOWN_DELAY_SECS -- same instinct as the fully-vacant
-            # step-down below, just missing from this branch until now. An
-            # occupied GPU's contract price is already locked in regardless
-            # of what happens here; this only affects the free slot's re-list
-            # ask, which was otherwise climbing toward target forever with no
-            # step-down, as long as *any* GPU on the machine stayed rented.
-            local stepdown_cents_p=$(( RANDOM % (STEPDOWN_CENTS_MAX - STEPDOWN_CENTS_MIN + 1) + STEPDOWN_CENTS_MIN ))
-            local stepdown_amt_p
-            stepdown_amt_p=$(printf "%.4f" "$(echo "scale=4; $stepdown_cents_p / 100" | bc)")
-            new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid - $stepdown_amt_p" | bc)")
-            direction="↓ ${stepdown_cents_p}¢ (partially rented, free slot vacant ${vacancy_hours}h+ — stepping toward floor \$$floor)"
         elif [[ "$rented" == "True" ]] && (( $(echo "$cur_bid < $target - 0.02" | bc -l) )); then
             new_price=$(printf "%.4f" "$(echo "scale=4; $cur_bid + $adjust_up" | bc)")
             direction="↑ ${up_cents}¢ (below ${target_label})"
