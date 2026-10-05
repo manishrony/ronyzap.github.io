@@ -251,64 +251,63 @@ physical evidence for the claim.
 
 ## Open items
 
-- [ ] **URGENT — request an RMA/return authorization for board #3 now.**
-      Purchased 2026-09-12; the 30-day window closes **~2026-10-12**, only
-      ~7 days out as of today (2026-10-05). Requesting the RMA does not
-      commit to shipping it back, and most retailers give an additional
-      7-15 day shipping window once issued — but the request itself must
-      go in before the purchase-date window closes. This is a hedge: if
-      tomorrow's CPU swap test does *not* clear the fault (board #3
-      remains the live suspect per the "Reading the result" table above),
-      the return option needs to still be open. Ask the retailer
-      explicitly how long the RMA stays valid once issued, so the real
-      decision deadline is known, not just the purchase-date window.
+- [ ] **URGENT — contact seller for board #3 (TYAN S8056GME) before the
+      return window closes.** Confirmed order details:
+      - Seller: **5starsbargain** (eBay)
+      - Order #: **04-15170-52658**
+      - Purchased: 2026-09-12, **delivered 2026-09-18**
+      - Price: $479.16
+      - **Listing states "Returns not accepted"** — a standard eBay return
+        request would likely be auto-rejected, so the plan is to **message
+        the seller directly first**, and escalate to a formal RMA / eBay
+        Money Back Guarantee claim afterward if needed (MBG applies to
+        defective-item claims even on no-returns listings). eBay's MBG
+        window is based on **delivery date**, not purchase date — Sep 18
+        delivery gives roughly until **~2026-10-18**, a few days more
+        buffer than the purchase-date estimate below.
 
-      **Draft RMA request (fill in order number/retailer, send ASAP):**
+      **Step 1 — message sent to seller (via eBay messaging):**
 
-      > Subject: RMA Request — TYAN S8056GME Motherboard — Recurring PCIe
-      > Hardware Fault (Order #[your order number])
+      > To: 5starsbargain — Re: Order #04-15170-52658 — Tyan S8056GME
+      > Server Motherboard
       >
       > Hi,
       >
-      > I'm requesting a Return Merchandise Authorization (RMA) for a TYAN
-      > S8056GME server motherboard purchased on **September 12, 2026**
-      > (Order #[your order number]), while still within the 30-day return
-      > window.
+      > I'm reaching out about the Tyan S8056GME motherboard from order
+      > #04-15170-52658, delivered Sep 18, 2026.
       >
-      > **Summary of the issue:** Since installation, this board has shown
-      > a recurring PCIe hardware fault — repeated corrected and, on at
-      > least two occasions, uncorrectable/fatal PCIe bus errors reported
-      > by the CPU's root complex (`pcieport 0000:00:01.4`, device
-      > `[1022:14ab]`), occurring both at boot and during normal
-      > operation. The fault has caused multiple unexplained system hangs
-      > requiring hard power cycles to recover, at a rate of several
-      > incidents per day in the past week.
+      > Since installation, this board has shown a recurring PCIe hardware
+      > fault — repeated corrected and, on at least two occasions,
+      > uncorrectable/fatal PCIe bus errors reported by the CPU's root
+      > complex (`pcieport 0000:00:01.4`, device `[1022:14ab]`), causing
+      > multiple unexplained system hangs that require a hard power cycle
+      > to recover. This has been happening multiple times per day over
+      > the past week.
       >
-      > **Diagnostic steps taken:**
-      > - Confirmed via BMC System Event Log (hardware-level, independent
-      >   of the OS) across multiple reboots
-      > - Confirmed via kernel-level AER (Advanced Error Reporting) logs
-      > - Ruled out the storage drive (SMART health fully normal, no
-      >   data-integrity errors)
+      > I've confirmed this through:
+      > - BMC System Event Log entries (hardware-level, independent of the
+      >   OS)
+      > - Kernel-level PCIe AER (Advanced Error Reporting) logs
+      > - Ruled out the storage drive (SMART health fully normal)
       > - Ruled out software/workload causes
-      > - A board replacement did not resolve the issue, suggesting either
-      >   a CPU-level or board-level root cause — currently isolating
-      >   further with a direct CPU swap test
       >
-      > I'm requesting the RMA now as a precaution while this diagnosis is
-      > ongoing, given the return window is closing soon. I may or may not
-      > proceed with an actual return once the current isolation testing
-      > is complete, but want to preserve that option.
+      > I understand the listing states returns are not accepted, but this
+      > is a hardware defect, not a change-of-mind return. I'm currently
+      > running a further isolation test (swapping only the CPU) to
+      > confirm the fault is board-specific before deciding how to
+      > proceed, but wanted to flag this now given the issue and open a
+      > conversation about options — replacement, partial refund, or
+      > return — depending on what the test shows.
       >
-      > Could you please:
-      > 1. Issue an RMA number for this order
-      > 2. Confirm how long the RMA stays valid / how long I have to ship
-      >    once issued
+      > Happy to share diagnostic logs/screenshots if helpful.
       >
-      > Happy to provide additional diagnostic logs if useful.
-      >
-      > Thank you,
+      > Thanks,
       > [Your name]
+
+      **Step 2 — if the seller doesn't resolve it (or the swap test
+      confirms the board), formally request RMA / open an eBay Money Back
+      Guarantee case** before ~2026-10-18, citing the same evidence plus
+      the swap-test result once available.
 - [ ] Confirm with seller/dispute whether the **same physical CPU** was
       moved across all 3 motherboards (this is the load-bearing assumption
       of the whole case — verify and state explicitly in the dispute filing)
