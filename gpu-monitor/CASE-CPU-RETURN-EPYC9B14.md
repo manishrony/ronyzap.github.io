@@ -262,6 +262,53 @@ physical evidence for the claim.
       the return option needs to still be open. Ask the retailer
       explicitly how long the RMA stays valid once issued, so the real
       decision deadline is known, not just the purchase-date window.
+
+      **Draft RMA request (fill in order number/retailer, send ASAP):**
+
+      > Subject: RMA Request — TYAN S8056GME Motherboard — Recurring PCIe
+      > Hardware Fault (Order #[your order number])
+      >
+      > Hi,
+      >
+      > I'm requesting a Return Merchandise Authorization (RMA) for a TYAN
+      > S8056GME server motherboard purchased on **September 12, 2026**
+      > (Order #[your order number]), while still within the 30-day return
+      > window.
+      >
+      > **Summary of the issue:** Since installation, this board has shown
+      > a recurring PCIe hardware fault — repeated corrected and, on at
+      > least two occasions, uncorrectable/fatal PCIe bus errors reported
+      > by the CPU's root complex (`pcieport 0000:00:01.4`, device
+      > `[1022:14ab]`), occurring both at boot and during normal
+      > operation. The fault has caused multiple unexplained system hangs
+      > requiring hard power cycles to recover, at a rate of several
+      > incidents per day in the past week.
+      >
+      > **Diagnostic steps taken:**
+      > - Confirmed via BMC System Event Log (hardware-level, independent
+      >   of the OS) across multiple reboots
+      > - Confirmed via kernel-level AER (Advanced Error Reporting) logs
+      > - Ruled out the storage drive (SMART health fully normal, no
+      >   data-integrity errors)
+      > - Ruled out software/workload causes
+      > - A board replacement did not resolve the issue, suggesting either
+      >   a CPU-level or board-level root cause — currently isolating
+      >   further with a direct CPU swap test
+      >
+      > I'm requesting the RMA now as a precaution while this diagnosis is
+      > ongoing, given the return window is closing soon. I may or may not
+      > proceed with an actual return once the current isolation testing
+      > is complete, but want to preserve that option.
+      >
+      > Could you please:
+      > 1. Issue an RMA number for this order
+      > 2. Confirm how long the RMA stays valid / how long I have to ship
+      >    once issued
+      >
+      > Happy to provide additional diagnostic logs if useful.
+      >
+      > Thank you,
+      > [Your name]
 - [ ] Confirm with seller/dispute whether the **same physical CPU** was
       moved across all 3 motherboards (this is the load-bearing assumption
       of the whole case — verify and state explicitly in the dispute filing)
