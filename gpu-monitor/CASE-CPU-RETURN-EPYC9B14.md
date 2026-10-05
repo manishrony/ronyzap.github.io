@@ -251,16 +251,17 @@ physical evidence for the claim.
 
 ## Open items
 
-- [ ] **Request an RMA/return authorization for board #3 now**, before its
-      30-day purchase window closes (approaching as of 2026-10-05) —
-      requesting the RMA does not commit to shipping it back, and most
-      retailers give an additional 7-15 day shipping window once issued.
-      This is a hedge: if tomorrow's CPU swap test does *not* clear the
-      fault (board #3 remains the live suspect per the "Reading the
-      result" table above), the return option needs to still be open.
-      Ask the retailer explicitly how long the RMA stays valid once
-      issued, so the real decision deadline is known, not just the
-      purchase-date window.
+- [ ] **URGENT — request an RMA/return authorization for board #3 now.**
+      Purchased 2026-09-12; the 30-day window closes **~2026-10-12**, only
+      ~7 days out as of today (2026-10-05). Requesting the RMA does not
+      commit to shipping it back, and most retailers give an additional
+      7-15 day shipping window once issued — but the request itself must
+      go in before the purchase-date window closes. This is a hedge: if
+      tomorrow's CPU swap test does *not* clear the fault (board #3
+      remains the live suspect per the "Reading the result" table above),
+      the return option needs to still be open. Ask the retailer
+      explicitly how long the RMA stays valid once issued, so the real
+      decision deadline is known, not just the purchase-date window.
 - [ ] Confirm with seller/dispute whether the **same physical CPU** was
       moved across all 3 motherboards (this is the load-bearing assumption
       of the whole case — verify and state explicitly in the dispute filing)
