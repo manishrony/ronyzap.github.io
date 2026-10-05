@@ -266,7 +266,8 @@ physical evidence for the claim.
         delivery gives roughly until **~2026-10-18**, a few days more
         buffer than the purchase-date estimate below.
 
-      **Step 1 — message sent to seller (via eBay messaging):**
+      **Step 1 — message sent to seller 2026-10-05 via eBay messaging**
+      (confirmed sent, matches draft below verbatim):
 
       > To: 5starsbargain — Re: Order #04-15170-52658 — Tyan S8056GME
       > Server Motherboard
