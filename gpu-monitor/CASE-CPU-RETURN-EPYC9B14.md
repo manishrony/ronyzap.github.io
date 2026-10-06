@@ -305,6 +305,61 @@ physical evidence for the claim.
       > Thanks,
       > [Your name]
 
+      **Seller replied 2026-10-05** — reasonable, technically literate
+      response (not a canned rejection). Seller states these are new
+      boards, factory-tested, "sold 10s with zero issues," and argues
+      `0000:00:01.4` could point to: (1) add-in card not fully seated,
+      (2) riser not fully seated/damaged, (3) defective MCIO/NVMe cable,
+      (4) defective OCP card, (5) defective CPU/root complex, (6) bad
+      marginal PCIe Gen5 device. Requested removing the OCP NIC, pulling
+      secondary add-in cards, moving MCIO cables to different ports,
+      moving the primary PCIe card to another slot, and moving the M.2
+      drive to the other M.2 slot, then checking whether the error code
+      stays on `0000:00:01.4` or changes.
+
+      **Response not yet sent — holding 24h before replying** (not
+      immediate). Draft prepared, citing work already done rather than
+      repeating physical teardown on a live 8-GPU production server:
+
+      > Hi,
+      >
+      > Appreciate the detailed troubleshooting steps. A few of these
+      > don't apply to this specific fault, and for the others I already
+      > have conclusive data from testing over the past week — here's why:
+      >
+      > Root port `0000:00:01.4` (and its sibling `00:01.5`) are dedicated
+      > exclusively to this board's two M.2 NVMe slots — confirmed via
+      > `lspci -tv` topology mapping. They don't share any electrical path
+      > with the OCP slot, GPU/add-in card slots, or risers. So removing
+      > the OCP card or any add-in card wouldn't be expected to change
+      > anything on this port — and separately, I've already tested this
+      > board with the OCP card fully removed for an unrelated BMC issue,
+      > and this PCIe fault was unaffected.
+      >
+      > On the MCIO/NVMe side: I've already moved the drive between both
+      > of the board's M.2 slots (it only has two) and swapped in a
+      > second, different physical drive. The fault follows the port, not
+      > the drive — and it has now occurred independently on both
+      > `00:01.4` and `00:01.5`, including once with a fatal/uncorrectable
+      > severity that caused real I/O errors on the drive itself.
+      >
+      > Given that, I don't believe reseating cables or swapping slots
+      > again will produce new information — I've already isolated slot
+      > and drive as variables. The remaining open question is CPU vs.
+      > board, which I'm resolving directly: I have a second EPYC 9B14 in
+      > hand and am running a CPU-only swap test (same board, same NVMe,
+      > same slot) to settle it conclusively. I'll share that result as
+      > soon as it's done — if the fault clears with the new CPU, that
+      > confirms the board; if it persists, that points back to something
+      > board-level I haven't found yet and I'm open to further diagnosis
+      > then.
+      >
+      > Happy to send the kernel/BMC logs from the testing already done if
+      > that's useful in the meantime.
+      >
+      > Thanks,
+      > [Your name]
+
       **Step 2 — if the seller doesn't resolve it (or the swap test
       confirms the board), formally request RMA / open an eBay Money Back
       Guarantee case** before ~2026-10-18, citing the same evidence plus
