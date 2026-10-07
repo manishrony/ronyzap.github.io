@@ -352,6 +352,21 @@ can produce exactly this fault class independent of CPU, cabling, or
 rig-specific conditions — useful corroborating context for the board #3
 dispute even though it is a separate ticket/unit.
 
+**Hardware watchdog confirmed active — 2026-10-07.** Investigated why
+the earlier 10-hour unattended hang (01:10→11:17 recovery) wasn't
+caught automatically. Confirmed via `ipmitool mc watchdog get` that the
+standard IPMI watchdog (via the `ipmi_watchdog` kernel module +
+systemd's `RuntimeWatchdogSec=60s`, already present in
+`/etc/systemd/system.conf`) is **live and running**: Action=Hard Reset,
+60s countdown, actively being petted. This operates independently of
+the BIOS "OS Watchdog Timer" toggle (which was separately found
+disabled in Server Mgmt, but appears to govern a different/legacy
+boot-time feature, not this runtime mechanism) — no BIOS change was
+needed. Going forward, any hang severe enough to stop systemd's petting
+loop should self-recover via hard reset within ~60 seconds, rather than
+requiring manual IPMI intervention. Does not address the underlying
+board defect, only shortens downtime when a hang occurs.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
