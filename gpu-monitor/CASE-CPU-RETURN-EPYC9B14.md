@@ -302,6 +302,38 @@ verdict (same device, same signature, post-CPU-swap), but strengthens it
 further: the fault keeps producing full hangs on the replacement CPU, not
 just transient log entries.
 
+**Board history evidence — 2026-10-07, FRU + full SEL history.**
+Board #3's FRU EEPROM (`Baseboard FRU`, non-volatile, not editable by a
+reseller without specialized tools) records:
+- Board Manufacturer: TYAN, Product: S8056GME
+- Board Serial Number: `CRMF3CN10007`
+- **Manufacture Date: 2023-03-21** — roughly 3.5 years before this
+  board's installation (~Sept 2026).
+
+Also pulled the **full SEL history** (not just the recent tail).
+Entries #1-8 (dated 07/04-05/2003) are the BMC's default/unsynced-clock
+placeholder, a universal artifact before the clock gets a real time
+source — not real events. Entry #9, "Timestamp Clock Sync" on
+2025-07-09 00:27:02 UTC, is the first entry with a plausible-looking
+(non-placeholder) date, immediately followed by an AC-lost/power-on
+cycle and an 11x "PCI PERR" burst matching the fault signature tracked
+throughout this case.
+
+**Caveat (self-corrected, do not overstate):** a plausible-looking BMC
+timestamp is not proof of accuracy. Without NTP configured, a BMC's
+clock sync can come from a depleted/replaced CMOS battery, a stale RTC
+value, or an incorrect sync source, and still produce a date that looks
+real rather than an obvious placeholder. **07/09/2025 should be read as
+a weak, inconclusive signal, not proof that the board was powered on and
+faulting over a year before this investigation.** It's consistent with
+that story, but not independently verified — the BMC's time source at
+that boot is unknown. Worth noting as a secondary data point alongside
+the 2023-03-21 manufacture date, but **do not cite this SEL timestamp as
+decisive evidence of prior use in the seller/MiTAC dispute** unless the
+clock's reliability can be independently confirmed (e.g., checking
+whether NTP was ever configured on this board, or whether the timestamp
+lines up with anything externally verifiable).
+
 **Independent cross-corroboration — 2026-10-07, MiTAC RMA ticket #3280.**
 A *separate* TYAN board (serial `CRMF3CN10001`, a different physical unit
 from board #3's `...10007`, fault reported on a different bus
