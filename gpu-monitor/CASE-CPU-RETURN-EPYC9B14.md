@@ -317,6 +317,14 @@ stretch) = reseat likely irrelevant, board conclusion stands. Fault
 staying clear well beyond 21h = reseat may have been a real contributing
 factor, worth revisiting the board-defect conclusion.**
 
+**Result — 2026-10-07 15:08:09 UTC: fault recurred at ~2h53m post-reseat**
+(12:13:47 boot → 15:08:09 fault), the 22nd incident, same corrected
+`device_id: 0000:03:00.0` signature. This is well short of the ~21h bar,
+so **the PSU/cable reseat does not appear to have changed anything** —
+consistent with the board remaining the root cause, not loose cabling.
+This closes out the cable-reseat line of investigation without
+overturning the board #3 verdict.
+
 **Verdict: CPU is cleared. Fault persists on the new CPU, same board.**
 Per the table above, this points at **board #3 (TYAN S8056GME) itself**,
 not the CPU, and retroactively supports the same conclusion for boards
