@@ -251,6 +251,39 @@ physical evidence for the claim.
 | Fault clears on the new CPU, same board | **CPU confirmed defective.** Also exonerates board #3 (and retroactively boards #1/#2). Strongest possible evidence for the dispute — attach this test's before/after logs directly. |
 | Fault persists on the new CPU, same board | CPU is cleared. Points back at board #3 or a rig-level cause (see lead #1, PSU ground offset, in `TROUBLESHOOTING-PCIE-SERR.md`). **Do not proceed with the CPU dispute on weak grounds** if this happens — the Mitac board case (`CASE-MOTHERBOARD-RETURN-MITAC.md`) becomes the live one instead. |
 
+### RESULT — 2026-10-07: test complete, CPU exonerated, board #3 implicated
+
+CPU physically swapped 2026-10-06/07 (new EPYC 9B14, unlocked, `100-000000782`,
+from eGoods Supply). Teardown, socket, and new-CPU pin inspection all
+photographed clean — no bent pins, no socket damage. New CPU correctly
+detected post-boot: **AMD EPYC 9B14 96-Core, 2600 MHz**, 524288MB DDR5
+4800MT/s, TYAN BIOS v2.03. Same board (#3), same NVMe, same slot, same
+SP5 torque spec (~12 in-lbf, T20 Torx, single ILM screw).
+
+**At 77.8 seconds of uptime on the first boot after the swap**, the
+identical-signature fault recurred — and worse than any prior occurrence:
+
+```
+[ 77.846245] pcieport 0000:00:01.4: PCIe Bus Error: severity=Uncorrectable (Fatal), type=Transaction Layer
+[ 77.846359] pcieport 0000:00:01.4:   device [1022:14ab] error status/mask=00000020/00000000
+[ 77.866139+] nvme0n1: mass I/O Cmd(0x2) READ failures across hundreds of LBAs, I/O error (sct 0x3 / sc 0x71), class 2
+```
+
+Same root port (`00:01.4`), same device ID (`[1022:14ab]`), same
+`severity=Uncorrectable (Fatal)` class already seen twice on 2026-10-02 —
+but this is the first time it has struck this early post-boot (77s vs.
+hours/days previously), and the first time it cascaded into an actual
+NVMe I/O error flood visible at the console rather than being caught only
+in AER/BMC logs.
+
+**Verdict: CPU is cleared. Fault persists on the new CPU, same board.**
+Per the table above, this points at **board #3 (TYAN S8056GME) itself**,
+not the CPU, and retroactively supports the same conclusion for boards
+#1/#2 before it. The CPU return/dispute should **not** proceed on the
+strength of this test — the evidence now runs the other way. The live
+case going forward is the **board #3 return** (see Open items below),
+not a CPU replacement claim.
+
 ## Open items
 
 - [ ] **URGENT — contact seller for board #3 (TYAN S8056GME) before the
