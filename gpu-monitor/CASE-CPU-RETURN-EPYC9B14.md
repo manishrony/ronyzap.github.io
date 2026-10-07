@@ -276,6 +276,15 @@ hours/days previously), and the first time it cascaded into an actual
 NVMe I/O error flood visible at the console rather than being caught only
 in AER/BMC logs.
 
+**Confirming boot — 2026-10-07 01:10 UTC:** after properly restoring/saving BIOS
+settings (the 77s-fault boot above ran on BIOS defaults post-CMOS-clear, an
+open question at the time), the fault recurred again within seconds of this
+clean boot: BMC SEL logged 14x "PCI PERR" assertions at 01:10:32, followed
+immediately by corrected AER errors on the same `device_id: 0000:03:00.0`
+at 01:10:46. This was a corrected (not fatal) event, but it removes the
+BIOS-defaults confound entirely — the fault reproduces under the rig's
+actual configured settings, not just stock defaults.
+
 **Verdict: CPU is cleared. Fault persists on the new CPU, same board.**
 Per the table above, this points at **board #3 (TYAN S8056GME) itself**,
 not the CPU, and retroactively supports the same conclusion for boards
