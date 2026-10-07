@@ -285,6 +285,23 @@ at 01:10:46. This was a corrected (not fatal) event, but it removes the
 BIOS-defaults confound entirely — the fault reproduces under the rig's
 actual configured settings, not just stock defaults.
 
+**Correction/escalation — 2026-10-07, the 01:10 boot above hung and required
+manual recovery.** What was logged as a routine corrected AER event at
+01:10:46 actually cascaded into the same D-state hang pattern seen in
+every prior fatal incident: `jbd2/nvme0n1p3`, `rasdaemon`, `kaalia`,
+multiple `kworker` threads, and `python`/`python3` processes all reported
+"blocked for more than 122 seconds" (later 245 seconds), with
+`systemd-journald.service` repeatedly failing to start — identical
+signature to incidents #4/#5/#14. The machine was unresponsive until
+manually power-cycled via `ipmitool ... chassis power cycle` from zappa1;
+recovery boot completed by 11:17:47 UTC. This is now the **21st incident**
+and confirms the corrected/fatal distinction doesn't predict whether a
+given event escalates into a hang — even a "corrected" AER log entry can
+precede a full freeze requiring manual intervention. Does not change the
+verdict (same device, same signature, post-CPU-swap), but strengthens it
+further: the fault keeps producing full hangs on the replacement CPU, not
+just transient log entries.
+
 **Verdict: CPU is cleared. Fault persists on the new CPU, same board.**
 Per the table above, this points at **board #3 (TYAN S8056GME) itself**,
 not the CPU, and retroactively supports the same conclusion for boards
