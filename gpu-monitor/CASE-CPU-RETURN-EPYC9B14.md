@@ -302,6 +302,24 @@ verdict (same device, same signature, post-CPU-swap), but strengthens it
 further: the fault keeps producing full hangs on the replacement CPU, not
 just transient log entries.
 
+**Independent cross-corroboration — 2026-10-07, MiTAC RMA ticket #3280.**
+A *separate* TYAN board (serial `CRMF3CN10001`, a different physical unit
+from board #3's `...10007`, fault reported on a different bus
+`0000:07:00.x`) was sent directly to MiTAC/TYAN's own RMA facility under
+warranty, RMA# FR26370197, for the same class of fault: "Recurring PCI
+SERR fault" on a root port. On 2026-10-07, MiTAC's support (Alvin Chong)
+reported: *"Our tech just reported that they were able to replicate the
+issue you facing during the system stress test however the error
+intermittently popped up which is why they needed more time."* This is
+independent, third-party confirmation — MiTAC's own lab technicians,
+with no input from this investigation, reproduced an SERR/root-port fault
+on a different physical board from the same family under controlled
+stress testing. While not proof that board #3 specifically shares the
+same root cause, it meaningfully supports that this board design/family
+can produce exactly this fault class independent of CPU, cabling, or
+rig-specific conditions — useful corroborating context for the board #3
+dispute even though it is a separate ticket/unit.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
