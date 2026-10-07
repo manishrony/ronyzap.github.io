@@ -302,6 +302,21 @@ verdict (same device, same signature, post-CPU-swap), but strengthens it
 further: the fault keeps producing full hangs on the replacement CPU, not
 just transient log entries.
 
+**PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
+ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
+motherboard only, not shared with GPU power) were physically disconnected
+and reseated at both the PSU and board ends during this boot, closing out
+an earlier open question about whether this specific test had actually
+been done. This boot is now the tracked data point for whether loose
+power cabling played any role: as of 2h+ post-boot, zero new incidents —
+encouraging, but not yet conclusive, since prior stable stretches of
+14.5h, 19h56m, and 21h03m were already observed earlier in this case
+while the fault was still fully active and unrelated to any cable work.
+**Read this test as: fault recurring sooner than ~21h (the prior best
+stretch) = reseat likely irrelevant, board conclusion stands. Fault
+staying clear well beyond 21h = reseat may have been a real contributing
+factor, worth revisiting the board-defect conclusion.**
+
 **Verdict: CPU is cleared. Fault persists on the new CPU, same board.**
 Per the table above, this points at **board #3 (TYAN S8056GME) itself**,
 not the CPU, and retroactively supports the same conclusion for boards
