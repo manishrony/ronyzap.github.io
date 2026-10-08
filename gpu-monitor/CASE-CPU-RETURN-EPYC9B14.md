@@ -467,6 +467,19 @@ the rig with no manual action. First automatic recovery of this hang class.
 Earlier SEL watchdog resets for reference: 10/03 13:39, 10/04 03:53,
 10/04 10:45, 10/07 11:41 (systemd-petted era).
 
+**Decisive: fault follows the slot, not the drive — 2026-10-08 18:34 UTC.**
+Config: nvme0 `...B11E` removed from the system; nvme1 `...B4E4` (OS) now
+alone in the `00:01.4` M.2 socket; `00:01.5` empty. Boot at 18:34:24 UTC.
+Within ~2 min the identical signature recurred on the *other* physical
+drive: BMC SEL `80f`–`81c` (14+ entries) `Critical Interrupt #0x80 | PCI
+PERR | Asserted` at 18:34:06–07, and kernel `[Hardware Error]` PcieError
+`type: corrected` on `device_id: 0000:03:00.0` (`c0a9:542b`) at 18:34:21.
+Same pattern as 10/07 15:07:56–15:08:09 with `...B11E` in that socket.
+Two different drives produce the same PERR/AER burst in `00:01.4`, so
+the drive is excluded; the fault is in the board's `00:01.4` M.2
+socket/lane path (CPU previously excluded by swap test). Strongest
+single piece of evidence for the board #3 dispute.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
