@@ -352,6 +352,20 @@ can produce exactly this fault class independent of CPU, cabling, or
 rig-specific conditions — useful corroborating context for the board #3
 dispute even though it is a separate ticket/unit.
 
+**MiTAC RMA ticket #3280 — board replacement approved, 2026-10-08.**
+MiTAC (Michael Fieldness, RMA Supervisor) confirmed: *"Due to the length
+of repair we have opted to replace the board. We are preparing the
+replacement and will let you know when it ships."* MiTAC is replacing
+(not repairing) board serial `CRMF3CN10001` under RMA# FR26370197 after
+their own lab was unable to reliably clear the intermittent SERR fault
+during stress testing. This is a stronger data point than the initial
+repro alone: MiTAC's own RMA process concluded the fault on this board
+family was not reliably fixable by repair, warranting a full board swap.
+No ship date/tracking provided yet; a reply requesting an ETA has been
+sent. This remains a separate unit/ticket from board #3
+(`CRMF3CN10007`, the eBay 5starsbargain dispute) — useful corroborating
+context, not direct evidence for board #3 itself.
+
 **Hardware watchdog confirmed active — 2026-10-07.** Investigated why
 the earlier 10-hour unattended hang (01:10→11:17 recovery) wasn't
 caught automatically. Confirmed via `ipmitool mc watchdog get` that the
