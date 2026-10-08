@@ -430,6 +430,27 @@ storage-wedge reading of these hangs** — the stall looks like general
 userspace starvation, not the disk. Fix: daemon now non-realtime, probe
 drops to SCHED_OTHER and also requires an sshd banner on 127.0.0.1:22.
 
+**Drive/slot map and AER check — 2026-10-08 ~16:30 UTC.**
+
+| Drive | Serial | PCI | Root port | Use |
+|---|---|---|---|---|
+| nvme0 (CT4000T705SSD3) | `2529E9C6B11E` | `0000:03:00.0` | `00:01.4` (faulty M.2 slot) | **unmounted, unused** |
+| nvme1 (CT4000T705SSD3) | `2529E9C6B4E4` | `0000:04:00.0` | `00:01.5` (2nd M.2 slot) | `/boot/efi`, `/`, `/var/lib/docker` |
+
+`/var/log/aer-watch.log` (5-min cron) shows `ERR_COR/FATAL/NONFATAL = 0`
+on both `00:01.4` and `00:01.5` at every reading through 16:05:01, ~50s
+before the 16:05:50 hang — no slow error build-up. Does not exclude a
+sudden burst inside the last 50s. The log contains NUL bytes (typical of
+writes cut off by hard power cycles). Since the 16:11 boot, one of the two
+ports shows 12 interrupts (AER/DPC/PME shared vector) while its AER counters
+stay 0 — unexplained activity on an idle slot; not yet attributed.
+
+**Next test (planned 2026-10-08):** empty both M.2 slots. Move nvme1
+(`...B4E4`, OS + docker) onto a Sabrent M.2→PCIe adapter in **PESLOT1**
+(PCIe 5.0 x16 direct from CPU, separate from the M.2 lanes); remove nvme0
+(`...B11E`) from the system entirely. Two variables change at once (accepted
+for stability); nvme0 can be reinstalled later to isolate it.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
