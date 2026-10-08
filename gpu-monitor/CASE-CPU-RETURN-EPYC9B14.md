@@ -451,6 +451,18 @@ stay 0 — unexplained activity on an idle slot; not yet attributed.
 (`...B11E`) from the system entirely. Two variables change at once (accepted
 for stability); nvme0 can be reinstalled later to isolate it.
 
+**Swap outcome — 2026-10-08 ~18:40 UTC.** The Sabrent M.2→PCIe card did not
+fit: PESLOT1/2 on the S8056 are proprietary **riser** connectors (x28/x24),
+not standard PCIe slots (datasheet says "riser slot"; earlier advice missed
+this). Fallback: remove the unused drive only. After reboot only one NVMe
+is present, `...B4E4` (OS + docker), but it enumerates at
+`/sys/devices/pci0000:00/0000:00:01.4/0000:03:00.0` — i.e. it is now in the
+**faulty `00:01.4` M.2 socket**, the opposite of intended. It must be moved
+to the other M.2 socket (`00:01.5`). Watchdog re-armed after boot
+(`Started/Running`). The earlier ~17:00 BMC read showed `Timer Expiration
+Flags: SMS/OS` with countdown 0 — consistent with the watchdog having fired
+a hard reset on a hang before the swap (to confirm from SEL).
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
