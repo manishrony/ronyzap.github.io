@@ -488,6 +488,15 @@ intervals) and the BMC timer expired at ~19:57:06 (`Timer Expiration Flags:
 0x10 SMS/OS`, countdown 0) — hard reset with no manual action. ~1h20m
 uptime after the 18:34 boot.
 
+**Further resets — 2026-10-08 evening.** Boot sequence from journal: 18:34
+(manual), 20:06 (after 19:57 watchdog reset), 20:29, 20:57 — i.e. two more
+hangs/restarts ~23 and ~28 min apart; no manual action reported, breaker
+not tripped (3 boots span 51 min > 30 min window). Each boot again shows
+the PCI PERR burst (e.g. SEL `848`–`855` at 20:57:13–14) and corrected
+PcieError on `0000:03:00.0` (20:57:28). Stable 55 min as of 21:52 UTC with
+6/8 GPUs rented. Vast `reliability2` fell to 0.39 at 21:03. Hang frequency
+since the OS drive went into `00:01.4` (~18:34): roughly every 25–80 min.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
