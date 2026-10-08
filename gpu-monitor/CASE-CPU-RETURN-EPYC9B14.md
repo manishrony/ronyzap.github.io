@@ -460,8 +460,12 @@ is present, `...B4E4` (OS + docker), but it enumerates at
 **faulty `00:01.4` M.2 socket**, the opposite of intended. It must be moved
 to the other M.2 socket (`00:01.5`). Watchdog re-armed after boot
 (`Started/Running`). The earlier ~17:00 BMC read showed `Timer Expiration
-Flags: SMS/OS` with countdown 0 — consistent with the watchdog having fired
-a hard reset on a hang before the swap (to confirm from SEL).
+Flags: SMS/OS` with countdown 0. **Confirmed by SEL:** `7e8 | 10/08/2026 |
+04:46:34 PM UTC | Watchdog2 IPMI_Watchdog | Hard reset | Asserted` — the
+non-realtime I/O+sshd probe caught a hang ~30 min after deploy and recovered
+the rig with no manual action. First automatic recovery of this hang class.
+Earlier SEL watchdog resets for reference: 10/03 13:39, 10/04 03:53,
+10/04 10:45, 10/07 11:41 (systemd-petted era).
 
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
