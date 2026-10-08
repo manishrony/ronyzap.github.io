@@ -381,6 +381,31 @@ loop should self-recover via hard reset within ~60 seconds, rather than
 requiring manual IPMI intervention. Does not address the underlying
 board defect, only shortens downtime when a hang occurs.
 
+**Watchdog did NOT self-recover a hang — 2026-10-08, ~14:27-14:37 UTC.**
+zappa2 went offline/unresponsive: SSH refused, IPMI SOL console frozen
+(no response to keystrokes), yet `ping` to the host IP succeeded with
+0% loss throughout, and `ipmitool mc watchdog get` (run concurrently via
+zappa2's BMC, 192.168.1.247) showed the watchdog still **Started/Running
+and actively being petted** (countdown cycling normally, never reaching
+zero). No new SEL entries were logged for this incident — another
+**silent hang**, consistent with prior occurrences that produced zero
+AER/MCE/extlog evidence. This is a meaningful correction to the
+2026-10-07 assumption above: **not every hang stops systemd's
+watchdog-petting loop.** This one left PID1 responsive enough to keep
+feeding the watchdog while user-facing services (console TTY, sshd)
+were fully wedged — likely the same D-state I/O-stall pattern seen
+before (storage/root-port hang blocks anything needing disk I/O, but
+doesn't necessarily block PID1's own non-blocking `sd_notify`
+watchdog call). Recovered via manual `ipmitool chassis power cycle`
+(no auto-recovery occurred). Post-recovery: watchdog re-armed
+correctly (confirms it survives this reboot too), all 8 GPUs back and
+visible via `nvidia-smi`, workloads resumed. **Practical implication:**
+the watchdog remains a useful safety net for some hang classes but is
+not a complete substitute for monitoring — this incident still required
+manual intervention. Strengthens the case for the planned NVMe
+bypass-to-PESLOT test (moving storage off the suspect root port), since
+this is another occurrence of the same silent-hang signature on board #3.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
