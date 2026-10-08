@@ -480,6 +480,14 @@ the drive is excluded; the fault is in the board's `00:01.4` M.2
 socket/lane path (CPU previously excluded by swap test). Strongest
 single piece of evidence for the board #3 dispute.
 
+**Hang + second automatic recovery — 2026-10-08 ~19:5x UTC.** Config as
+above (OS drive alone in `00:01.4`). User reported the rig stuck; external
+probe from zappa1 showed no SSH banner on `192.168.1.196:22`. Watchdog
+petting stopped ~19:55:14 (countdown 52.2 → 37.2 → 22.1 → 6.9 s at 15 s
+intervals) and the BMC timer expired at ~19:57:06 (`Timer Expiration Flags:
+0x10 SMS/OS`, countdown 0) — hard reset with no manual action. ~1h20m
+uptime after the 18:34 boot.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
