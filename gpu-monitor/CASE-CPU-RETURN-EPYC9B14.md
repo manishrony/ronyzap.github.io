@@ -405,6 +405,17 @@ not a complete substitute for monitoring — this incident still required
 manual intervention. Strengthens the case for the planned NVMe
 bypass-to-PESLOT test (moving storage off the suspect root port), since
 this is another occurrence of the same silent-hang signature on board #3.
+**Corroborating artifact:** after the power cycle, three git object files
+in the repo clone on zappa2's rootfs (written minutes before the hang)
+were 0 bytes — data accepted by the kernel never reached the disk,
+consistent with a root-filesystem I/O wedge.
+
+**Watchdog hardened — 2026-10-08 ~14:50 UTC.** `/dev/watchdog` moved from
+systemd (PID1-alive only) to the `watchdog` daemon, which pets the BMC
+timer only while an uncached rootfs write+read succeeds every 10s. A
+repeat of today's hang should now self-reset in ~3 min worst case instead
+of needing manual IPMI. Not yet proven against a real hang. Details,
+deploy steps, and rollback: `gpu-monitor/watchdog/README.md`.
 
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
