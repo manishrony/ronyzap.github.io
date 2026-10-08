@@ -36,6 +36,7 @@ cp /etc/systemd/system.conf.d/watchdog.conf /root/watchdog.conf.dropin.bak
 sed -i 's/^RuntimeWatchdogSec=.*/RuntimeWatchdogSec=0/' /etc/systemd/system.conf /etc/systemd/system.conf.d/watchdog.conf
 systemctl daemon-reexec
 systemctl show -p RuntimeWatchdogUSec        # must be 0
+grep -q '^run_wd_keepalive=' /etc/default/watchdog && sed -i 's/^run_wd_keepalive=.*/run_wd_keepalive=0/' /etc/default/watchdog || echo 'run_wd_keepalive=0' >> /etc/default/watchdog
 systemctl reset-failed watchdog wd_keepalive
 systemctl enable --now watchdog
 ```
@@ -75,7 +76,14 @@ Manual reboots count too.
   `RuntimeWatchdogSec=60` and overrode `system.conf`. Until it was zeroed,
   systemd held `/dev/watchdog` and the daemon ran with `alive=[none]` (petting
   nothing). Always check `systemctl show -p RuntimeWatchdogUSec`.
-- **Stop "failure" is normal:** on Debian/Ubuntu, stopping `watchdog.service`
+- **Restart gets cancelled / timer left Stopped:** with the Debian default
+  `run_wd_keepalive=1` in `/etc/default/watchdog`, stopping the service
+  exits 1 on purpose, `OnFailure=` starts `wd_keepalive`, and the queued
+  restart is cancelled — leaving nothing petting and the BMC timer
+  `Stopped` (no protection). Set `run_wd_keepalive=0`, then
+  `systemctl reset-failed watchdog wd_keepalive && systemctl start watchdog`.
+  Always confirm `Watchdog Timer Is: Started/Running` after any restart.
+- **Stop "failure" is normal (with run_wd_keepalive=1):** on Debian/Ubuntu, stopping `watchdog.service`
   exits 1 on purpose to trigger `wd_keepalive.service` via `OnFailure=`.
   `wd_keepalive` then fails if systemd still holds the device. Harmless.
 - `verbose` must be a number (`1`), not `yes`.
