@@ -5,13 +5,19 @@
 On 2026-10-08 zappa2 hung for ~10 min: SSH refused, SOL console frozen, but
 ping answered and the IPMI watchdog kept being petted, so it never reset.
 systemd's `RuntimeWatchdogSec` only proves PID1 is alive — and PID1 stayed
-alive while the root filesystem I/O was wedged. Proof the rootfs was hit:
-three git objects written minutes before the hang were 0 bytes after the
-power cycle.
+alive while journald, sshd and the console were stuck. (Three git objects
+were 0 bytes after the power cycle, but ext4 does that after any hard power
+cut, so that proves nothing about the cause.)
 
 This setup hands `/dev/watchdog` to the `watchdog` daemon, which pets the
-BMC timer only while an uncached (`O_DIRECT`) 4K write+read on the rootfs
-succeeds (`wd-io-probe.sh`, every 10s).
+BMC timer only while `wd-io-probe.sh` passes (every 10s): an uncached
+(`O_DIRECT`) 4K write+read on the rootfs, and an `SSH-` banner from sshd on
+127.0.0.1:22. The daemon runs non-realtime and the probe drops to
+SCHED_OTHER, so a hang that starves ordinary processes stops the petting.
+
+**Why non-realtime:** the second 10/08 hang (16:05) was missed because the
+daemon ran `realtime = yes` and the probe inherited RT priority — it kept
+passing while journald/sshd/console were starved.
 
 ## Expected recovery time
 
@@ -34,7 +40,8 @@ systemctl reset-failed watchdog wd_keepalive
 systemctl enable --now watchdog
 ```
 
-Then install the reboot-loop circuit breaker:
+Then install the reboot-loop circuit breaker (**before** enabling the
+watchdog, so a bad probe can't loop):
 
 ```
 install -m 755 gpu-monitor/watchdog/wd-breaker.sh /usr/local/sbin/wd-breaker.sh
@@ -89,6 +96,9 @@ cp /root/watchdog.conf.dropin.bak /etc/systemd/system.conf.d/watchdog.conf
 sed -i 's/^RuntimeWatchdogSec=.*/RuntimeWatchdogSec=60s/' /etc/systemd/system.conf
 systemctl daemon-reexec
 ```
+
+If sshd moves off port 22, update the probe or it will reset the rig
+(the breaker caps that at 2 resets per 30 min).
 
 ## Not yet proven
 
