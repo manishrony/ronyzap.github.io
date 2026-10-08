@@ -34,9 +34,33 @@ systemctl reset-failed watchdog wd_keepalive
 systemctl enable --now watchdog
 ```
 
+Then install the reboot-loop circuit breaker:
+
+```
+install -m 755 gpu-monitor/watchdog/wd-breaker.sh /usr/local/sbin/wd-breaker.sh
+cp gpu-monitor/watchdog/wd-breaker.service /etc/systemd/system/
+mkdir -p /etc/systemd/system/watchdog.service.d
+cp gpu-monitor/watchdog/watchdog-breaker.conf /etc/systemd/system/watchdog.service.d/breaker.conf
+systemctl daemon-reload
+```
+
 Verify: `journalctl -u watchdog` shows `test binary ... wd-io-probe.sh` and
 `alive=/dev/watchdog` (not `[none]`); `ipmitool ... mc watchdog get` countdown
 keeps resetting.
+
+## Reboot-loop circuit breaker
+
+If the fault recurs right after every boot (as in the earlier "every boot
+is failing" phase), the watchdog would reset the rig forever. `wd-breaker`
+runs once per boot before `watchdog.service` and logs the boot time. On the
+**3rd boot within 30 min** it writes `/var/lib/wd-breaker/tripped`, and
+`watchdog.service` is skipped (`ConditionPathExists=!`). Nothing holds
+`/dev/watchdog`, so the BMC timer stays disarmed and the rig stays as-is for
+manual attention. That allows at most 2 automatic recoveries per 30 min.
+Manual reboots count too.
+
+- Check: `ls /var/lib/wd-breaker/tripped; journalctl -t wd-breaker`
+- Re-arm after fixing: `rm /var/lib/wd-breaker/tripped && systemctl start watchdog`
 
 ## Gotchas hit during the first deploy
 
