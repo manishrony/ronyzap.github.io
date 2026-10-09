@@ -497,6 +497,14 @@ PcieError on `0000:03:00.0` (20:57:28). Stable 55 min as of 21:52 UTC with
 6/8 GPUs rented. Vast `reliability2` fell to 0.39 at 21:03. Hang frequency
 since the OS drive went into `00:01.4` (~18:34): roughly every 25–80 min.
 
+**Overnight — 2026-10-08 20:57 → 2026-10-09 09:40 UTC.** Longest stretch
+since the swap: ~12h43m up. Next power-on 09:40:09 (SEL ACPI S0), OS up
+09:43:26; same PCI PERR burst at 09:43:07 (SEL `9ad`–`9ba`) and corrected
+PcieError on `0000:03:00.0` at 09:43:23. Renter 54914617 ended 09:48 with
+`[GPU_ERROR]` (Vast's attribution of the interruption). `reliability2` had
+recovered to ~0.82 overnight, dropped to 0.61 at this restart, 0.72 at
+10:09. Rentals resumed by ~10:14 (6/8 GPUs at 100% in nvtop).
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
