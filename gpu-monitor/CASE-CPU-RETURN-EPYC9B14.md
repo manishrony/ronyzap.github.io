@@ -505,6 +505,17 @@ PcieError on `0000:03:00.0` at 09:43:23. Renter 54914617 ended 09:48 with
 recovered to ~0.82 overnight, dropped to 0.61 at this restart, 0.72 at
 10:09. Rentals resumed by ~10:14 (6/8 GPUs at 100% in nvtop).
 
+**2026-10-09 18:28 restart + 5V rail warnings.** Up 09:43 → ~18:25 (~8h45m),
+next boot 18:28:26 with the usual PERR/PcieError on `0000:03:00.0` at
+18:28:23. New: from ~20:20 UTC the BMC logs `Voltage VDD_5_RUN | Lower
+Critical going low` repeatedly asserting/deasserting (reading 4.49–4.52 V,
+threshold 4.49 V) while 7/8 GPUs ran mining at 100% (load ~32). 4.49 V is
+~10% below nominal 5 V (ATX allows ±5%, i.e. ≥4.75 V) — needs checking
+with `ipmitool sensor` history and a multimeter; could be a sensor offset
+or a sagging 5 V rail on the motherboard PSU (RM1200x SHIFT).
+Boot count (journal) since 10/05: 10/05 ×4, 10/06 ×2, 10/07 ×6, 10/08 ×6,
+10/09 ×2 = 20.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
