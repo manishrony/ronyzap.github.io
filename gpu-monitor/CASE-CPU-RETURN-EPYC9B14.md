@@ -516,6 +516,13 @@ or a sagging 5 V rail on the motherboard PSU (RM1200x SHIFT).
 Boot count (journal) since 10/05: 10/05 ×4, 10/06 ×2, 10/07 ×6, 10/08 ×6,
 10/09 ×2 = 20.
 
+**2026-10-10 SEL.** 16:36:25 IPMI power reset; 16:50:05 IPMI power cycle →
+S0 at 16:50:12; PCI PERR burst 16:53:09–10 (SEL `cd4`–`ce1`, 14 entries) —
+same boot-time signature. **18:02:38 `Watchdog2 IPMI_Watchdog | Hard
+reset`** (automatic recovery, ~1h12m after boot). A manual `chassis power
+cycle` was then issued ~18:05, a few minutes into the watchdog-initiated
+boot.
+
 **PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
 ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
 motherboard only, not shared with GPU power) were physically disconnected
