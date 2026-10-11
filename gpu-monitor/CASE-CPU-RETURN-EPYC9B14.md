@@ -516,6 +516,14 @@ or a sagging 5 V rail on the motherboard PSU (RM1200x SHIFT).
 Boot count (journal) since 10/05: 10/05 ×4, 10/06 ×2, 10/07 ×6, 10/08 ×6,
 10/09 ×2 = 20.
 
+**Voltage snapshot under full load — 2026-10-11 ~01:40 UTC** (8/8 GPUs
+mining at ~500 W each, uptime 7h30m), `ipmitool sdr type Voltage`:
+VCC_12_RUN 11.91 V, VDD_12_RUN 11.83 V, **VDD_5_RUN 4.56 V** (−8.8%; ATX
+min 4.75 V), VDD_33_RUN 3.23 V, VDD_33_DUAL 3.32 V, CPU_33_DUAL 3.30 V,
+CPU_18_DUAL 1.38 V, USB_1V2_HUB 1.11 V, VBAT 3.06 V; CPU rails nominal.
+12 V and 3.3 V are in spec; only the 5 V rail reads out of spec. Idle
+reading and multimeter check pending.
+
 **2026-10-10 SEL.** 16:36:25 IPMI power reset; 16:50:05 IPMI power cycle →
 S0 at 16:50:12; PCI PERR burst 16:53:09–10 (SEL `cd4`–`ce1`, 14 entries) —
 same boot-time signature. **18:02:38 `Watchdog2 IPMI_Watchdog | Hard
