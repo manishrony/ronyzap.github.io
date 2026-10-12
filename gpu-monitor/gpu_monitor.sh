@@ -1584,6 +1584,19 @@ Check chassis airflow / CPU cooler under the current workload."
 # Folding@home, SRBMiner = mining, python3 = ML) even when the rental's base
 # image (e.g. linux-desktop) doesn't. Populates the associative array named by
 # the first arg: <idx> -> <process name>.
+_pid_cmdline_is_miner() {
+    local pid="$1" cmd
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")" || return 1
+    case "${cmd,,}" in
+        *--pool*|*stratum+*|*stratum://*) return 0 ;;
+    esac
+    return 1
+}
+# Renamed miners (e.g. /tmp/forge/forge --pool qtc-us.kryptex.network:7049)
+# dodge the name list; a pool/stratum argument gives them away, so such
+# processes are reported as "miner:<name>" and classify_workload's *miner*
+# arm picks them up.
 build_gpu_proc_map() {
     local -n _map="$1"
     local -A _uuid_idx _best_mem
@@ -1601,6 +1614,8 @@ build_gpu_proc_map() {
         [[ -z "$gi" ]] && continue
         pmem="${pmem//[^0-9]/}"; [[ -z "$pmem" ]] && pmem=0
         pname="$(basename "$pname" 2>/dev/null || echo "$pname")"
+        pid="$(echo "$pid" | xargs)"
+        _pid_cmdline_is_miner "$pid" && pname="miner:$pname"
         if (( pmem >= ${_best_mem[$gi]:-0} )); then
             _best_mem["$gi"]="$pmem"; _map["$gi"]="$pname"
         fi
@@ -1623,6 +1638,7 @@ build_gpu_proc_map() {
             [[ "$ppid" == "-" ]] && continue
             local pcmd; pcmd="$(awk '{print $NF}' <<< "$pgi $ppid $ptype $_rest")"
             [[ -z "$pcmd" || "$pcmd" == "-" ]] && continue
+            _pid_cmdline_is_miner "$ppid" && pcmd="miner:$pcmd"
             # only fill if compute-apps didn't already name this GPU
             [[ -z "${_map[$pgi]:-}" ]] && _map["$pgi"]="$pcmd"
         done < <(timeout 15 nvidia-smi pmon -c 1 2>/dev/null)
