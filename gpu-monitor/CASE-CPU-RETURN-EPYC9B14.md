@@ -524,6 +524,14 @@ CPU_18_DUAL 1.38 V, USB_1V2_HUB 1.11 V, VBAT 3.06 V; CPU rails nominal.
 12 V and 3.3 V are in spec; only the 5 V rail reads out of spec. Idle
 reading and multimeter check pending.
 
+**Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
+Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
+reset, no new SEL/AER entries after that boot's usual PERR burst).
+Config unchanged since 10/08: OS drive `...B4E4` alone in `00:01.4`,
+`...B11E` removed, `00:01.5` empty. Mining cap lowered to 475 W/GPU on
+10/12 02:30; rig fully rented and mining at ~3.8 kW for most of this
+stretch. Vast `reliability2` recovered to 0.96.
+
 **2026-10-10 SEL.** 16:36:25 IPMI power reset; 16:50:05 IPMI power cycle →
 S0 at 16:50:12; PCI PERR burst 16:53:09–10 (SEL `cd4`–`ce1`, 14 entries) —
 same boot-time signature. **18:02:38 `Watchdog2 IPMI_Watchdog | Hard
