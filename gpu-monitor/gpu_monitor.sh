@@ -3492,11 +3492,16 @@ Rate: <b>$cost</b>"
                         if ! { [[ -f "$docker_known_file" ]] && grep -qF "${new_iid}"$'\t' "$docker_known_file"; }; then
                             local d_workload="${current_iids[$new_iid]}"
                             d_workload=$(classify_workload "$d_workload")
+                            local d_cost="$cost"
+                            if [[ -z "$real_iid" ]]; then
+                                local d_est; d_est=$(listing_rate_estimate "$mid" "${rented_count:-1}")
+                                [[ -n "$d_est" ]] && d_cost="$d_est"
+                            fi
                             log "VAST.AI: Machine $mid — docker-detected renter STARTED ($new_iid, ${current_iids[$new_iid]})"
                             tg_send "🔄 <b>Vast.ai Renter Changed</b> — $(hostname)
 Machine: <b>$mid</b> | new renter $new_iid (docker-detected)
-Rate: <b>$cost</b>"
-                            write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$new_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"${current_iids[$new_iid]}\",\"workload_type\":\"$d_workload\",\"source\":\"docker_diff\"}"
+Rate: <b>$d_cost</b>"
+                            write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$new_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$d_cost\",\"status\":\"running\",\"image\":\"${current_iids[$new_iid]}\",\"workload_type\":\"$d_workload\",\"source\":\"docker_diff\"}"
                         fi
                     done
 
@@ -3541,6 +3546,8 @@ Rate: <b>$cost</b>"
                         # index isn't accepted silently: retry /instances/ once
                         # after a short delay (it typically catches up within a
                         # few seconds) before falling back to an estimate.
+                        local rate_exact=0
+                        [[ -n "$real_iid" ]] && rate_exact=1
                         if [[ -z "$real_iid" ]]; then
                             sleep 8
                             local retry_slots_json retry_real_iid retry_rate
@@ -3569,6 +3576,7 @@ PYEOF
                             if [[ -n "$retry_real_iid" ]]; then
                                 real_iid="$retry_real_iid"
                                 cost="\$$(printf '%.3f' "$retry_rate")/hr"
+                                rate_exact=1
                                 image=$(get_instance_image "$real_iid")
                                 workload_type=$(classify_workload "$image")
                                 log "  Machine $mid: real_instance_id indexed on retry ($real_iid) -- using live rate $cost instead of an estimate"
@@ -3604,44 +3612,24 @@ PYEOF
                         # machine, a far better one-time estimate than a
                         # lagging account-wide earn_hour average (we set that
                         # listed price ourselves moments earlier).
-                        if [[ "$cost" == '$0.000/hr' ]]; then
-                            local last_listed_price
-                            last_listed_price=$(python3 - "$JSONL_FILE" "$mid" <<'PYEOF' 2>/dev/null
-import sys, json
-jsonl, mid = sys.argv[1], sys.argv[2]
-last = None
-try:
-    with open(jsonl) as f:
-        for line in f:
-            try:
-                ev = json.loads(line)
-            except Exception:
-                continue
-            if ev.get('type') == 'price_change' and str(ev.get('machine_id', '')) == mid:
-                p = float(ev.get('new_price', 0) or 0)
-                if p > 0:
-                    last = p
-except FileNotFoundError:
-    pass
-print(last if last is not None else '')
-PYEOF
-)
-                            if [[ -n "$last_listed_price" ]]; then
-                                local est_total
-                                est_total=$(printf "%.3f" "$(echo "scale=4; $last_listed_price * ${rented_count:-1}" | bc)")
-                                cost="\$${est_total}/hr"
-                                log "  Machine $mid: real_instance_id still not indexed after retry -- using our own last listed price \$$last_listed_price/GPU x ${rented_count:-1} = $cost instead of earn_hour-derived estimate"
-                            elif [[ -n "${earn_day:-}" ]] && (( $(echo "${earn_day:-0} > 0" | bc -l) )); then
-                                # Last resort: no price_change on record either
-                                # (e.g. very first rental on a fresh listing) --
-                                # earn_day/24 is a real Vast-reported figure, so
-                                # even a rough live-average beats a flat $0.000
-                                # that would otherwise misrepresent this rental
-                                # as free in the permanent record.
+                        # No live per-instance rate (typical for D-type contracts).
+                        # earn_hour is a lagging 24h average that reads far too low
+                        # right after a vacancy (logged $0.278 for a $0.67 rental on
+                        # zappa3, 2026-10-17), so estimate from the listing instead --
+                        # the lower of the live listing and our last price_change, so
+                        # a manual console price cut is honoured and a later raise
+                        # can't inflate the record.
+                        if (( ! rate_exact )); then
+                            local listing_est
+                            listing_est=$(listing_rate_estimate "$mid" "${rented_count:-1}")
+                            if [[ -n "$listing_est" ]]; then
+                                log "  Machine $mid: no live instance rate -- estimating $listing_est from the listing (was $cost)"
+                                cost="$listing_est"
+                            elif [[ "$cost" == '$0.000/hr' && -n "${earn_day:-}" ]] && (( $(echo "${earn_day:-0} > 0" | bc -l) )); then
                                 local est_hourly
                                 est_hourly=$(printf "%.3f" "$(echo "scale=4; $earn_day / 24" | bc)")
                                 cost="\$${est_hourly}/hr"
-                                log "  Machine $mid: no real_instance_id or price_change on record -- using earn_day/24 = $cost as last-resort rate estimate"
+                                log "  Machine $mid: no instance rate or listing on record -- using earn_day/24 = $cost as last-resort rate estimate"
                             fi
                         fi
                         log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown}, ${expire_source} end: $expire_date)"
@@ -3875,6 +3863,40 @@ except Exception as e:
     print('null')
 PYEOF
     rm -f "$raw_file"
+}
+
+# Rental-start rate estimate (total $/hr) when Vast gives no per-instance rate:
+# lower of the live listed per-GPU price and our last price_change, x GPUs rented.
+# Taking the lower one keeps a manual console price cut (live listing is lower)
+# from being overstated by our older, higher price_change. Empty if neither known.
+listing_rate_estimate() {
+    local mid="$1" count="${2:-1}"
+    python3 - "$MACHINES_CACHE_FILE" "$JSONL_FILE" "$mid" "$count" <<'PYEOF' 2>/dev/null
+import sys, json
+cache, jsonl, mid, count = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4] or 1)
+cands = []
+try:
+    for m in json.load(open(cache)).get('machines', []):
+        if str(m.get('id')) == mid:
+            p = float(m.get('listed_gpu_cost') or 0)
+            if p > 0: cands.append(p)
+except Exception:
+    pass
+last = None
+try:
+    for line in open(jsonl):
+        if '"price_change"' not in line: continue
+        try: ev = json.loads(line)
+        except Exception: continue
+        if ev.get('type') == 'price_change' and str(ev.get('machine_id', '')) == mid:
+            p = float(ev.get('new_price', 0) or 0)
+            if p > 0: last = p
+except Exception:
+    pass
+if last: cands.append(last)
+if cands:
+    print('$%.3f/hr' % (min(cands) * max(count, 1)))
+PYEOF
 }
 
 vastai_set_price() {
