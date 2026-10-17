@@ -419,6 +419,10 @@ PRICE_ADJUST_UP_MAX=2    # cents to RAISE per cycle when below target (max)
 PRICE_ADJUST_DOWN_MIN=1  # cents to LOWER per cycle when above target (min)
 PRICE_ADJUST_DOWN_MAX=2  # cents to LOWER per cycle when above target (max)
 MAX_RENTAL_DAYS=14   # max rental/listing duration set on every pricing update (2 weeks)
+# Interruptible ("idle instance") min bid, in cents BELOW the on-demand listing
+# price. Empty = old behaviour (min bid = the PRICE_FLOORS floor). Either way the
+# min bid never drops under the floor. e.g. 5 → listed $0.67 gives min bid $0.62.
+MIN_BID_BELOW_LISTED_CENTS=""
 MIN_CHUNK_GPUS=1     # min number of GPUs Vast will bundle into a single rental --
                      # NOT a duration in days, despite this codebase's earlier name
                      # for it (MIN_CHUNK_DAYS). Confirmed live 2026-08-06: setting
@@ -3880,6 +3884,11 @@ vastai_set_price() {
     local http_code tmpf resp end_ts body
     new_price=$(printf "%.4f" "$new_price")
     floor_price=$(printf "%.4f" "$floor_price")
+    if [[ "$MIN_BID_BELOW_LISTED_CENTS" =~ ^[0-9]+$ ]]; then
+        local min_bid
+        min_bid=$(echo "scale=4; $new_price - $MIN_BID_BELOW_LISTED_CENTS / 100" | bc)
+        (( $(echo "$min_bid > $floor_price" | bc) )) && floor_price=$(printf "%.4f" "$min_bid")
+    fi
     tmpf=$(mktemp)
 
     # Listing end = now + MAX_RENTAL_DAYS (Unix epoch). Extends the listing on every price update.
