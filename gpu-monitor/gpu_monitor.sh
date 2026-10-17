@@ -712,8 +712,8 @@ SELFTEST_POS_FILE="/var/tmp/gpu_monitor_selftest_pos"
 SELFTEST_LAST_INSTANCE_FILE="/var/tmp/gpu_monitor_selftest_last_instance"
 
 # --- Listing ancillary prices (applied on every price update) ---
-PRICE_INET_UP=0.004    # $/GB upload   (~$4/TB)
-PRICE_INET_DOWN=0.004  # $/GB download (~$4/TB)
+PRICE_INET_UP=0.0035   # $/GB upload   ($3.50/TB)
+PRICE_INET_DOWN=0.0035 # $/GB download ($3.50/TB)
 PRICE_DISK=0.39        # $/GB/month storage
 
 # ─────────────────────────────────────────────
