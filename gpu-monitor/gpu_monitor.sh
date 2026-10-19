@@ -883,14 +883,34 @@ thermal_target_power() {
     if (( natural <= current )); then echo "$natural"; else echo "$natural_h"; fi
 }
 
+# Clamp a requested power limit into the card's allowed [min,max] range.
+# The driver rejects anything outside it (an RTX 5090 refuses < 400 W) and the
+# failed set leaves the card at its previous, often higher, limit -- e.g. a
+# 350 W mining throttle silently left zappa1's miner at 525 W (2026-10-19).
+clamp_power_limit() {
+    local idx="$1" watts="$2" quiet="${3:-}" lo hi
+    IFS=', ' read -r lo hi < <(nvidia-smi -i "$idx" --query-gpu=power.min_limit,power.max_limit --format=csv,noheader,nounits 2>/dev/null)
+    lo=$(printf "%.0f" "${lo:-0}" 2>/dev/null || echo 0)
+    hi=$(printf "%.0f" "${hi:-0}" 2>/dev/null || echo 0)
+    if (( lo > 0 && watts < lo )); then
+        [[ -z "$quiet" ]] && log "  GPU $idx: ${watts}W is below this card's minimum ${lo}W -- using ${lo}W"
+        watts="$lo"
+    elif (( hi > 0 && watts > hi )); then
+        [[ -z "$quiet" ]] && log "  GPU $idx: ${watts}W is above this card's maximum ${hi}W -- using ${hi}W"
+        watts="$hi"
+    fi
+    echo "$watts"
+}
+
 set_power_limits() {
     if [[ -n "$GPU_POWER_LIMIT" ]]; then
         log "Setting all GPUs to ${GPU_POWER_LIMIT}W (manual override via GPU_POWER_LIMIT)..."
         local gpu_count
         gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader,nounits | wc -l)
         for (( i=0; i<gpu_count; i++ )); do
-            if nvidia-smi -i "$i" --power-limit="$GPU_POWER_LIMIT" >> "$LOG_FILE" 2>&1; then
-                log "  GPU $i → ${GPU_POWER_LIMIT}W OK (override)"
+            local ow; ow=$(clamp_power_limit "$i" "$GPU_POWER_LIMIT")
+            if nvidia-smi -i "$i" --power-limit="$ow" >> "$LOG_FILE" 2>&1; then
+                log "  GPU $i → ${ow}W OK (override)"
             else
                 log "  GPU $i power limit ERROR"
             fi
@@ -902,6 +922,7 @@ set_power_limits() {
     while IFS=',' read -r idx name; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
         local watts; watts=$(get_power_limit_for_gpu "$name" "$idx")
+        watts=$(clamp_power_limit "$idx" "$watts")
         if nvidia-smi -i "$idx" --power-limit="$watts" >> "$LOG_FILE" 2>&1; then
             log "  GPU $idx ($name) → ${watts}W OK"
         else
@@ -1350,6 +1371,7 @@ thermal_adjust() {
         if (( profit_cap > 0 )) && [[ "$target" =~ ^[0-9]+$ ]] && (( target > profit_cap )); then
             target="$profit_cap"
         fi
+        [[ "$target" =~ ^[0-9]+$ ]] && target=$(clamp_power_limit "$idx" "$target" quiet)
         if [[ "$target" =~ ^[0-9]+$ ]] && (( target != curlimit )); then
             nvidia-smi -i "$idx" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
                 && { log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"; changed=1; }
@@ -1573,6 +1595,7 @@ Check chassis airflow / CPU cooler under the current workload."
                 target=$(( watts0 - CPU_PROTECT_DROP ))
                 # Respect the per-model hot cap as the hard floor (never below it)
                 (( target < hotcap0 )) && target="$hotcap0"
+                target=$(clamp_power_limit "$idx0" "$target")
                 nvidia-smi -i "$idx0" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
                     && log "    GPU $idx0 → ${target}W (protective, floor ${hotcap0}W)"
             done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
