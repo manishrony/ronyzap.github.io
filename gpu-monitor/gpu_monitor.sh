@@ -419,6 +419,10 @@ PRICE_ADJUST_UP_MAX=2    # cents to RAISE per cycle when below target (max)
 PRICE_ADJUST_DOWN_MIN=1  # cents to LOWER per cycle when above target (min)
 PRICE_ADJUST_DOWN_MAX=2  # cents to LOWER per cycle when above target (max)
 MAX_RENTAL_DAYS=14   # max rental/listing duration set on every pricing update (2 weeks)
+# Interruptible ("idle instance") min bid, in cents BELOW the on-demand listing
+# price. Empty = old behaviour (min bid = the PRICE_FLOORS floor). Either way the
+# min bid never drops under the floor. e.g. 5 → listed $0.67 gives min bid $0.62.
+MIN_BID_BELOW_LISTED_CENTS=""
 MIN_CHUNK_GPUS=1     # min number of GPUs Vast will bundle into a single rental --
                      # NOT a duration in days, despite this codebase's earlier name
                      # for it (MIN_CHUNK_DAYS). Confirmed live 2026-08-06: setting
@@ -708,8 +712,8 @@ SELFTEST_POS_FILE="/var/tmp/gpu_monitor_selftest_pos"
 SELFTEST_LAST_INSTANCE_FILE="/var/tmp/gpu_monitor_selftest_last_instance"
 
 # --- Listing ancillary prices (applied on every price update) ---
-PRICE_INET_UP=0.004    # $/GB upload   (~$4/TB)
-PRICE_INET_DOWN=0.004  # $/GB download (~$4/TB)
+PRICE_INET_UP=0.0035   # $/GB upload   ($3.50/TB)
+PRICE_INET_DOWN=0.0035 # $/GB download ($3.50/TB)
 PRICE_DISK=0.39        # $/GB/month storage
 
 # ─────────────────────────────────────────────
@@ -879,14 +883,34 @@ thermal_target_power() {
     if (( natural <= current )); then echo "$natural"; else echo "$natural_h"; fi
 }
 
+# Clamp a requested power limit into the card's allowed [min,max] range.
+# The driver rejects anything outside it (an RTX 5090 refuses < 400 W) and the
+# failed set leaves the card at its previous, often higher, limit -- e.g. a
+# 350 W mining throttle silently left zappa1's miner at 525 W (2026-10-19).
+clamp_power_limit() {
+    local idx="$1" watts="$2" quiet="${3:-}" lo hi
+    IFS=', ' read -r lo hi < <(nvidia-smi -i "$idx" --query-gpu=power.min_limit,power.max_limit --format=csv,noheader,nounits 2>/dev/null)
+    lo=$(printf "%.0f" "${lo:-0}" 2>/dev/null || echo 0)
+    hi=$(printf "%.0f" "${hi:-0}" 2>/dev/null || echo 0)
+    if (( lo > 0 && watts < lo )); then
+        [[ -z "$quiet" ]] && log "  GPU $idx: ${watts}W is below this card's minimum ${lo}W -- using ${lo}W"
+        watts="$lo"
+    elif (( hi > 0 && watts > hi )); then
+        [[ -z "$quiet" ]] && log "  GPU $idx: ${watts}W is above this card's maximum ${hi}W -- using ${hi}W"
+        watts="$hi"
+    fi
+    echo "$watts"
+}
+
 set_power_limits() {
     if [[ -n "$GPU_POWER_LIMIT" ]]; then
         log "Setting all GPUs to ${GPU_POWER_LIMIT}W (manual override via GPU_POWER_LIMIT)..."
         local gpu_count
         gpu_count=$(nvidia-smi --query-gpu=index --format=csv,noheader,nounits | wc -l)
         for (( i=0; i<gpu_count; i++ )); do
-            if nvidia-smi -i "$i" --power-limit="$GPU_POWER_LIMIT" >> "$LOG_FILE" 2>&1; then
-                log "  GPU $i → ${GPU_POWER_LIMIT}W OK (override)"
+            local ow; ow=$(clamp_power_limit "$i" "$GPU_POWER_LIMIT")
+            if nvidia-smi -i "$i" --power-limit="$ow" >> "$LOG_FILE" 2>&1; then
+                log "  GPU $i → ${ow}W OK (override)"
             else
                 log "  GPU $i power limit ERROR"
             fi
@@ -898,6 +922,7 @@ set_power_limits() {
     while IFS=',' read -r idx name; do
         idx=$(echo "$idx" | xargs); name=$(echo "$name" | xargs)
         local watts; watts=$(get_power_limit_for_gpu "$name" "$idx")
+        watts=$(clamp_power_limit "$idx" "$watts")
         if nvidia-smi -i "$idx" --power-limit="$watts" >> "$LOG_FILE" 2>&1; then
             log "  GPU $idx ($name) → ${watts}W OK"
         else
@@ -1346,6 +1371,7 @@ thermal_adjust() {
         if (( profit_cap > 0 )) && [[ "$target" =~ ^[0-9]+$ ]] && (( target > profit_cap )); then
             target="$profit_cap"
         fi
+        [[ "$target" =~ ^[0-9]+$ ]] && target=$(clamp_power_limit "$idx" "$target" quiet)
         if [[ "$target" =~ ^[0-9]+$ ]] && (( target != curlimit )); then
             nvidia-smi -i "$idx" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
                 && { log "  THERMAL: GPU $idx ${temp}°C → ${target}W (was ${curlimit}W)"; changed=1; }
@@ -1569,6 +1595,7 @@ Check chassis airflow / CPU cooler under the current workload."
                 target=$(( watts0 - CPU_PROTECT_DROP ))
                 # Respect the per-model hot cap as the hard floor (never below it)
                 (( target < hotcap0 )) && target="$hotcap0"
+                target=$(clamp_power_limit "$idx0" "$target")
                 nvidia-smi -i "$idx0" --power-limit="$target" >> "$LOG_FILE" 2>&1 \
                     && log "    GPU $idx0 → ${target}W (protective, floor ${hotcap0}W)"
             done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
@@ -1584,6 +1611,19 @@ Check chassis airflow / CPU cooler under the current workload."
 # Folding@home, SRBMiner = mining, python3 = ML) even when the rental's base
 # image (e.g. linux-desktop) doesn't. Populates the associative array named by
 # the first arg: <idx> -> <process name>.
+_pid_cmdline_is_miner() {
+    local pid="$1" cmd
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")" || return 1
+    case "${cmd,,}" in
+        *--pool*|*stratum+*|*stratum://*) return 0 ;;
+    esac
+    return 1
+}
+# Renamed miners (e.g. /tmp/forge/forge --pool qtc-us.kryptex.network:7049)
+# dodge the name list; a pool/stratum argument gives them away, so such
+# processes are reported as "miner:<name>" and classify_workload's *miner*
+# arm picks them up.
 build_gpu_proc_map() {
     local -n _map="$1"
     local -A _uuid_idx _best_mem
@@ -1601,6 +1641,8 @@ build_gpu_proc_map() {
         [[ -z "$gi" ]] && continue
         pmem="${pmem//[^0-9]/}"; [[ -z "$pmem" ]] && pmem=0
         pname="$(basename "$pname" 2>/dev/null || echo "$pname")"
+        pid="$(echo "$pid" | xargs)"
+        _pid_cmdline_is_miner "$pid" && pname="miner:$pname"
         if (( pmem >= ${_best_mem[$gi]:-0} )); then
             _best_mem["$gi"]="$pmem"; _map["$gi"]="$pname"
         fi
@@ -1623,6 +1665,7 @@ build_gpu_proc_map() {
             [[ "$ppid" == "-" ]] && continue
             local pcmd; pcmd="$(awk '{print $NF}' <<< "$pgi $ppid $ptype $_rest")"
             [[ -z "$pcmd" || "$pcmd" == "-" ]] && continue
+            _pid_cmdline_is_miner "$ppid" && pcmd="miner:$pcmd"
             # only fill if compute-apps didn't already name this GPU
             [[ -z "${_map[$pgi]:-}" ]] && _map["$pgi"]="$pcmd"
         done < <(timeout 15 nvidia-smi pmon -c 1 2>/dev/null)
@@ -3472,11 +3515,16 @@ Rate: <b>$cost</b>"
                         if ! { [[ -f "$docker_known_file" ]] && grep -qF "${new_iid}"$'\t' "$docker_known_file"; }; then
                             local d_workload="${current_iids[$new_iid]}"
                             d_workload=$(classify_workload "$d_workload")
+                            local d_cost="$cost"
+                            if [[ -z "$real_iid" ]]; then
+                                local d_est; d_est=$(listing_rate_estimate "$mid" "${rented_count:-1}")
+                                [[ -n "$d_est" ]] && d_cost="$d_est"
+                            fi
                             log "VAST.AI: Machine $mid — docker-detected renter STARTED ($new_iid, ${current_iids[$new_iid]})"
                             tg_send "🔄 <b>Vast.ai Renter Changed</b> — $(hostname)
 Machine: <b>$mid</b> | new renter $new_iid (docker-detected)
-Rate: <b>$cost</b>"
-                            write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$new_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$cost\",\"status\":\"running\",\"image\":\"${current_iids[$new_iid]}\",\"workload_type\":\"$d_workload\",\"source\":\"docker_diff\"}"
+Rate: <b>$d_cost</b>"
+                            write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$new_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$d_cost\",\"status\":\"running\",\"image\":\"${current_iids[$new_iid]}\",\"workload_type\":\"$d_workload\",\"source\":\"docker_diff\"}"
                         fi
                     done
 
@@ -3521,6 +3569,8 @@ Rate: <b>$cost</b>"
                         # index isn't accepted silently: retry /instances/ once
                         # after a short delay (it typically catches up within a
                         # few seconds) before falling back to an estimate.
+                        local rate_exact=0
+                        [[ -n "$real_iid" ]] && rate_exact=1
                         if [[ -z "$real_iid" ]]; then
                             sleep 8
                             local retry_slots_json retry_real_iid retry_rate
@@ -3549,6 +3599,7 @@ PYEOF
                             if [[ -n "$retry_real_iid" ]]; then
                                 real_iid="$retry_real_iid"
                                 cost="\$$(printf '%.3f' "$retry_rate")/hr"
+                                rate_exact=1
                                 image=$(get_instance_image "$real_iid")
                                 workload_type=$(classify_workload "$image")
                                 log "  Machine $mid: real_instance_id indexed on retry ($real_iid) -- using live rate $cost instead of an estimate"
@@ -3584,44 +3635,24 @@ PYEOF
                         # machine, a far better one-time estimate than a
                         # lagging account-wide earn_hour average (we set that
                         # listed price ourselves moments earlier).
-                        if [[ "$cost" == '$0.000/hr' ]]; then
-                            local last_listed_price
-                            last_listed_price=$(python3 - "$JSONL_FILE" "$mid" <<'PYEOF' 2>/dev/null
-import sys, json
-jsonl, mid = sys.argv[1], sys.argv[2]
-last = None
-try:
-    with open(jsonl) as f:
-        for line in f:
-            try:
-                ev = json.loads(line)
-            except Exception:
-                continue
-            if ev.get('type') == 'price_change' and str(ev.get('machine_id', '')) == mid:
-                p = float(ev.get('new_price', 0) or 0)
-                if p > 0:
-                    last = p
-except FileNotFoundError:
-    pass
-print(last if last is not None else '')
-PYEOF
-)
-                            if [[ -n "$last_listed_price" ]]; then
-                                local est_total
-                                est_total=$(printf "%.3f" "$(echo "scale=4; $last_listed_price * ${rented_count:-1}" | bc)")
-                                cost="\$${est_total}/hr"
-                                log "  Machine $mid: real_instance_id still not indexed after retry -- using our own last listed price \$$last_listed_price/GPU x ${rented_count:-1} = $cost instead of earn_hour-derived estimate"
-                            elif [[ -n "${earn_day:-}" ]] && (( $(echo "${earn_day:-0} > 0" | bc -l) )); then
-                                # Last resort: no price_change on record either
-                                # (e.g. very first rental on a fresh listing) --
-                                # earn_day/24 is a real Vast-reported figure, so
-                                # even a rough live-average beats a flat $0.000
-                                # that would otherwise misrepresent this rental
-                                # as free in the permanent record.
+                        # No live per-instance rate (typical for D-type contracts).
+                        # earn_hour is a lagging 24h average that reads far too low
+                        # right after a vacancy (logged $0.278 for a $0.67 rental on
+                        # zappa3, 2026-10-17), so estimate from the listing instead --
+                        # the lower of the live listing and our last price_change, so
+                        # a manual console price cut is honoured and a later raise
+                        # can't inflate the record.
+                        if (( ! rate_exact )); then
+                            local listing_est
+                            listing_est=$(listing_rate_estimate "$mid" "${rented_count:-1}")
+                            if [[ -n "$listing_est" ]]; then
+                                log "  Machine $mid: no live instance rate -- estimating $listing_est from the listing (was $cost)"
+                                cost="$listing_est"
+                            elif [[ "$cost" == '$0.000/hr' && -n "${earn_day:-}" ]] && (( $(echo "${earn_day:-0} > 0" | bc -l) )); then
                                 local est_hourly
                                 est_hourly=$(printf "%.3f" "$(echo "scale=4; $earn_day / 24" | bc)")
                                 cost="\$${est_hourly}/hr"
-                                log "  Machine $mid: no real_instance_id or price_change on record -- using earn_day/24 = $cost as last-resort rate estimate"
+                                log "  Machine $mid: no instance rate or listing on record -- using earn_day/24 = $cost as last-resort rate estimate"
                             fi
                         fi
                         log "VAST.AI: Machine $mid — rental STARTED ($rented_gpus, $workload_type: ${image:-unknown}, ${expire_source} end: $expire_date)"
@@ -3857,6 +3888,40 @@ PYEOF
     rm -f "$raw_file"
 }
 
+# Rental-start rate estimate (total $/hr) when Vast gives no per-instance rate:
+# lower of the live listed per-GPU price and our last price_change, x GPUs rented.
+# Taking the lower one keeps a manual console price cut (live listing is lower)
+# from being overstated by our older, higher price_change. Empty if neither known.
+listing_rate_estimate() {
+    local mid="$1" count="${2:-1}"
+    python3 - "$MACHINES_CACHE_FILE" "$JSONL_FILE" "$mid" "$count" <<'PYEOF' 2>/dev/null
+import sys, json
+cache, jsonl, mid, count = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4] or 1)
+cands = []
+try:
+    for m in json.load(open(cache)).get('machines', []):
+        if str(m.get('id')) == mid:
+            p = float(m.get('listed_gpu_cost') or 0)
+            if p > 0: cands.append(p)
+except Exception:
+    pass
+last = None
+try:
+    for line in open(jsonl):
+        if '"price_change"' not in line: continue
+        try: ev = json.loads(line)
+        except Exception: continue
+        if ev.get('type') == 'price_change' and str(ev.get('machine_id', '')) == mid:
+            p = float(ev.get('new_price', 0) or 0)
+            if p > 0: last = p
+except Exception:
+    pass
+if last: cands.append(last)
+if cands:
+    print('$%.3f/hr' % (min(cands) * max(count, 1)))
+PYEOF
+}
+
 vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
@@ -3864,6 +3929,11 @@ vastai_set_price() {
     local http_code tmpf resp end_ts body
     new_price=$(printf "%.4f" "$new_price")
     floor_price=$(printf "%.4f" "$floor_price")
+    if [[ "$MIN_BID_BELOW_LISTED_CENTS" =~ ^[0-9]+$ ]]; then
+        local min_bid
+        min_bid=$(echo "scale=4; $new_price - $MIN_BID_BELOW_LISTED_CENTS / 100" | bc)
+        (( $(echo "$min_bid > $floor_price" | bc) )) && floor_price=$(printf "%.4f" "$min_bid")
+    fi
     tmpf=$(mktemp)
 
     # Listing end = now + MAX_RENTAL_DAYS (Unix epoch). Extends the listing on every price update.

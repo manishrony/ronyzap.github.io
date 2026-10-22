@@ -1,0 +1,7 @@
+[Unit]
+Description=Watchdog reboot-loop circuit breaker
+Before=watchdog.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wd-breaker.sh

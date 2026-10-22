@@ -43,11 +43,17 @@ sec "2. Throttle state (busy-since files)"
 # uncapped at 550W the whole time — this diag used to print that as
 # "THROTTLED", which was wrong.
 classify_current_gpu_proc() {
-  local idx="$1" pname
-  pname=$(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name --format=csv,noheader 2>/dev/null \
+  local idx="$1" pname pid line cmd
+  line=$(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name --format=csv,noheader 2>/dev/null \
     | awk -F', ' -v want="$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null | awk -F', ' -v i="$idx" '$1==i{print $2}')" \
-      '$1==want{print $3; exit}')
+      '$1==want{print $2", "$3; exit}')
+  pid="${line%%, *}"; pname="${line#*, }"; [[ "$line" == *", "* ]] || pname=""
   pname="${pname,,}"
+  # Renamed miners: a pool/stratum argument in the command line gives them away.
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")"
+    case "${cmd,,}" in *--pool*|*stratum+*|*stratum://*) echo "mining"; return ;; esac
+  fi
   case "$pname" in
     *miner*|*srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*|*matador*|*wildrig*) echo "mining" ;;
     *hashcat*|*hcxdump*|*hcxtools*|*johntheripper*|*john-the-ripper*) echo "cracking" ;;

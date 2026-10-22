@@ -164,11 +164,17 @@ mechanism aside) and should still be run and recorded as planned.
 | 10/03 19:47 and 20:35 | #3 | **Thirteenth and fourteenth incidents.** Boots at 19:47:29 and 20:35:33. The 20:35 boot is the one captured in the console photograph showing `pcieport 0000:00:01.4` fatal-pattern-adjacent output plus a D-state cascade (`jbd2/nvme0n1p3`, `systemd-journal`, `rasdaemon`, `monitor`, `kaalia`, `cmfd-miner`, `python3` all blocked >122s) **and**, unusually, `systemd[1]: Failed to start systemd-journald.service` repeating across large timestamp jumps (493s → 616s → 1277s → 1729s → 2180s → 2631s) before the capture ends. This raised a filesystem-corruption concern (repeated real `nvme1n1` I/O errors the day before, per incident #11, made this plausible). **Confirmed as a false alarm, not corruption:** `fsck -n /dev/nvme0n1p3` (dry-run) reports `clean, 177181/50331648 files, 6040140/201326592 blocks`; `dmesg` shows only the standard boot-time `mounted ro → systemd-remount-fs → remounted rw` sequence, not a fault response; the one genuine anomaly is `systemd-journald[2357]: File ... system.journal corrupted or uncleanly shut down, renaming and replacing` — journald self-healing its own log file after an unclean shutdown, which is expected after any hard/watchdog reset and explains the earlier "Failed to start" messages (journald was busy discarding the old journal, not broken). |
 | 10/03 20:35:34 (4s after boot) | #3 | **Second occurrence of the NVRM register-read fault, now on a different GPU.** `NVRM: GPU1 gpuHandleSanityCheckRegReadError_GH100: Possible bad register read: addr: 0x110094, regvalue: 0xbadf2100` — identical address and sentinel value to the 10/03 13:48:41 occurrence on GPU4, but this time on **GPU1**, and only 4 seconds after boot (tighter correlation with the boot-time AER than the first occurrence's 23s gap). Per the standing open item, a recurrence on a *different* GPU meets the bar for tracking this as a real, repeating signal rather than a one-off: it is not GPU4-specific, and its consistent timing relative to boot/AER events makes the "downstream symptom of the same IO-die/root-complex instability" hypothesis more plausible than "independent per-GPU hardware fault." Still not conclusively linked to the CPU dispute evidence — but promote to "actively tracked, probably related" rather than "isolated, unattributed." |
 
-| 10/04 10:45:22–10:55:45 | #3 | **Fifteenth incident, first on 10/04.** BMC SEL shows `Watchdog2 IPMI_Watchdog | Hard reset | Asserted` at 10:45:22 — the watchdog caught and reset a hang on its own, same as every prior watchdog-recovered incident. A manual IPMI power cycle (issued from zappa1 via `ipmitool ... chassis power cycle`) landed 7 minutes later at 10:52:24, effectively redundant with the already-completed automatic recovery. Boot completed cleanly at 10:52:32; the usual benign PERR boot-training burst followed at 10:55:29-30, with the standard corrected AER signature (`device_id: 0000:03:00.0`, `Error 12`/`Error 13`) logged at 10:55:45. No new signature — watchdog continues working as designed. |
+| 10/04 10:45:22–10:55:45 | #3 | **Fifteenth incident, first on 10/04.** BMC SEL shows `Watchdog2 IPMI_Watchdog | Hard reset | Asserted` at 10:45:22 — the watchdog caught and reset a hang on its own, same as every prior watchdog-recovered incident. A manual IPMI power cycle (issued from zappa1 via `ipmitool ... chassis power cycle`) landed 7 minutes later at 10:52:24, effectively redundant with the already-completed automatic recovery. Boot completed cleanly at 10:52:32; the usual benign PERR boot-training burst followed at 10:55:29-30, with the standard corrected AER signature (`device_id: 0000:03:00.0`, `Error 12`/`Error 13`) logged at 10:55:45. No new signature — watchdog continues working as designed. Machine then ran stable for the rest of 10/04 (14h38m clean uptime observed that evening, zero new faults). |
+| 10/05 13:19:47–13:19:50 | #3 | **Sixteenth incident, first on 10/05.** Same corrected AER signature (`device_id: 0000:03:00.0`, `Error 12`/`Error 13`) at 13:19:47, boot completed 13:19:50 (BMC SEL `S0/G0: working` 13:16:34, benign PERR boot-training burst 13:19:32). `reliability2` dropped 0.91→0.57 across this reboot, consistent with every prior incident's pattern. Recovered normally: fully functional within minutes, GPU0/GPU4 correctly throttled to the new 450W mining cap post-boot (`WORKLOAD THROTTLE` fired again at 13:21:09, confirming the `tsc-engine` mining-classification fix and the 450W setting both survive across reboots). No new signature — the ~14.5-hour gap since incident #15 is the longest stable stretch yet recorded in this case. |
+| 10/05 15:53:59–15:54:01 | #3 | **Seventeenth incident.** Same corrected AER signature (`device_id: 0000:03:00.0`, `Error 12`/`Error 13`) at 15:53:59, boot completed 15:54:01 (BMC SEL `S0/G0: working` 15:50:46, benign PERR boot-training burst 15:53:44). Only ~2.5 hours since incident #16 — the encouraging ~14.5h gap before it did not hold, and the fault rate is back to its usual cadence rather than genuinely improving. Recovered normally; GPU0/GPU4 again correctly capped at 450W post-boot. No new signature. |
+| 10/05 16:49:29 | #3 | **Eighteenth incident.** Boot completed 16:49:29 (only ~55 min after #17), confirmed by the recovery-time `WORKLOAD THROTTLE` log firing again at 16:50:49 (GPU 7/6/4/0 re-capped post-boot). Discovered via the `gpu-monitor`/`gpu-dashboard` service-start boot listing rather than a live diagnostics capture of the fault itself — same pattern as incidents #12-14 being found late. Individual AER signature not captured live but assumed identical given the consistent pattern of every prior incident. |
+| 10/05 17:54:19–17:54:22 | #3 | **Nineteenth incident, ~65 min after #18.** Same corrected AER signature (`device_id: 0000:03:00.0`, `Error 12`/`Error 13`) at 17:54:19, boot completed 17:54:22. Three reboots in the last ~2 hours (15:54 → 16:49 → 17:54) — frequency is accelerating again, consistent with progressive degradation rather than a steady-state fault. User confirms replacement CPU (with correctly-specced NEIKO 10573B torque driver, 10.8-13.0 in-lbf target for the SP5 ILM screws) arrives tomorrow and the swap test will be performed then. |
+| 10/06 13:50 (status check) | #3 | **New stable-stretch record: 19h56m uptime, no new incident since #19.** Beats the prior 14.5h record (between #15 and #16). System healthy — 6/8 GPUs rented with genuine compute workloads, `tsc-engine` still correctly throttled at 450W, `reliability2` climbed to 0.90. Logged for the record; CPU swap test is scheduled for today. |
+| 10/06 14:57:08–14:57:11 | #3 | **Twentieth incident — ends the stable stretch at a new record of ~21h03m** (17:54:22 on 10/05 → 14:57:08 on 10/06), beating the just-logged 19h56m mark. Same corrected AER signature (`device_id: 0000:03:00.0`, `Error 12`/`Error 13`), boot completed 14:57:11 (BMC SEL `S0/G0: working` 14:53:54, benign PERR boot-training burst 14:56:52-53). `reliability2` dropped 0.90→0.64 across this reboot — same pattern as every prior incident. GPU0/GPU4 re-throttled to 450W correctly post-boot (`WORKLOAD THROTTLE` fired at 14:58:30). Recovered normally. Still awaiting the CPU swap test, scheduled for today. |
 
-**Frequency note:** fifteen incidents across roughly 69 hours (two on 10/01,
-six on 10/02, six on 10/03, one on 10/04 so far) — including two reboot clusters of 3-in-17-min and
-3-in-40-min on the same day) is a sharp
+**Frequency note:** twenty incidents across roughly 123 hours (two on 10/01,
+six on 10/02, six on 10/03, one on 10/04, five on 10/05-10/06 so far) — including two reboot clusters of 3-in-17-min and
+3-in-40-min on 10/03 — is a sharp
 step up from the prior cadence of roughly one every few days — and still
 accelerating. Combined with the 10/02 fatal AER captures — reproduced
 twice with an identical signature — on the same root-complex port flagged
@@ -245,8 +251,440 @@ physical evidence for the claim.
 | Fault clears on the new CPU, same board | **CPU confirmed defective.** Also exonerates board #3 (and retroactively boards #1/#2). Strongest possible evidence for the dispute — attach this test's before/after logs directly. |
 | Fault persists on the new CPU, same board | CPU is cleared. Points back at board #3 or a rig-level cause (see lead #1, PSU ground offset, in `TROUBLESHOOTING-PCIE-SERR.md`). **Do not proceed with the CPU dispute on weak grounds** if this happens — the Mitac board case (`CASE-MOTHERBOARD-RETURN-MITAC.md`) becomes the live one instead. |
 
+### RESULT — 2026-10-07: test complete, CPU exonerated, board #3 implicated
+
+CPU physically swapped 2026-10-06/07 (new EPYC 9B14, unlocked, `100-000000782`,
+from eGoods Supply). Teardown, socket, and new-CPU pin inspection all
+photographed clean — no bent pins, no socket damage. New CPU correctly
+detected post-boot: **AMD EPYC 9B14 96-Core, 2600 MHz**, 524288MB DDR5
+4800MT/s, TYAN BIOS v2.03. Same board (#3), same NVMe, same slot, same
+SP5 torque spec (~12 in-lbf, T20 Torx, single ILM screw).
+
+**At 77.8 seconds of uptime on the first boot after the swap**, the
+identical-signature fault recurred — and worse than any prior occurrence:
+
+```
+[ 77.846245] pcieport 0000:00:01.4: PCIe Bus Error: severity=Uncorrectable (Fatal), type=Transaction Layer
+[ 77.846359] pcieport 0000:00:01.4:   device [1022:14ab] error status/mask=00000020/00000000
+[ 77.866139+] nvme0n1: mass I/O Cmd(0x2) READ failures across hundreds of LBAs, I/O error (sct 0x3 / sc 0x71), class 2
+```
+
+Same root port (`00:01.4`), same device ID (`[1022:14ab]`), same
+`severity=Uncorrectable (Fatal)` class already seen twice on 2026-10-02 —
+but this is the first time it has struck this early post-boot (77s vs.
+hours/days previously), and the first time it cascaded into an actual
+NVMe I/O error flood visible at the console rather than being caught only
+in AER/BMC logs.
+
+**Confirming boot — 2026-10-07 01:10 UTC:** after properly restoring/saving BIOS
+settings (the 77s-fault boot above ran on BIOS defaults post-CMOS-clear, an
+open question at the time), the fault recurred again within seconds of this
+clean boot: BMC SEL logged 14x "PCI PERR" assertions at 01:10:32, followed
+immediately by corrected AER errors on the same `device_id: 0000:03:00.0`
+at 01:10:46. This was a corrected (not fatal) event, but it removes the
+BIOS-defaults confound entirely — the fault reproduces under the rig's
+actual configured settings, not just stock defaults.
+
+**Correction/escalation — 2026-10-07, the 01:10 boot above hung and required
+manual recovery.** What was logged as a routine corrected AER event at
+01:10:46 actually cascaded into the same D-state hang pattern seen in
+every prior fatal incident: `jbd2/nvme0n1p3`, `rasdaemon`, `kaalia`,
+multiple `kworker` threads, and `python`/`python3` processes all reported
+"blocked for more than 122 seconds" (later 245 seconds), with
+`systemd-journald.service` repeatedly failing to start — identical
+signature to incidents #4/#5/#14. The machine was unresponsive until
+manually power-cycled via `ipmitool ... chassis power cycle` from zappa1;
+recovery boot completed by 11:17:47 UTC. This is now the **21st incident**
+and confirms the corrected/fatal distinction doesn't predict whether a
+given event escalates into a hang — even a "corrected" AER log entry can
+precede a full freeze requiring manual intervention. Does not change the
+verdict (same device, same signature, post-CPU-swap), but strengthens it
+further: the fault keeps producing full hangs on the replacement CPU, not
+just transient log entries.
+
+**Board history evidence — 2026-10-07, FRU + full SEL history.**
+Board #3's FRU EEPROM (`Baseboard FRU`, non-volatile, not editable by a
+reseller without specialized tools) records:
+- Board Manufacturer: TYAN, Product: S8056GME
+- Board Serial Number: `CRMF3CN10007`
+- **Manufacture Date: 2023-03-21** — roughly 3.5 years before this
+  board's installation (~Sept 2026).
+
+Also pulled the **full SEL history** (not just the recent tail).
+Entries #1-8 (dated 07/04-05/2003) are the BMC's default/unsynced-clock
+placeholder, a universal artifact before the clock gets a real time
+source — not real events. Entry #9, "Timestamp Clock Sync" on
+2025-07-09 00:27:02 UTC, is the first entry with a plausible-looking
+(non-placeholder) date, immediately followed by an AC-lost/power-on
+cycle and an 11x "PCI PERR" burst matching the fault signature tracked
+throughout this case.
+
+**Caveat (self-corrected, do not overstate):** a plausible-looking BMC
+timestamp is not proof of accuracy. Without NTP configured, a BMC's
+clock sync can come from a depleted/replaced CMOS battery, a stale RTC
+value, or an incorrect sync source, and still produce a date that looks
+real rather than an obvious placeholder. **07/09/2025 should be read as
+a weak, inconclusive signal, not proof that the board was powered on and
+faulting over a year before this investigation.** It's consistent with
+that story, but not independently verified — the BMC's time source at
+that boot is unknown. Worth noting as a secondary data point alongside
+the 2023-03-21 manufacture date, but **do not cite this SEL timestamp as
+decisive evidence of prior use in the seller/MiTAC dispute** unless the
+clock's reliability can be independently confirmed (e.g., checking
+whether NTP was ever configured on this board, or whether the timestamp
+lines up with anything externally verifiable).
+
+**Independent cross-corroboration — 2026-10-07, MiTAC RMA ticket #3280.**
+A *separate* TYAN board (serial `CRMF3CN10001`, a different physical unit
+from board #3's `...10007`, fault reported on a different bus
+`0000:07:00.x`) was sent directly to MiTAC/TYAN's own RMA facility under
+warranty, RMA# FR26370197, for the same class of fault: "Recurring PCI
+SERR fault" on a root port. On 2026-10-07, MiTAC's support (Alvin Chong)
+reported: *"Our tech just reported that they were able to replicate the
+issue you facing during the system stress test however the error
+intermittently popped up which is why they needed more time."* This is
+independent, third-party confirmation — MiTAC's own lab technicians,
+with no input from this investigation, reproduced an SERR/root-port fault
+on a different physical board from the same family under controlled
+stress testing. While not proof that board #3 specifically shares the
+same root cause, it meaningfully supports that this board design/family
+can produce exactly this fault class independent of CPU, cabling, or
+rig-specific conditions — useful corroborating context for the board #3
+dispute even though it is a separate ticket/unit.
+
+**MiTAC RMA ticket #3280 — board replacement approved, 2026-10-08.**
+MiTAC (Michael Fieldness, RMA Supervisor) confirmed: *"Due to the length
+of repair we have opted to replace the board. We are preparing the
+replacement and will let you know when it ships."* MiTAC is replacing
+(not repairing) board serial `CRMF3CN10001` under RMA# FR26370197 after
+their own lab was unable to reliably clear the intermittent SERR fault
+during stress testing. This is a stronger data point than the initial
+repro alone: MiTAC's own RMA process concluded the fault on this board
+family was not reliably fixable by repair, warranting a full board swap.
+No ship date/tracking provided yet; a reply requesting an ETA has been
+sent. This remains a separate unit/ticket from board #3
+(`CRMF3CN10007`, the eBay 5starsbargain dispute) — useful corroborating
+context, not direct evidence for board #3 itself.
+
+**Hardware watchdog confirmed active — 2026-10-07.** Investigated why
+the earlier 10-hour unattended hang (01:10→11:17 recovery) wasn't
+caught automatically. Confirmed via `ipmitool mc watchdog get` that the
+standard IPMI watchdog (via the `ipmi_watchdog` kernel module +
+systemd's `RuntimeWatchdogSec=60s`, already present in
+`/etc/systemd/system.conf`) is **live and running**: Action=Hard Reset,
+60s countdown, actively being petted. This operates independently of
+the BIOS "OS Watchdog Timer" toggle (which was separately found
+disabled in Server Mgmt, but appears to govern a different/legacy
+boot-time feature, not this runtime mechanism) — no BIOS change was
+needed. Going forward, any hang severe enough to stop systemd's petting
+loop should self-recover via hard reset within ~60 seconds, rather than
+requiring manual IPMI intervention. Does not address the underlying
+board defect, only shortens downtime when a hang occurs.
+
+**Watchdog did NOT self-recover a hang — 2026-10-08, ~14:27-14:37 UTC.**
+zappa2 went offline/unresponsive: SSH refused, IPMI SOL console frozen
+(no response to keystrokes), yet `ping` to the host IP succeeded with
+0% loss throughout, and `ipmitool mc watchdog get` (run concurrently via
+zappa2's BMC, 192.168.1.247) showed the watchdog still **Started/Running
+and actively being petted** (countdown cycling normally, never reaching
+zero). No new SEL entries were logged for this incident — another
+**silent hang**, consistent with prior occurrences that produced zero
+AER/MCE/extlog evidence. This is a meaningful correction to the
+2026-10-07 assumption above: **not every hang stops systemd's
+watchdog-petting loop.** This one left PID1 responsive enough to keep
+feeding the watchdog while user-facing services (console TTY, sshd)
+were fully wedged — likely the same D-state I/O-stall pattern seen
+before (storage/root-port hang blocks anything needing disk I/O, but
+doesn't necessarily block PID1's own non-blocking `sd_notify`
+watchdog call). Recovered via manual `ipmitool chassis power cycle`
+(no auto-recovery occurred). Post-recovery: watchdog re-armed
+correctly (confirms it survives this reboot too), all 8 GPUs back and
+visible via `nvidia-smi`, workloads resumed. **Practical implication:**
+the watchdog remains a useful safety net for some hang classes but is
+not a complete substitute for monitoring — this incident still required
+manual intervention. Strengthens the case for the planned NVMe
+bypass-to-PESLOT test (moving storage off the suspect root port), since
+this is another occurrence of the same silent-hang signature on board #3.
+**Correction (same day):** three git object files written minutes before
+the hang were 0 bytes after the power cycle. This was first read as proof
+of a rootfs I/O wedge, but ext4 routinely leaves recent unsynced files at
+0 bytes after any hard power cut, so it is **not** evidence either way.
+
+**Watchdog hardened — 2026-10-08 ~14:50 UTC.** `/dev/watchdog` moved from
+systemd (PID1-alive only) to the `watchdog` daemon, which pets the BMC
+timer only while an uncached rootfs write+read succeeds every 10s. A
+repeat of today's hang should now self-reset in ~3 min worst case instead
+of needing manual IPMI. Not yet proven against a real hang. Details,
+deploy steps, and rollback: `gpu-monitor/watchdog/README.md`.
+
+**Second hang same day — 2026-10-08 ~16:05:50 UTC; watchdog again did
+not reset.** Journal (persisted) ends at 16:05:48 mid routine activity, no
+kernel error. The I/O probe never failed (empty error log) and the BMC
+timer kept being petted throughout. Layout check: `nvme1n1` holds `/`,
+`/boot/efi` and `/var/lib/docker`; `nvme0n1` is unmounted. So the rootfs
+accepted O_DIRECT I/O during the hang while journald, sshd and the
+console stalled. Likely cause of the miss: the watchdog daemon ran with
+`realtime = yes` and its probe inherited RT scheduling, so it kept
+running while ordinary processes were starved. **This weakens the
+storage-wedge reading of these hangs** — the stall looks like general
+userspace starvation, not the disk. Fix: daemon now non-realtime, probe
+drops to SCHED_OTHER and also requires an sshd banner on 127.0.0.1:22.
+
+**Drive/slot map and AER check — 2026-10-08 ~16:30 UTC.**
+
+| Drive | Serial | PCI | Root port | Use |
+|---|---|---|---|---|
+| nvme0 (CT4000T705SSD3) | `2529E9C6B11E` | `0000:03:00.0` | `00:01.4` (faulty M.2 slot) | **unmounted, unused** |
+| nvme1 (CT4000T705SSD3) | `2529E9C6B4E4` | `0000:04:00.0` | `00:01.5` (2nd M.2 slot) | `/boot/efi`, `/`, `/var/lib/docker` |
+
+`/var/log/aer-watch.log` (5-min cron) shows `ERR_COR/FATAL/NONFATAL = 0`
+on both `00:01.4` and `00:01.5` at every reading through 16:05:01, ~50s
+before the 16:05:50 hang — no slow error build-up. Does not exclude a
+sudden burst inside the last 50s. The log contains NUL bytes (typical of
+writes cut off by hard power cycles). Since the 16:11 boot, one of the two
+ports shows 12 interrupts (AER/DPC/PME shared vector) while its AER counters
+stay 0 — unexplained activity on an idle slot; not yet attributed.
+
+**Next test (planned 2026-10-08):** empty both M.2 slots. Move nvme1
+(`...B4E4`, OS + docker) onto a Sabrent M.2→PCIe adapter in **PESLOT1**
+(PCIe 5.0 x16 direct from CPU, separate from the M.2 lanes); remove nvme0
+(`...B11E`) from the system entirely. Two variables change at once (accepted
+for stability); nvme0 can be reinstalled later to isolate it.
+
+**Swap outcome — 2026-10-08 ~18:40 UTC.** The Sabrent M.2→PCIe card did not
+fit: PESLOT1/2 on the S8056 are proprietary **riser** connectors (x28/x24),
+not standard PCIe slots (datasheet says "riser slot"; earlier advice missed
+this). Fallback: remove the unused drive only. After reboot only one NVMe
+is present, `...B4E4` (OS + docker), but it enumerates at
+`/sys/devices/pci0000:00/0000:00:01.4/0000:03:00.0` — i.e. it is now in the
+**faulty `00:01.4` M.2 socket**, the opposite of intended. It must be moved
+to the other M.2 socket (`00:01.5`). Watchdog re-armed after boot
+(`Started/Running`). The earlier ~17:00 BMC read showed `Timer Expiration
+Flags: SMS/OS` with countdown 0. **Confirmed by SEL:** `7e8 | 10/08/2026 |
+04:46:34 PM UTC | Watchdog2 IPMI_Watchdog | Hard reset | Asserted` — the
+non-realtime I/O+sshd probe caught a hang ~30 min after deploy and recovered
+the rig with no manual action. First automatic recovery of this hang class.
+Earlier SEL watchdog resets for reference: 10/03 13:39, 10/04 03:53,
+10/04 10:45, 10/07 11:41 (systemd-petted era).
+
+**Decisive: fault follows the slot, not the drive — 2026-10-08 18:34 UTC.**
+Config: nvme0 `...B11E` removed from the system; nvme1 `...B4E4` (OS) now
+alone in the `00:01.4` M.2 socket; `00:01.5` empty. Boot at 18:34:24 UTC.
+Within ~2 min the identical signature recurred on the *other* physical
+drive: BMC SEL `80f`–`81c` (14+ entries) `Critical Interrupt #0x80 | PCI
+PERR | Asserted` at 18:34:06–07, and kernel `[Hardware Error]` PcieError
+`type: corrected` on `device_id: 0000:03:00.0` (`c0a9:542b`) at 18:34:21.
+Same pattern as 10/07 15:07:56–15:08:09 with `...B11E` in that socket.
+Two different drives produce the same PERR/AER burst in `00:01.4`, so
+the drive is excluded; the fault is in the board's `00:01.4` M.2
+socket/lane path (CPU previously excluded by swap test). Strongest
+single piece of evidence for the board #3 dispute.
+
+**Hang + second automatic recovery — 2026-10-08 ~19:5x UTC.** Config as
+above (OS drive alone in `00:01.4`). User reported the rig stuck; external
+probe from zappa1 showed no SSH banner on `192.168.1.196:22`. Watchdog
+petting stopped ~19:55:14 (countdown 52.2 → 37.2 → 22.1 → 6.9 s at 15 s
+intervals) and the BMC timer expired at ~19:57:06 (`Timer Expiration Flags:
+0x10 SMS/OS`, countdown 0) — hard reset with no manual action. ~1h20m
+uptime after the 18:34 boot.
+
+**Further resets — 2026-10-08 evening.** Boot sequence from journal: 18:34
+(manual), 20:06 (after 19:57 watchdog reset), 20:29, 20:57 — i.e. two more
+hangs/restarts ~23 and ~28 min apart; no manual action reported, breaker
+not tripped (3 boots span 51 min > 30 min window). Each boot again shows
+the PCI PERR burst (e.g. SEL `848`–`855` at 20:57:13–14) and corrected
+PcieError on `0000:03:00.0` (20:57:28). Stable 55 min as of 21:52 UTC with
+6/8 GPUs rented. Vast `reliability2` fell to 0.39 at 21:03. Hang frequency
+since the OS drive went into `00:01.4` (~18:34): roughly every 25–80 min.
+
+**Overnight — 2026-10-08 20:57 → 2026-10-09 09:40 UTC.** Longest stretch
+since the swap: ~12h43m up. Next power-on 09:40:09 (SEL ACPI S0), OS up
+09:43:26; same PCI PERR burst at 09:43:07 (SEL `9ad`–`9ba`) and corrected
+PcieError on `0000:03:00.0` at 09:43:23. Renter 54914617 ended 09:48 with
+`[GPU_ERROR]` (Vast's attribution of the interruption). `reliability2` had
+recovered to ~0.82 overnight, dropped to 0.61 at this restart, 0.72 at
+10:09. Rentals resumed by ~10:14 (6/8 GPUs at 100% in nvtop).
+
+**2026-10-09 18:28 restart + 5V rail warnings.** Up 09:43 → ~18:25 (~8h45m),
+next boot 18:28:26 with the usual PERR/PcieError on `0000:03:00.0` at
+18:28:23. New: from ~20:20 UTC the BMC logs `Voltage VDD_5_RUN | Lower
+Critical going low` repeatedly asserting/deasserting (reading 4.49–4.52 V,
+threshold 4.49 V) while 7/8 GPUs ran mining at 100% (load ~32). 4.49 V is
+~10% below nominal 5 V (ATX allows ±5%, i.e. ≥4.75 V) — needs checking
+with `ipmitool sensor` history and a multimeter; could be a sensor offset
+or a sagging 5 V rail on the motherboard PSU (RM1200x SHIFT).
+Boot count (journal) since 10/05: 10/05 ×4, 10/06 ×2, 10/07 ×6, 10/08 ×6,
+10/09 ×2 = 20.
+
+**Voltage snapshot under full load — 2026-10-11 ~01:40 UTC** (8/8 GPUs
+mining at ~500 W each, uptime 7h30m), `ipmitool sdr type Voltage`:
+VCC_12_RUN 11.91 V, VDD_12_RUN 11.83 V, **VDD_5_RUN 4.56 V** (−8.8%; ATX
+min 4.75 V), VDD_33_RUN 3.23 V, VDD_33_DUAL 3.32 V, CPU_33_DUAL 3.30 V,
+CPU_18_DUAL 1.38 V, USB_1V2_HUB 1.11 V, VBAT 3.06 V; CPU rails nominal.
+12 V and 3.3 V are in spec; only the 5 V rail reads out of spec. Idle
+reading and multimeter check pending.
+
+**Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
+Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
+reset, no new SEL/AER entries after that boot's usual PERR burst).
+Config unchanged since 10/08: OS drive `...B4E4` alone in `00:01.4`,
+`...B11E` removed, `00:01.5` empty. Mining cap lowered to 475 W/GPU on
+10/12 02:30; rig fully rented and mining at ~3.8 kW for most of this
+stretch. Vast `reliability2` recovered to 0.96.
+
+**2026-10-10 SEL.** 16:36:25 IPMI power reset; 16:50:05 IPMI power cycle →
+S0 at 16:50:12; PCI PERR burst 16:53:09–10 (SEL `cd4`–`ce1`, 14 entries) —
+same boot-time signature. **18:02:38 `Watchdog2 IPMI_Watchdog | Hard
+reset`** (automatic recovery, ~1h12m after boot). A manual `chassis power
+cycle` was then issued ~18:05, a few minutes into the watchdog-initiated
+boot.
+
+**PSU/cable reseat performed — 2026-10-07, ~12:13 UTC boot.** The 24-pin
+ATX and EPS12V cables (Corsair RM1200x SHIFT, dedicated to the
+motherboard only, not shared with GPU power) were physically disconnected
+and reseated at both the PSU and board ends during this boot, closing out
+an earlier open question about whether this specific test had actually
+been done. This boot is now the tracked data point for whether loose
+power cabling played any role: as of 2h+ post-boot, zero new incidents —
+encouraging, but not yet conclusive, since prior stable stretches of
+14.5h, 19h56m, and 21h03m were already observed earlier in this case
+while the fault was still fully active and unrelated to any cable work.
+**Read this test as: fault recurring sooner than ~21h (the prior best
+stretch) = reseat likely irrelevant, board conclusion stands. Fault
+staying clear well beyond 21h = reseat may have been a real contributing
+factor, worth revisiting the board-defect conclusion.**
+
+**Result — 2026-10-07 15:08:09 UTC: fault recurred at ~2h53m post-reseat**
+(12:13:47 boot → 15:08:09 fault), the 22nd incident, same corrected
+`device_id: 0000:03:00.0` signature. This is well short of the ~21h bar,
+so **the PSU/cable reseat does not appear to have changed anything** —
+consistent with the board remaining the root cause, not loose cabling.
+This closes out the cable-reseat line of investigation without
+overturning the board #3 verdict.
+
+**Verdict: CPU is cleared. Fault persists on the new CPU, same board.**
+Per the table above, this points at **board #3 (TYAN S8056GME) itself**,
+not the CPU, and retroactively supports the same conclusion for boards
+#1/#2 before it. The CPU return/dispute should **not** proceed on the
+strength of this test — the evidence now runs the other way. The live
+case going forward is the **board #3 return** (see Open items below),
+not a CPU replacement claim.
+
 ## Open items
 
+- [ ] **URGENT — contact seller for board #3 (TYAN S8056GME) before the
+      return window closes.** Confirmed order details:
+      - Seller: **5starsbargain** (eBay)
+      - Order #: **04-15170-52658**
+      - Purchased: 2026-09-12, **delivered 2026-09-18**
+      - Price: $479.16
+      - **Listing states "Returns not accepted"** — a standard eBay return
+        request would likely be auto-rejected, so the plan is to **message
+        the seller directly first**, and escalate to a formal RMA / eBay
+        Money Back Guarantee claim afterward if needed (MBG applies to
+        defective-item claims even on no-returns listings). eBay's MBG
+        window is based on **delivery date**, not purchase date — Sep 18
+        delivery gives roughly until **~2026-10-18**, a few days more
+        buffer than the purchase-date estimate below.
+
+      **Step 1 — message sent to seller 2026-10-05 via eBay messaging**
+      (confirmed sent, matches draft below verbatim):
+
+      > To: 5starsbargain — Re: Order #04-15170-52658 — Tyan S8056GME
+      > Server Motherboard
+      >
+      > Hi,
+      >
+      > I'm reaching out about the Tyan S8056GME motherboard from order
+      > #04-15170-52658, delivered Sep 18, 2026.
+      >
+      > Since installation, this board has shown a recurring PCIe hardware
+      > fault — repeated corrected and, on at least two occasions,
+      > uncorrectable/fatal PCIe bus errors reported by the CPU's root
+      > complex (`pcieport 0000:00:01.4`, device `[1022:14ab]`), causing
+      > multiple unexplained system hangs that require a hard power cycle
+      > to recover. This has been happening multiple times per day over
+      > the past week.
+      >
+      > I've confirmed this through:
+      > - BMC System Event Log entries (hardware-level, independent of the
+      >   OS)
+      > - Kernel-level PCIe AER (Advanced Error Reporting) logs
+      > - Ruled out the storage drive (SMART health fully normal)
+      > - Ruled out software/workload causes
+      >
+      > I understand the listing states returns are not accepted, but this
+      > is a hardware defect, not a change-of-mind return. I'm currently
+      > running a further isolation test (swapping only the CPU) to
+      > confirm the fault is board-specific before deciding how to
+      > proceed, but wanted to flag this now given the issue and open a
+      > conversation about options — replacement, partial refund, or
+      > return — depending on what the test shows.
+      >
+      > Happy to share diagnostic logs/screenshots if helpful.
+      >
+      > Thanks,
+      > [Your name]
+
+      **Seller replied 2026-10-05** — reasonable, technically literate
+      response (not a canned rejection). Seller states these are new
+      boards, factory-tested, "sold 10s with zero issues," and argues
+      `0000:00:01.4` could point to: (1) add-in card not fully seated,
+      (2) riser not fully seated/damaged, (3) defective MCIO/NVMe cable,
+      (4) defective OCP card, (5) defective CPU/root complex, (6) bad
+      marginal PCIe Gen5 device. Requested removing the OCP NIC, pulling
+      secondary add-in cards, moving MCIO cables to different ports,
+      moving the primary PCIe card to another slot, and moving the M.2
+      drive to the other M.2 slot, then checking whether the error code
+      stays on `0000:00:01.4` or changes.
+
+      **Response not yet sent — holding 24h before replying** (not
+      immediate). Draft prepared, citing work already done rather than
+      repeating physical teardown on a live 8-GPU production server:
+
+      > Hi,
+      >
+      > Appreciate the detailed troubleshooting steps. A few of these
+      > don't apply to this specific fault, and for the others I already
+      > have conclusive data from testing over the past week — here's why:
+      >
+      > Root port `0000:00:01.4` (and its sibling `00:01.5`) are dedicated
+      > exclusively to this board's two M.2 NVMe slots — confirmed via
+      > `lspci -tv` topology mapping. They don't share any electrical path
+      > with the OCP slot, GPU/add-in card slots, or risers. So removing
+      > the OCP card or any add-in card wouldn't be expected to change
+      > anything on this port — and separately, I've already tested this
+      > board with the OCP card fully removed for an unrelated BMC issue,
+      > and this PCIe fault was unaffected.
+      >
+      > On the MCIO/NVMe side: I've already moved the drive between both
+      > of the board's M.2 slots (it only has two) and swapped in a
+      > second, different physical drive. The fault follows the port, not
+      > the drive — and it has now occurred independently on both
+      > `00:01.4` and `00:01.5`, including once with a fatal/uncorrectable
+      > severity that caused real I/O errors on the drive itself.
+      >
+      > Given that, I don't believe reseating cables or swapping slots
+      > again will produce new information — I've already isolated slot
+      > and drive as variables. The remaining open question is CPU vs.
+      > board, which I'm resolving directly: I have a second EPYC 9B14 in
+      > hand and am running a CPU-only swap test (same board, same NVMe,
+      > same slot) to settle it conclusively. I'll share that result as
+      > soon as it's done — if the fault clears with the new CPU, that
+      > confirms the board; if it persists, that points back to something
+      > board-level I haven't found yet and I'm open to further diagnosis
+      > then.
+      >
+      > Happy to send the kernel/BMC logs from the testing already done if
+      > that's useful in the meantime.
+      >
+      > Thanks,
+      > [Your name]
+
+      **Step 2 — if the seller doesn't resolve it (or the swap test
+      confirms the board), formally request RMA / open an eBay Money Back
+      Guarantee case** before ~2026-10-18, citing the same evidence plus
+      the swap-test result once available.
 - [ ] Confirm with seller/dispute whether the **same physical CPU** was
       moved across all 3 motherboards (this is the load-bearing assumption
       of the whole case — verify and state explicitly in the dispute filing)

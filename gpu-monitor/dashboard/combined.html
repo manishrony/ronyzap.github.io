@@ -1324,7 +1324,8 @@ function classifyProcess(proc) {
   const p = (proc || "").toLowerCase();
   if (!p) return null;
   if (/(fahcore|fah-client|boinc|rosetta|milkyway)/.test(p)) return "research";
-  if (/(srbminer|xmrig|nbminer|t-rex|trex|phoenixminer|lolminer|gminer|teamredminer|ethminer|ccminer)/.test(p)) return "mining";
+  // "miner:" = gpu_monitor.sh saw --pool/stratum in the process's command line
+  if (/^miner:|(srbminer|xmrig|nbminer|t-rex|trex|phoenixminer|lolminer|gminer|teamredminer|ethminer|ccminer|wildrig|invminer)/.test(p)) return "mining";
   if (/(hashcat|hcxdump|john)/.test(p)) return "cracking";
   if (/(ollama|vllm|llama|tgi|text-generation|sglang|triton|comfyui|sd-|stable|automatic1111|invokeai)/.test(p)) return "inference";
   if (/(python|pt_main|train|deepspeed|accelerate|torchrun)/.test(p)) return "training";
