@@ -845,6 +845,49 @@ the "within 2¢ of target" no-op log line both track whichever stat is
 actually configured, so the messaging stays consistent with what's
 actually being targeted.
 
+### Known gap: every stat above is ask-side, not rented-side
+
+`vastai_market_stats()` builds `p25`/`median`/`p75`/`mean` — and therefore
+every target `PRICE_TARGET_STAT` can point at — entirely from Vast's
+`/api/v0/bundles` endpoint with `rentable: true`. That's **currently-listed,
+unrented offers**: other hosts' *asking* prices. It's the same cohort Vast's
+own dashboard (Market Stats page, `cloud.vast.ai`) labels **"Available."**
+Nothing in this pricing engine samples the **"Rented"** cohort — what
+renters are actually, successfully paying — no such endpoint is wired in.
+
+Confirmed live on zappa1, 2026-10-22, RTX 5090:
+
+| | Available (asks) | Rented (actually paid) |
+|---|---|---|
+| P10 | $0.450 | $0.410 |
+| Median | $0.572 | **$0.500** |
+| P90 | $1.490 | **$0.700** |
+
+Over that same window the pricing engine's computed targets ran
+**$0.60-0.74 median, $0.78-0.90 p75** — above even the *Available* side's
+official numbers, let alone the *Rented* side deals actually clear at.
+`min(mean,p75)` and `mean` both get pulled up by Available's long tail of
+aspirational/overpriced listings that may never actually rent; blending that
+tail in produces a target noticeably richer than what the market actually
+pays. Likely a real contributor to the chronic-vacancy issues this doc's
+`IDLE_LISTING_THRESHOLD`/step-down machinery exists to paper over.
+
+Marketplace-wide RTX 5090 supply was genuinely tight at the same snapshot
+(90.5% rented, ~85 verified units available globally) — that's a separate,
+real signal in favor of pricing *more* aggressively. The ask-vs-rented gap
+above is a calibration problem in the target formula, not evidence demand is
+weak; don't read it as "lower the target," read it as "the target is
+measuring the wrong thing."
+
+**Not yet done:** haven't located/confirmed the API endpoint backing Vast
+dashboard's "Rented" series (the Market Stats page has a `CSV` export button,
+`Time range` → `CSV`, which may be the fastest way to get that data's shape
+without reverse-engineering the frontend's network calls). No code change
+made for this yet — next step, if pursued: either (a) wire in a rented-side
+data source and reweight the target formula toward it, or (b) as a cruder
+stopgap, tune `MARKET_PRICE_DISCOUNT` down further so the Available-side
+sample lands closer to where Rented actually sits.
+
 ## Workload throttle (global default, all rigs)
 
 Low-value rentals get capped without kicking the renter: when a running GPU
