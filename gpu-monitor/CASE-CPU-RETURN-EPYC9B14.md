@@ -524,6 +524,19 @@ CPU_18_DUAL 1.38 V, USB_1V2_HUB 1.11 V, VBAT 3.06 V; CPU rails nominal.
 12 V and 3.3 V are in spec; only the 5 V rail reads out of spec. Idle
 reading and multimeter check pending.
 
+**Multimeter vs BMC, same moment — 2026-10-23 ~18:25–18:40 UTC** (rig
+fully rented, 8/8 GPUs mining). AstroAI DM200M on 20 V DC, black probe on
+the PSU case: **+5 V at a spare SATA plug read a steady 5.06 V** (12 V
+rail at a fan plug ~12 V). Over the same window the BMC logged
+`VDD_5_RUN` Lower Critical asserts at 18:31:26, 18:32:00, 18:32:23,
+18:33:04 and 18:37:32 (reading 4.49 V, SEL `23c8`–`23d1`). The PSU's 5 V
+output is in spec while the board reports ~0.5 V less, pointing at the
+board side (5 V regulation/monitoring or the 24-pin contact), not the
+PSU. **Caveat:** the SATA plug was on the Super Flower PSU; this entry
+earlier records the board's 24-pin as fed by the Corsair RM1200x SHIFT.
+If that is still true, this reading does not clear the Corsair — repeat
+on a Corsair SATA/peripheral plug or confirm which PSU feeds the 24-pin.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
