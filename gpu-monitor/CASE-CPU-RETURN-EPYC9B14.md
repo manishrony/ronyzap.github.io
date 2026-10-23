@@ -532,10 +532,11 @@ rail at a fan plug ~12 V). Over the same window the BMC logged
 18:33:04 and 18:37:32 (reading 4.49 V, SEL `23c8`–`23d1`). The PSU's 5 V
 output is in spec while the board reports ~0.5 V less, pointing at the
 board side (5 V regulation/monitoring or the 24-pin contact), not the
-PSU. **Caveat:** the SATA plug was on the Super Flower PSU; this entry
-earlier records the board's 24-pin as fed by the Corsair RM1200x SHIFT.
-If that is still true, this reading does not clear the Corsair — repeat
-on a Corsair SATA/peripheral plug or confirm which PSU feeds the 24-pin.
+PSU. The SATA plug is on the **Super Flower** PSU, which the owner
+confirmed (2026-10-23) is the same unit feeding the motherboard's 24-pin
+and the fans — so the motherboard PSU's 5 V is cleared. (Earlier entries
+in this file name the Corsair RM1200x SHIFT as the motherboard PSU; per
+the owner, the Super Flower is the current one.)
 
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog

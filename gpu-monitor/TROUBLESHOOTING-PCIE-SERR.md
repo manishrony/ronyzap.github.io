@@ -762,6 +762,8 @@ Power architecture:
 - GPUs: **HP 704604-001 1500W** common-slot PSUs → **Acxico** breakout boards.
   The HP units are **daisy-chained to each other**.
 - Motherboard: **Corsair RM1200x SHIFT**.
+  *(Correction 2026-10-23: the owner reports the motherboard and fans are now
+  fed by a **Super Flower** PSU — see CASE-CPU-RETURN-EPYC9B14.md.)*
 
 These are separate ground domains. A potential difference between them appears as
 common-mode noise on every PCIe link that spans the two — which is every GPU
