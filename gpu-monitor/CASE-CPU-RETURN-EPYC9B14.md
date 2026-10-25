@@ -576,6 +576,16 @@ swap: board, RAM. Common to both: CPU (already swap-tested), OS NVMe
 boot, PSU, GPUs/risers, OS/driver stack. The OS NVMe/slot is now the
 leading suspect.
 
+**OS NVMe SMART — 2026-10-25 ~16:00 UTC** (`...B4E4`, Crucial T705 Gen5,
+**no heatsink** per board photos), minutes after boot at light load:
+composite **63–65 °C**; **Thermal Temp 1 transitions 449 (3025 s total),
+Thermal Temp 2 transitions 204 (2910 s total)**; **6 min above the 87 °C
+warning threshold**; critical temp time 0; media errors 0; error log
+empty. The drive has thermally throttled hundreds of times, including
+heavy (TMT2) throttling, in an enclosure whose motherboard air inlet has
+repeatedly hit 50 °C. Consistent with a heat-driven I/O stall. Fix:
+heatsink (plus airflow over the M.2 area), then the `00:01.5` move.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
