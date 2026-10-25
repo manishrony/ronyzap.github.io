@@ -613,6 +613,12 @@ survived a CPU swap and a brand-new board; the constant is the T705
 an x2-by-design slot; then force Gen4 in BIOS and see whether it trains
 x4.
 
+**Stable run on the replacement board — as of 2026-10-25 20:27 UTC.** Up
+4h27m since the 15:58 boot with no SDES, I/O error, Xid or new SEL entry
+after the boot-time PERR burst; still Gen5 x2, no heatsink, spare NVMe
+removed. 5/8 GPUs rented (4 on a TensorCash miner capped at 400 W).
+`reliability2` 0.5925, recovering slowly from the afternoon's crashes.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
