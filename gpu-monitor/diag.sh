@@ -55,7 +55,7 @@ classify_current_gpu_proc() {
     case "${cmd,,}" in *--pool*|*stratum+*|*stratum://*) echo "mining"; return ;; esac
   fi
   case "$pname" in
-    *miner*|*srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*|*matador*|*wildrig*) echo "mining" ;;
+    *miner*|*srbminer*|*xmrig*|*nbminer*|*t-rex*|*phoenixminer*|*lolminer*|*gminer*|*teamredminer*|*matador*|*wildrig*|*tsc-engine*|*tensorcash*) echo "mining" ;;
     *hashcat*|*hcxdump*|*hcxtools*|*johntheripper*|*john-the-ripper*) echo "cracking" ;;
     *) echo "$pname" ;;
   esac
