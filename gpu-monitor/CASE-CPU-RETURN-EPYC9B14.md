@@ -619,6 +619,16 @@ after the boot-time PERR burst; still Gen5 x2, no heatsink, spare NVMe
 removed. 5/8 GPUs rented (4 on a TensorCash miner capped at 400 W).
 `reliability2` 0.5925, recovering slowly from the afternoon's crashes.
 
+**Correction — the x2 link width is by design, not a fault — 2026-10-25
+20:28 UTC.** The root port itself reports `00:01.4 LnkCap: 32GT/s, Width
+x2` (and `LnkSta` x2). The slot is wired (or bifurcated in BIOS) as x2, so
+the drive's `x2 (downgraded)` only means an x4 drive sits in an x2 slot.
+This retracts the reading above that the x2 width is evidence against the
+drive, and also the 10/01 board #3 reading (Key facts, item 3) that it
+pointed at a marginal CPU lane. Still open: Gen5 through the board's
+retimers, drive heat, or the drive itself. Gen4 in BIOS remains the next
+test; check whether the BIOS offers x4 for this M.2 slot.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
