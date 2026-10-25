@@ -604,6 +604,15 @@ drive. Next: heatsink on `...B4E4`, force the M.2 link to Gen4 in BIOS,
 `fsck` the docker partition before relisting; if it drops again, replace
 the drive (cooler Gen4 model).
 
+**Link width on the replacement board — 2026-10-25 16:44 UTC** (44 min
+uptime, no SDES or I/O error this boot, 14 boot-time `NonFatalErr`):
+`03:00.0` `LnkCap: 32GT/s x4` but **`LnkSta: 32GT/s x2 (downgraded)`** —
+the same x2 downgrade first seen on board #3 on 10/01. It has now
+survived a CPU swap and a brand-new board; the constant is the T705
+`...B4E4`. Pending: the root port's own `LnkCap` (`00:01.4`) to rule out
+an x2-by-design slot; then force Gen4 in BIOS and see whether it trains
+x4.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
