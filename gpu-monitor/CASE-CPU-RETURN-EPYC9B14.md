@@ -547,6 +547,20 @@ reports ~0.35 V low at idle, falling to 4.49 V under GPU load while the
 PSU holds 5.06 V. The cable, connector and PSU are cleared; the loss (or
 misreading) is inside board #3.
 
+**Correction after the board swap — 2026-10-25 ~11:50 UTC.** The
+replacement S8056 (MiTAC, BMC MAC `a0:42:3f:69:49:8c`), same PSU and cable,
+reads **`VDD_5_RUN` 4.66 V at idle — identical to board #3**. The low
+5 V reading is therefore most likely how this board model's sensor reads,
+**not evidence of a board #3 fault**. Still open: whether the new board
+also falls to ~4.49 V under full GPU load (board #3 did). The same boot
+also shows the **PCI PERR burst** (SEL `c`–`19`, ~2.5 min after S0; BMC
+clock unset so dated 07/09/2025) and 171 `Hardware Error` lines in
+`dmesg`, with the OS drive `...B4E4` again at `00:01.4`. So the PERR
+burst follows the drive/slot position across two boards, not board #3.
+Next isolation step: move the OS drive to `00:01.5`. Initial state on the
+new board: only 2/8 GPUs enumerated by `nvidia-smi` (PCIe bifurcation
+defaults suspected), `vastai` failed to start, BMC LAN not configured.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
