@@ -595,12 +595,14 @@ severity=Uncorrectable (Fatal)`, device `[1022:14ab]`, **`[ 5] SDES
 `/var/lib/docker` partition). This is the first direct capture of the
 mechanism: **the OS drive's PCIe link at `00:01.4` drops out**, the
 kernel loses its root/docker disk, and userspace stalls silently until
-the watchdog fires — matching every silent hang on both boards. Fault is
-now localised to the T705 `...B4E4` or the `00:01.4` M.2 slot path, with
-heat (above) the most likely trigger. Action: rig kept unlisted; heatsink
-on the drive, move it to `00:01.5` (or replace with a cooler Gen4 drive),
-optionally force the slot to Gen4 in BIOS; `fsck` the docker partition
-before relisting.
+the watchdog fires — matching every silent hang on both boards. The board is
+a brand-new MiTAC replacement, so its `00:01.4` slot is unlikely to be at
+fault; the common factor across both boards is **the T705 `...B4E4`
+itself** (heat, Gen5 link margin, or a failing drive). Owner removed the
+spare NVMe (`...B11E`) the same day to improve airflow around the OS
+drive. Next: heatsink on `...B4E4`, force the M.2 link to Gen4 in BIOS,
+`fsck` the docker partition before relisting; if it drops again, replace
+the drive (cooler Gen4 model).
 
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
