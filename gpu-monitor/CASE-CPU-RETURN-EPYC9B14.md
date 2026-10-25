@@ -561,6 +561,21 @@ Next isolation step: move the OS drive to `00:01.5`. Initial state on the
 new board: only 2/8 GPUs enumerated by `nvidia-smi` (PCIe bifurcation
 defaults suspected), `vastai` failed to start, BMC LAN not configured.
 
+**First hang on the replacement board — 2026-10-25.** After BIOS fixes
+(all 8 GPUs enumerated), the 14:27 boot ran ~57 min; the journal stops
+silently at **15:24:50** (no Xid/MCE/AER at the time; the wd-io-probe was
+still passing at 15:24:43), and the **IPMI watchdog hard-reset it at
+15:30:23** — the same silent-hang signature as board #3. Two IPMI power
+cycles (15:39, 15:45) reached S0 but never booted the OS (no boot-time
+PERR burst followed); only a full AC removal (15:49) brought it back
+(OS up 15:51, PERR burst at 15:51:10). Boot also logged `NVRM: GPU0
+gpuHandleSanityCheckRegReadError ... 0xbadf2100` at 14:27:42.
+**Conclusion: the hang is not specific to board #3.** Changed across the
+swap: board, RAM. Common to both: CPU (already swap-tested), OS NVMe
+`...B4E4` (Crucial T705 Gen5) at `00:01.4` with the PERR burst every
+boot, PSU, GPUs/risers, OS/driver stack. The OS NVMe/slot is now the
+leading suspect.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
