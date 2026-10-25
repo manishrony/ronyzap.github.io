@@ -538,6 +538,15 @@ and the fans — so the motherboard PSU's 5 V is cleared. (Earlier entries
 in this file name the Corsair RM1200x SHIFT as the motherboard PSU; per
 the owner, the Super Flower is the current one.)
 
+**At the board's own 24-pin input — 2026-10-25, board #3 powered on at
+idle (GPUs not loaded).** Needle back-probe on pin 22 (+5 V), black on a
+mounting screw: **meter 5.01 V**. BMC at the same time
+(`ipmitool -I lanplus ... sdr type Voltage`): **`VDD_5_RUN` 4.66 V**.
+So clean 5.0 V arrives at the board's connector, and board #3 still
+reports ~0.35 V low at idle, falling to 4.49 V under GPU load while the
+PSU holds 5.06 V. The cable, connector and PSU are cleared; the loss (or
+misreading) is inside board #3.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
