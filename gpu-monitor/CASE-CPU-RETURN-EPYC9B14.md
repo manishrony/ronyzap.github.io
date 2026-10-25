@@ -586,6 +586,22 @@ heavy (TMT2) throttling, in an enclosure whose motherboard air inlet has
 repeatedly hit 50 °C. Consistent with a heat-driven I/O stall. Fix:
 heatsink (plus airflow over the M.2 area), then the `00:01.5` move.
 
+**OS NVMe link drop caught on the console — 2026-10-25, ~245 s after
+boot.** Console photo: `pcieport 0000:00:01.4: PCIe Bus Error:
+severity=Uncorrectable (Fatal)`, device `[1022:14ab]`, **`[ 5] SDES
+(First)`** (Surprise Down), then `nvme0n1: I/O Cmd(0x2) @ LBA 5528676352,
+256 blocks, I/O Error` and `I/O error, dev nvme0n1, sector 5528676352 op
+0x0:(READ)`, repeated at sector 5528676608 (~2.8 TB into the drive, the
+`/var/lib/docker` partition). This is the first direct capture of the
+mechanism: **the OS drive's PCIe link at `00:01.4` drops out**, the
+kernel loses its root/docker disk, and userspace stalls silently until
+the watchdog fires — matching every silent hang on both boards. Fault is
+now localised to the T705 `...B4E4` or the `00:01.4` M.2 slot path, with
+heat (above) the most likely trigger. Action: rig kept unlisted; heatsink
+on the drive, move it to `00:01.5` (or replace with a cooler Gen4 drive),
+optionally force the slot to Gen4 in BIOS; `fsck` the docker partition
+before relisting.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
