@@ -10,8 +10,10 @@ EnvironmentFile=/opt/gpu-monitor/cloudline/.env
 ExecStart=/usr/bin/python3 /opt/gpu-monitor/cloudline/scheduler.py
 Restart=on-failure
 RestartSec=15
-User=cloudline
-DynamicUser=yes
+# Runs as root: it appends pdu_power events to /var/log/gpu_monitor_data.jsonl,
+# which gpu_monitor.sh chmods back to 644 root-owned on every restart. Under
+# DynamicUser that silently broke fan power metering after each gpu-monitor
+# restart (seen 2026-10-26 on zappa1: "Permission denied" every poll).
 
 [Install]
 WantedBy=multi-user.target
