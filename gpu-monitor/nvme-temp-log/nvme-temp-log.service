@@ -1,0 +1,9 @@
+[Unit]
+Description=Log OS NVMe temperature and thermal-throttle counters every 30s
+
+[Service]
+ExecStart=/usr/local/sbin/nvme-temp-log.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
