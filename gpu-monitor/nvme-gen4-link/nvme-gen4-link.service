@@ -1,0 +1,12 @@
+[Unit]
+Description=Cap the OS NVMe PCIe link at Gen4 (zappa2 heat/link-drop mitigation)
+After=local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nvme-gen4-link.sh nvme0 4
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
