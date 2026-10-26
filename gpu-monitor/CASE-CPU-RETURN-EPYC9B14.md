@@ -629,6 +629,24 @@ pointed at a marginal CPU lane. Still open: Gen5 through the board's
 retimers, drive heat, or the drive itself. Gen4 in BIOS remains the next
 test; check whether the BIOS offers x4 for this M.2 slot.
 
+**Second hang on the replacement board — 2026-10-26.** The 10/25 15:58 boot
+ran **18h49m** (longest on this board). The journal stops silently at
+**10:49:14**; `wd-io-probe` last passed at 10:49:04; no SDES/AER/Xid was
+written (the OS disk was gone, so nothing could be logged). Recovery took
+several attempts: SEL shows power transitions at 11:15, then IPMI power
+cycles at 11:25, 11:28 and 11:35; at least one boot fell through to the
+**UEFI Shell** even though `Boot0008 ubuntu` (ESP on the T705) was first in
+`BootOrder`. The shell's `map` listed the NVMe, so the drive was visible
+to firmware but its boot loader would not load. The OS came up at ~11:37
+(boot-time PERR burst 11:37:45). Same pattern as 10/25 15:30–15:51: after
+a hang, the T705 does not reliably come back on a warm IPMI power cycle.
+That points at the drive's controller wedging, not the host. Drive temp at
+boot 50 °C; thermal-throttle counters barely moved since 10/25 (T1
+449→455, T2 204→209; warning-temp time still 6 min), so overheating is a
+weaker explanation for this hang. Link still Gen5 (`32GT/s`); the Gen4
+BIOS change had not been made. 4 GPUs were rented at the time;
+`reliability2` was 0.878 just before.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
