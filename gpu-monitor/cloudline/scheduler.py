@@ -53,6 +53,20 @@ under the SAME rig tag (CLOUDLINE_TAPO_RIG_NAME, default
 picks it up identically; an "estimate" flag on the event just lets the UI
 note it's approximate rather than metered.
 
+Speed changes: increases apply on the next poll; decreases only once the
+lower target has held for CLOUDLINE_HOLD_DOWN_SECONDS (default 300). Without
+that, a room sitting on a band edge flapped every minute (2026-10-26:
+29.1°C → 7, 28.9°C → 6 two minutes later), and each flap is a call to AC
+Infinity's flaky addDevMode API.
+
+Manual changes (e.g. from the dashboard's Cooling card) are detected by the
+port's reported speed no longer matching what this loop last set. They're
+left alone for CLOUDLINE_MANUAL_OVERRIDE_SECONDS (default 7200), then
+automatic control resumes. Previously a manual speed stuck indefinitely,
+because this loop only wrote when its own target changed. A manual
+override ends early if the room reaches MAX_TEMP_C (target 10) and the
+manual speed is lower.
+
 That distinct rig tag (rather than reusing gpu_monitor.sh's own
 tapo_poll()/pdu_poll(), which always tags events with the real hostname)
 is deliberate either way: if the fans' readings landed under the same tag
@@ -215,6 +229,11 @@ MIN_SPEED = int(os.environ.get("CLOUDLINE_MIN_SPEED", "2"))
 NIGHT_SPEED_CAP = os.environ.get("CLOUDLINE_NIGHT_SPEED_CAP")
 NIGHT_START_HOUR = int(os.environ.get("CLOUDLINE_NIGHT_START_HOUR", "23"))
 NIGHT_END_HOUR = int(os.environ.get("CLOUDLINE_NIGHT_END_HOUR", "7"))
+HOLD_DOWN_SECONDS = int(os.environ.get("CLOUDLINE_HOLD_DOWN_SECONDS", "300"))
+MANUAL_OVERRIDE_SECONDS = int(os.environ.get("CLOUDLINE_MANUAL_OVERRIDE_SECONDS", "7200"))
+# A port can still report its old speed for a poll or two after we set it;
+# don't mistake that lag for a manual change.
+MANUAL_DETECT_GRACE_SECONDS = 180
 
 INTAKE_PORT_NAMES = [
     s.strip().lower() for s in os.environ.get("CLOUDLINE_INTAKE_PORT_NAMES", "intake").split(",") if s.strip()
@@ -287,7 +306,10 @@ def main():
     elif TAPO_HOST:
         print(f"[cloudline-scheduler] Tapo metering enabled: {TAPO_HOST} -> rig={TAPO_RIG_NAME}, every {TAPO_POLL_INTERVAL}s", flush=True)
 
-    last_speed = {}
+    last_speed = {}    # (device_id, port) -> speed this loop last set successfully
+    set_at = {}        # (device_id, port) -> when it was set
+    down_since = {}    # (device_id, port) -> when a lower target was first seen
+    manual_since = {}  # (device_id, port) -> when a manual change was detected
     while True:
         total_watts = 0.0
         try:
@@ -311,14 +333,48 @@ def main():
                         if not outdoor_helps:
                             speed = INTAKE_MIN_SPEED
 
+                    key = (dev["device_id"], port["port"])
+                    now = time.time()
+                    try:
+                        reported = int(port.get("speed"))
+                    except (TypeError, ValueError):
+                        reported = None
+
+                    # Manual change: the port no longer shows what we last set.
+                    if (key in last_speed and key not in manual_since and reported is not None
+                            and reported != last_speed[key]
+                            and now - set_at.get(key, 0) > MANUAL_DETECT_GRACE_SECONDS):
+                        manual_since[key] = now
+                        print(f"[cloudline-scheduler] {dev['name']} port {port['port']}: manual change to speed {reported} "
+                              f"(scheduler had set {last_speed[key]}) — leaving it for {MANUAL_OVERRIDE_SECONDS // 60} min", flush=True)
+                    if key in manual_since:
+                        expired = now - manual_since[key] >= MANUAL_OVERRIDE_SECONDS
+                        too_hot = speed == 10 and reported is not None and reported < 10
+                        if not (expired or too_hot):
+                            total_watts += ((reported or 0) / 10.0) * port_max_watts(port.get("name"))
+                            continue
+                        print(f"[cloudline-scheduler] {dev['name']} port {port['port']}: manual override ended "
+                              f"({'room at max temp' if too_hot else 'expired'}) — resuming automatic control", flush=True)
+                        del manual_since[key]
+                        last_speed.pop(key, None)  # force the target to be written below
+                        down_since.pop(key, None)
+
+                    # Increases apply now; decreases wait until the lower
+                    # target has held for HOLD_DOWN_SECONDS (see docstring).
+                    current = last_speed.get(key)
+                    if speed is not None and current is not None and speed < current:
+                        if now - down_since.setdefault(key, now) < HOLD_DOWN_SECONDS:
+                            speed = current
+                    else:
+                        down_since.pop(key, None)
+
                     # Wattage estimate uses the port's actual current speed
                     # (whatever we just decided it should be, or its last
                     # known value if this device has no sensor reading yet
                     # and base_speed is None), not just the ones we issue a
                     # fresh API call for — a port left unchanged this cycle
                     # is still drawing power.
-                    key = (dev["device_id"], port["port"])
-                    effective_speed = speed if speed is not None else last_speed.get(key, port.get("speed") or 0)
+                    effective_speed = speed if speed is not None else last_speed.get(key, reported or 0)
                     total_watts += (effective_speed / 10.0) * port_max_watts(port.get("name"))
 
                     if base_speed is None:
@@ -327,6 +383,8 @@ def main():
                         continue
                     client.set_speed(dev["device_id"], port["port"], speed)
                     last_speed[key] = speed
+                    set_at[key] = now
+                    down_since.pop(key, None)
                     outdoor_str = f"{outdoor_c:.1f}°C" if outdoor_c is not None else "unknown"
                     print(f"[cloudline-scheduler] {dev['name']} ({room_c}°C, outside {outdoor_str}) port {port['port']} -> speed {speed}", flush=True)
         except Exception as e:
