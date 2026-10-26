@@ -647,6 +647,17 @@ weaker explanation for this hang. Link still Gen5 (`32GT/s`); the Gen4
 BIOS change had not been made. 4 GPUs were rented at the time;
 `reliability2` was 0.878 just before.
 
+**Working theory — 2026-10-26.** Both captured drops on this board follow
+heavy disk activity: 10/25 ~15:55 came ~245 s after boot, while Vast
+restarts containers; 10/26 10:49:14 came 2 min after a new rental started
+(`vastai/comfy` image pull/extract at 10:47:18). Two data points only.
+Candidate mechanism: sustained I/O on a marginal Gen5 link (an x2 slot that
+MiTAC's spec lists as Gen4, running at 32 GT/s through retimers) and/or
+a burst of controller heat. The T705 then needs a cold power cycle to come
+back. Drive temperature in normal running is 45–49 °C. Planned test (while
+unrented): sustained `fio` writes at Gen5, then again after forcing Gen4
+via `setpci` on `00:01.4`, with `nvme-temp-log` running.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
