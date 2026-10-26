@@ -3510,6 +3510,14 @@ Rate: <b>$cost</b>"
                         done < "$docker_known_file"
                     fi
 
+                    # Instances this machine has run in the last 7 days. A
+                    # renter who stops and restarts their own instance
+                    # brings back the same C.<id>; that was being reported
+                    # as a brand-new renter (zappa1 2026-10-26: C.57683066,
+                    # running since 10/25, logged as rental_start at 17:38
+                    # and again at 17:48), which overstated churn.
+                    local docker_seen_file="$DOCKER_KNOWN_IIDS_DIR/$mid.seen"
+
                     local new_iid
                     for new_iid in "${!current_iids[@]}"; do
                         if ! { [[ -f "$docker_known_file" ]] && grep -qF "${new_iid}"$'\t' "$docker_known_file"; }; then
@@ -3520,11 +3528,20 @@ Rate: <b>$cost</b>"
                                 local d_est; d_est=$(listing_rate_estimate "$mid" "${rented_count:-1}")
                                 [[ -n "$d_est" ]] && d_cost="$d_est"
                             fi
-                            log "VAST.AI: Machine $mid — docker-detected renter STARTED ($new_iid, ${current_iids[$new_iid]})"
-                            tg_send "🔄 <b>Vast.ai Renter Changed</b> — $(hostname)
+                            local d_resumed=false
+                            [[ -f "$docker_seen_file" ]] && grep -qF "${new_iid}"$'\t' "$docker_seen_file" && d_resumed=true
+                            if [[ "$d_resumed" == true ]]; then
+                                log "VAST.AI: Machine $mid — docker-detected renter RESUMED ($new_iid, ${current_iids[$new_iid]}) — same instance restarted, not a new renter"
+                                tg_send "▶️ <b>Vast.ai Renter Resumed</b> — $(hostname)
+Machine: <b>$mid</b> | $new_iid restarted (same renter)
+Rate: <b>$d_cost</b>"
+                            else
+                                log "VAST.AI: Machine $mid — docker-detected renter STARTED ($new_iid, ${current_iids[$new_iid]})"
+                                tg_send "🔄 <b>Vast.ai Renter Changed</b> — $(hostname)
 Machine: <b>$mid</b> | new renter $new_iid (docker-detected)
 Rate: <b>$d_cost</b>"
-                            write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$new_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$d_cost\",\"status\":\"running\",\"image\":\"${current_iids[$new_iid]}\",\"workload_type\":\"$d_workload\",\"source\":\"docker_diff\"}"
+                            fi
+                            write_event "rental_start" "{\"machine_id\":\"$mid\",\"instance_id\":\"$mid\",\"real_instance_id\":\"$new_iid\",\"gpus\":\"$rented_gpus\",\"rate\":\"$d_cost\",\"status\":\"running\",\"image\":\"${current_iids[$new_iid]}\",\"workload_type\":\"$d_workload\",\"resumed\":$d_resumed,\"source\":\"docker_diff\"}"
                         fi
                     done
 
@@ -3532,6 +3549,19 @@ Rate: <b>$d_cost</b>"
                     for new_iid in "${!current_iids[@]}"; do
                         printf '%s\t%s\n' "$new_iid" "${current_iids[$new_iid]}" >> "$docker_known_file"
                     done
+
+                    # Seen list: running instances get a fresh timestamp
+                    # every cycle; ones not seen for 7 days are dropped.
+                    local seen_now; seen_now=$(date +%s)
+                    {
+                        [[ -f "$docker_seen_file" ]] && awk -F'\t' -v c="$(( seen_now - 7 * 86400 ))" \
+                            -v cur="${!current_iids[*]}" \
+                            'BEGIN { n = split(cur, a, " "); for (i = 1; i <= n; i++) s[a[i]] = 1 }
+                             $2 >= c && !($1 in s)' "$docker_seen_file"
+                        for new_iid in "${!current_iids[@]}"; do
+                            printf '%s\t%s\n' "$new_iid" "$seen_now"
+                        done
+                    } > "$docker_seen_file.tmp" 2>/dev/null && mv "$docker_seen_file.tmp" "$docker_seen_file"
                     unset current_iids
                 fi
 
