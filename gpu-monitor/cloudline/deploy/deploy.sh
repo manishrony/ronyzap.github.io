@@ -19,9 +19,9 @@ if ! ssh "$HOST" "test -f '$REMOTE_DIR/.env'"; then
 AC_INFINITY_EMAIL=
 AC_INFINITY_PASSWORD=
 CLOUDLINE_POLL_SECONDS=60
-CLOUDLINE_MIN_TEMP_C=30
-CLOUDLINE_MAX_TEMP_C=45
-CLOUDLINE_MIN_SPEED=2
+CLOUDLINE_MIN_TEMP_C=27
+CLOUDLINE_MAX_TEMP_C=33
+CLOUDLINE_MIN_SPEED=3
 
 # Optional: meter the fans' own electricity use via a Tapo smart plug —
 # see README.md's \"Metering the fans' own electricity use\" section.
