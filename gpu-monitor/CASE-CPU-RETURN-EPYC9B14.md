@@ -658,6 +658,34 @@ back. Drive temperature in normal running is 45–49 °C. Planned test (while
 unrented): sustained `fio` writes at Gen5, then again after forcing Gen4
 via `setpci` on `00:01.4`, with `nvme-temp-log` running.
 
+**Third hang on the replacement board — heat spike caught — 2026-10-26.**
+`nvme-temp-log` (30 s samples, synced) before the hang:
+
+```
+20:59:41 59 T1=456 T2=209
+21:00:11 62 T1=456 T2=209
+21:00:41 60 T1=456 T2=209
+21:01:11 63 T1=456 T2=209
+21:01:41 85 T1=457 T2=210
+21:02:11 89 T1=457 T2=210      <- last line written
+```
+
+A new rental had started at 20:59:57 (a large Flux image from AWS ECR:
+pull and extract on the T705). The drive went from 63 °C to 85 °C in under
+30 s and to 89 °C 30 s later, tripping both thermal-throttle levels; the
+next sample was never written. The journal's last entry is 21:01:52
+(journald flushes lazily, so the synced temperature log is the better
+clock). The OS came back at ~22:34 (SEL S0), with the boot-time PERR burst
+at 22:37:06.
+
+**This revises the earlier "heat is unlikely" reading.** The 45–60 °C
+steady-state numbers hid how fast the T705 heats under a sustained write
+burst. A heat spike during heavy writes is now the leading trigger for the
+link drop, consistent with the two earlier drops that followed container
+pulls and starts. Actions: heatsink plus direct airflow on the drive
+(urgent); a cooler Gen4 replacement; Gen4 link speed also lowers controller
+power.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
