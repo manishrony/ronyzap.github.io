@@ -686,6 +686,19 @@ pulls and starts. Actions: heatsink plus direct airflow on the drive
 (urgent); a cooler Gen4 replacement; Gen4 link speed also lowers controller
 power.
 
+**Heatsink fitted and stress-tested — 2026-10-27 ~00:30 UTC.** be quiet!
+MC1 PRO on the T705, same slot (`M2_1`, `00:01.4`). Idle 40 °C (was
+45–53). `fio` sequential write, 1 MiB blocks, QD32, 120 s, still at Gen5:
+**6651 MiB/s sustained (779 GiB written), err=0, peak 55 °C, T1/T2
+unchanged (457/210)**. That saturates the Gen5 x2 link for two minutes,
+far harder than the image pull that crashed it at 89 °C, with no link
+error. Conclusion: heat was the trigger, and the heatsink fixes it; the
+link itself is stable at Gen5 when the drive is cool. The Gen4 cap
+(`gpu-monitor/nvme-gen4-link/`) stays available as a fallback but is not
+being applied. BIOS boot order also cut to `ubuntu` then the T705's own
+entry, with the EFI Shell, PXE and virtual CD-ROM disabled, so a slow
+drive after a hang no longer strands the box at `Shell>`.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
