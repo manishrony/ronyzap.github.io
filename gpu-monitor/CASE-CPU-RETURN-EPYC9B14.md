@@ -707,6 +707,13 @@ comparison). Other rails nominal: `VDD_12_RUN` 11.91 V, `VDD_33_RUN` 3.35 V,
 `VBAT` 3.06 V. This closes the open question above: the 4.66 V figure is
 this board model's sensor offset, not a supply problem.
 
+**The T705's own thresholds (`sensors`, 2026-10-27).** `nvme-pci-0300
+Composite: high = +86.8 °C, crit = +88.8 °C`. The last reading before the
+10/26 21:02 hang was **89 °C, just past the drive's critical threshold**.
+At that point the controller protects itself, and the link drop that
+followed fits. Since the heatsink: 38–43 °C under normal rental load,
+55 °C peak under a 2-minute full-speed write test.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
