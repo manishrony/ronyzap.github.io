@@ -699,6 +699,14 @@ being applied. BIOS boot order also cut to `ubuntu` then the T705's own
 entry, with the EFI Shell, PXE and virtual CD-ROM disabled, so a slow
 drive after a hang no longer strands the box at `Shell>`.
 
+**5 V under load on the replacement board — 2026-10-27 ~01:35 UTC.** With
+GPUs 0–3 at 535 W each (~2.1 kW GPU load), BMC `VDD_5_RUN` reads **4.66 V**,
+unchanged from idle. It does not sag to the ~4.49 V board #3 showed under
+load (that reading was not at a matched load, so this is not a strict
+comparison). Other rails nominal: `VDD_12_RUN` 11.91 V, `VDD_33_RUN` 3.35 V,
+`VBAT` 3.06 V. This closes the open question above: the 4.66 V figure is
+this board model's sensor offset, not a supply problem.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
