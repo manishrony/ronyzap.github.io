@@ -2969,6 +2969,74 @@ docker_running_instances() {
     done
 }
 
+# Which GPUs each running C.<id> contract container holds, from docker
+# inspect. Prints JSON {"<iid>": {"gpus": [idx, ...], "created": epoch,
+# "disk_gb": n|null}}, or {} if docker is unavailable. The container is
+# created when the contract starts, so "created" is the contract start (a
+# stop/resume keeps the same container). GPUs come from the container's
+# DeviceRequests, then NVIDIA_VISIBLE_DEVICES, then /dev/nvidiaN device
+# mounts; UUIDs and device minors are mapped to nvidia-smi indices.
+docker_gpu_contracts() {
+    command -v docker >/dev/null 2>&1 || { echo "{}"; return; }
+    local names
+    names=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^C\.[0-9]+$')
+    [[ -z "$names" ]] && { echo "{}"; return; }
+    # shellcheck disable=SC2086
+    docker inspect $names 2>/dev/null | python3 -c '
+import json, sys, re, glob, datetime
+smi = sys.argv[1]
+by_uuid, by_bus = {}, {}
+for line in smi.splitlines():
+    p = [x.strip() for x in line.split(",")]
+    if len(p) >= 3 and p[0].isdigit():
+        by_uuid[p[1].upper()] = int(p[0])
+        by_bus[p[2].lower()[-12:]] = int(p[0])
+by_minor = {}
+for f in glob.glob("/proc/driver/nvidia/gpus/*/information"):
+    bus = f.split("/")[-2].lower()[-12:]
+    m = re.search(r"Device Minor:\s*(\d+)", open(f).read())
+    if m and bus in by_bus:
+        by_minor[int(m.group(1))] = by_bus[bus]
+def idx(v):
+    v = str(v).strip()
+    if v.isdigit():
+        return int(v)
+    return by_uuid.get(v.upper())
+out = {}
+for c in json.load(sys.stdin):
+    iid = c.get("Name", "").lstrip("/")[2:]
+    hc = c.get("HostConfig") or {}
+    ids = []
+    for r in hc.get("DeviceRequests") or []:
+        ids += r.get("DeviceIDs") or []
+    if not ids:
+        for e in (c.get("Config") or {}).get("Env") or []:
+            if e.startswith("NVIDIA_VISIBLE_DEVICES="):
+                ids = e.split("=", 1)[1].split(",")
+    gpus = [idx(v) for v in ids if str(v).strip() not in ("all", "none", "void", "")]
+    if not ids:
+        for d in hc.get("Devices") or []:
+            m = re.fullmatch(r"/dev/nvidia(\d+)", d.get("PathOnHost", ""))
+            if m:
+                gpus.append(by_minor.get(int(m.group(1)), int(m.group(1))))
+    gpus = sorted({g for g in gpus if g is not None})
+    try:
+        created = int(datetime.datetime.strptime(c["Created"][:19], "%Y-%m-%dT%H:%M:%S")
+                      .replace(tzinfo=datetime.timezone.utc).timestamp())
+    except Exception:
+        created = None
+    size = str((hc.get("StorageOpt") or {}).get("size", ""))
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([GgMmTt])?[Bb]?", size)
+    disk = None
+    if m:
+        disk = float(m.group(1)) * {"t": 1024, "g": 1, "m": 1 / 1024}.get((m.group(2) or "g").lower(), 1)
+        disk = round(disk, 1)
+    if iid.isdigit() and gpus:
+        out[iid] = {"gpus": gpus, "created": created, "disk_gb": disk}
+print(json.dumps(out))
+' "$(nvidia-smi --query-gpu=index,uuid,pci.bus_id --format=csv,noheader 2>/dev/null)" 2>/dev/null || echo "{}"
+}
+
 # Classify a Docker image string into a coarse workload bucket for the
 # rental-analysis dashboard. Vast.ai does not expose renter identity, so
 # image name is the only signal available for "what's this rental doing".
@@ -3760,37 +3828,125 @@ Last rate: ${old_cost:-$cost} | Reason: <b>${exit_reason}</b>"
     # Per-GPU rented comes from /instances/ slot data; for D-type background
     # contracts (invisible to /instances/) it falls back to gpu_occupancy
     # ("D D D D…", one char per GPU — D/R = rented, x/I/blank = free).
+    #
+    # Per-GPU contract and price come from the running C.<id> containers
+    # (docker_gpu_contracts). An on-demand contract locks the listing price at
+    # the moment it starts, so the slot's rate is the price_change in effect
+    # when the container was created ("listing_at_start"). With no price_change
+    # logged before that, it falls back to today's listed price
+    # ("listing_now", shown as approximate). Interruptible bids and reserved
+    # discounts are not visible here, so both are still estimates. Each
+    # contract's rate is worked out once and kept in $mid.rates so the JSONL
+    # is not rescanned every cycle.
     local rs_resp_tmp
     rs_resp_tmp=$(mktemp)
     printf '%s' "$response" > "$rs_resp_tmp"
+    local slot_contracts_json
+    slot_contracts_json=$(docker_gpu_contracts)
+    mkdir -p "$DOCKER_KNOWN_IIDS_DIR" 2>/dev/null || true
     local slot_event
     while IFS= read -r slot_event; do
         [[ -n "$slot_event" ]] && write_event "gpu_rental_status" "$slot_event"
-    done < <(python3 - "$gpu_slots_json" "$rs_resp_tmp" <<'PYEOF' 2>>"$LOG_FILE"
-import json, sys, socket
+    done < <(python3 - "$gpu_slots_json" "$rs_resp_tmp" "$slot_contracts_json" \
+        "$JSONL_FILE" "$DOCKER_KNOWN_IIDS_DIR" <<'PYEOF' 2>>"$LOG_FILE"
+import json, sys, socket, os, datetime
 try:
     slots_by_machine = json.loads(sys.argv[1] or "{}")
 except Exception:
     slots_by_machine = {}
 with open(sys.argv[2]) as f:
     data = json.load(f)
+try:
+    contracts = json.loads(sys.argv[3] or "{}")
+except Exception:
+    contracts = {}
+jsonl, state_dir = sys.argv[4], sys.argv[5]
 hn = socket.gethostname()
-for m in data.get('machines', []):
-    if m.get('hostname', '') != hn:
-        continue
+mine = [m for m in data.get('machines', []) if m.get('hostname', '') == hn]
+# docker sees every container on the host, so it can only be attributed to a
+# machine when this host lists exactly one.
+if len(mine) != 1:
+    contracts = {}
+
+def iso(epoch):
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+def price_history(mid):
+    out = []
+    try:
+        for line in open(jsonl):
+            if '"price_change"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get('type') == 'price_change' and str(ev.get('machine_id', '')) == mid:
+                p = float(ev.get('new_price', 0) or 0)
+                if p > 0:
+                    out.append((ev.get('ts', ''), p))
+    except Exception:
+        pass
+    return out
+
+for m in mine:
     mid = str(m.get('id', ''))
     total = int(m.get('num_gpus', 0) or 0)
     gpu_name = m.get('gpu_name', '?')
+    listed = float(m.get('listed_gpu_cost') or 0)
     occ_chars = (m.get('gpu_occupancy', '') or '').split()
     slots = slots_by_machine.get(mid, {})
+
+    rates_file = os.path.join(state_dir, mid + '.rates')
+    try:
+        rates = json.load(open(rates_file))
+    except Exception:
+        rates = {}
+    hist = None
+    by_gpu = {}
+    for iid, c in contracts.items():
+        if iid not in rates:
+            if hist is None:
+                hist = price_history(mid)
+            created = c.get('created')
+            r, src = 0, 'listing_now'
+            if created:
+                at = iso(created)
+                before = [p for ts, p in hist if ts and ts <= at]
+                if before:
+                    r, src = before[-1], 'listing_at_start'
+            if not r:
+                r = listed
+            rates[iid] = {'rate': round(r, 4), 'source': src}
+        for g in c.get('gpus', []):
+            by_gpu[g] = (iid, c)
+    rates = {k: v for k, v in rates.items() if k in contracts}
+    try:
+        with open(rates_file + '.tmp', 'w') as f:
+            json.dump(rates, f)
+        os.replace(rates_file + '.tmp', rates_file)
+    except Exception:
+        pass
+
     rows = []
     for i in range(total):
         s = slots.get(str(i))
+        c = occ_chars[i] if i < len(occ_chars) else ''
         if s:
             rows.append({'gpu_idx': i, 'rented': True,
-                         'instance_id': s['instance_id'], 'rate': s['rate']})
+                         'instance_id': s['instance_id'], 'rate': s['rate'],
+                         'rate_source': 'instance'})
+        elif i in by_gpu:
+            iid, ct = by_gpu[i]
+            row = {'gpu_idx': i, 'rented': True, 'instance_id': iid,
+                   'rate': rates[iid]['rate'], 'rate_source': rates[iid]['source'],
+                   'contract_gpus': len(ct.get('gpus', []))}
+            if ct.get('created'):
+                row['since'] = iso(ct['created'])
+            if ct.get('disk_gb'):
+                row['disk_gb'] = ct['disk_gb']
+            rows.append(row)
         else:
-            c = occ_chars[i] if i < len(occ_chars) else ''
             # Only Vast's actual "nothing here" marker ('x') counts as
             # free -- 'D'/'R' obviously, but also 'I' (a transitional/
             # initializing state seen live 2026-07-29 on a GPU with a
@@ -3800,7 +3956,8 @@ for m in data.get('machines', []):
             rows.append({'gpu_idx': i, 'rented': c != 'x',
                          'instance_id': None, 'rate': 0})
     print(json.dumps({'machine_id': mid, 'gpu_name': gpu_name,
-                      'total_gpus': total, 'slots': rows}))
+                      'total_gpus': total, 'listed_gpu_cost': listed,
+                      'slots': rows}))
 PYEOF
 )
     rm -f "$rs_resp_tmp"
