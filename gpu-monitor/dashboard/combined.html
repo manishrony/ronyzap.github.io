@@ -452,7 +452,7 @@
             <th class="text-right py-2 pr-4">Disk $/hr</th>
             <th class="text-right py-2 pr-4">Started</th>
             <th class="text-right py-2 pr-4">Ends</th>
-            <th class="text-right py-2">Earned today</th>
+            <th class="text-right py-2" title="Vast's earn_day for the contract: earnings over the last 24 hours">Last 24h</th>
           </tr></thead>
           <tbody id="r-contracts"></tbody>
         </table>
@@ -1367,7 +1367,9 @@ function lastRentalStatusEvent(events) {
 }
 // Contracts table on the rig detail tab, from the "contracts" list the
 // monitor copies out of Vast's /machines/{id}/contracts/. Stopped contracts
-// hold no GPU but still pay for their disk.
+// hold no GPU but still pay for their disk. earn_day is a rolling 24h total,
+// not since midnight (zappa2 2026-10-28: a 4-GPU $0.51 contract ~25h old
+// showed 46.91 at 02:40 UTC).
 function renderContracts(events) {
   const wrap = document.getElementById("r-contracts-wrap");
   const ev = lastRentalStatusEvent(events);
@@ -1398,7 +1400,7 @@ function renderContracts(events) {
   const diskHr = list.reduce((a, c) => a + Number(c.disk_dph || 0), 0);
   const today = list.reduce((a, c) => a + Number(c.earn_day || 0), 0);
   document.getElementById("r-contracts-sum").textContent =
-    `${running.length} running, ${list.length - running.length} stopped · GPU $${gpuHr.toFixed(3)}/hr + disk $${diskHr.toFixed(3)}/hr · ${fmtUSD(today)} today` +
+    `${running.length} running, ${list.length - running.length} stopped · GPU $${gpuHr.toFixed(3)}/hr + disk $${diskHr.toFixed(3)}/hr · ${fmtUSD(today)} last 24h` +
     (ev.contracts_omitted ? ` · ${ev.contracts_omitted} not listed by Vast` : "");
 }
 
