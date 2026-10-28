@@ -1,0 +1,12 @@
+[Unit]
+Description=Auto-reboot zappa1 on confirmed Xid 79 (GPU fell off the bus) -- zappa1 only, no BMC watchdog on this rig
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xid79-autoreboot.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
