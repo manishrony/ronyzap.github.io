@@ -3829,15 +3829,20 @@ Last rate: ${old_cost:-$cost} | Reason: <b>${exit_reason}</b>"
     # contracts (invisible to /instances/) it falls back to gpu_occupancy
     # ("D D D D…", one char per GPU — D/R = rented, x/I/blank = free).
     #
-    # Per-GPU contract and price come from the running C.<id> containers
-    # (docker_gpu_contracts). An on-demand contract locks the listing price at
-    # the moment it starts, so the slot's rate is the price_change in effect
-    # when the container was created ("listing_at_start"). With no price_change
-    # logged before that, it falls back to today's listed price
-    # ("listing_now", shown as approximate). Interruptible bids and reserved
-    # discounts are not visible here, so both are still estimates. Each
-    # contract's rate is worked out once and kept in $mid.rates so the JSONL
-    # is not rescanned every cycle.
+    # Per-GPU contract price comes from Vast's host contracts endpoint,
+    # GET /api/v0/machines/{id}/contracts/ (found 2026-10-28 with
+    # vast-contracts-probe.sh): contract_id, gpu_price_dph, rental_type,
+    # disk_size_gb, disk_price_dpgbm, start/end_date, earn_day. It does not
+    # say which GPUs a contract holds, so that comes from the running C.<id>
+    # containers (docker_gpu_contracts). Every contract is also emitted under
+    # "contracts", including stopped ones that only earn storage.
+    #
+    # When the endpoint fails, the slot falls back to the listing price in
+    # effect when the container was created ("listing_at_start"; an
+    # on-demand contract locks that price), or today's listed price
+    # ("listing_now", shown as approximate). Rates are kept per contract in
+    # $mid.rates so an exact price survives an API outage and the JSONL is
+    # not rescanned every cycle.
     local rs_resp_tmp
     rs_resp_tmp=$(mktemp)
     printf '%s' "$response" > "$rs_resp_tmp"
@@ -3847,9 +3852,9 @@ Last rate: ${old_cost:-$cost} | Reason: <b>${exit_reason}</b>"
     local slot_event
     while IFS= read -r slot_event; do
         [[ -n "$slot_event" ]] && write_event "gpu_rental_status" "$slot_event"
-    done < <(python3 - "$gpu_slots_json" "$rs_resp_tmp" "$slot_contracts_json" \
-        "$JSONL_FILE" "$DOCKER_KNOWN_IIDS_DIR" <<'PYEOF' 2>>"$LOG_FILE"
-import json, sys, socket, os, datetime
+    done < <(VASTAI_API_KEY="$VASTAI_API_KEY" python3 - "$gpu_slots_json" "$rs_resp_tmp" \
+        "$slot_contracts_json" "$JSONL_FILE" "$DOCKER_KNOWN_IIDS_DIR" <<'PYEOF' 2>>"$LOG_FILE"
+import json, sys, socket, os, datetime, urllib.request, urllib.parse
 try:
     slots_by_machine = json.loads(sys.argv[1] or "{}")
 except Exception:
@@ -3889,6 +3894,31 @@ def price_history(mid):
         pass
     return out
 
+def api_contracts(mid):
+    """Vast's host contracts list for one machine, or None if unavailable."""
+    key = os.environ.get('VASTAI_API_KEY', '')
+    if not key:
+        return None
+    url = ('https://console.vast.ai/api/v0/machines/%s/contracts/?api_key=%s'
+           % (urllib.parse.quote(mid), urllib.parse.quote(key)))
+    req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + key})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.load(r)
+    except Exception as e:
+        sys.stderr.write('slot contracts: machine %s contracts API failed: %s\n'
+                         % (mid, str(e).replace(key, '***')))
+        return None
+    if not isinstance(d, dict) or not isinstance(d.get('contracts'), list):
+        return None
+    return d
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
 for m in mine:
     mid = str(m.get('id', ''))
     total = int(m.get('num_gpus', 0) or 0)
@@ -3896,6 +3926,12 @@ for m in mine:
     listed = float(m.get('listed_gpu_cost') or 0)
     occ_chars = (m.get('gpu_occupancy', '') or '').split()
     slots = slots_by_machine.get(mid, {})
+
+    api = api_contracts(mid)
+    api_by_id = {}
+    for ac in (api or {}).get('contracts', []):
+        if isinstance(ac, dict) and ac.get('contract_id') is not None:
+            api_by_id[str(ac['contract_id'])] = ac
 
     rates_file = os.path.join(state_dir, mid + '.rates')
     try:
@@ -3905,7 +3941,11 @@ for m in mine:
     hist = None
     by_gpu = {}
     for iid, c in contracts.items():
-        if iid not in rates:
+        ac = api_by_id.get(iid)
+        # gpu_price_dph is per GPU: the console shows it as "1 x $0.520/hr".
+        if ac and (num(ac.get('gpu_price_dph')) or 0) > 0:
+            rates[iid] = {'rate': round(num(ac['gpu_price_dph']), 4), 'source': 'contract'}
+        elif iid not in rates:
             if hist is None:
                 hist = price_history(mid)
             created = c.get('created')
@@ -3945,6 +3985,16 @@ for m in mine:
                 row['since'] = iso(ct['created'])
             if ct.get('disk_gb'):
                 row['disk_gb'] = ct['disk_gb']
+            ac = api_by_id.get(iid)
+            if ac:
+                if ac.get('rental_type'):
+                    row['rental_type'] = ac['rental_type']
+                if num(ac.get('start_date')):
+                    row['since'] = iso(num(ac['start_date']))
+                if num(ac.get('end_date')):
+                    row['end'] = iso(num(ac['end_date']))
+                if num(ac.get('disk_size_gb')):
+                    row['disk_gb'] = num(ac['disk_size_gb'])
             rows.append(row)
         else:
             # Only Vast's actual "nothing here" marker ('x') counts as
@@ -3955,9 +4005,35 @@ for m in mine:
             # loop's free_count calc for the full story.
             rows.append({'gpu_idx': i, 'rented': c != 'x',
                          'instance_id': None, 'rate': 0})
-    print(json.dumps({'machine_id': mid, 'gpu_name': gpu_name,
-                      'total_gpus': total, 'listed_gpu_cost': listed,
-                      'slots': rows}))
+    out = {'machine_id': mid, 'gpu_name': gpu_name,
+           'total_gpus': total, 'listed_gpu_cost': listed, 'slots': rows}
+    if api is not None:
+        # Every contract on the machine, running or stopped. A stopped
+        # contract holds no GPU but still pays for its disk.
+        clist = []
+        for cid, ac in sorted(api_by_id.items()):
+            gp = num(ac.get('gpu_price_dph')) or 0
+            dgb = num(ac.get('disk_size_gb')) or 0
+            dpr = num(ac.get('disk_price_dpgbm')) or 0
+            clist.append({
+                'contract_id': cid,
+                'rental_type': ac.get('rental_type'),
+                'num_gpus': int(num(ac.get('num_gpus')) or 0),
+                'gpu_price': gp,
+                'disk_gb': dgb,
+                'disk_price_gb_month': dpr,
+                'disk_dph': round(dgb * dpr / 730, 4),
+                'start': iso(num(ac['start_date'])) if num(ac.get('start_date')) else None,
+                'end': iso(num(ac['end_date'])) if num(ac.get('end_date')) else None,
+                'earn_day': round(num(ac.get('earn_day')) or 0, 4),
+                'running': cid in contracts,
+                'gpus': contracts.get(cid, {}).get('gpus', []),
+            })
+        out['contracts'] = clist
+        out['contracts_source'] = 'machines_contracts_api'
+        if api.get('omitted_count'):
+            out['contracts_omitted'] = api.get('omitted_count')
+    print(json.dumps(out))
 PYEOF
 )
     rm -f "$rs_resp_tmp"

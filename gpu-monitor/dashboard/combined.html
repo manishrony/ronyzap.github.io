@@ -436,6 +436,28 @@
       <h3 class="text-sm font-semibold text-slate-400 mb-3">GPU Status</h3>
       <div id="r-gpu-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
     </div>
+    <div id="r-contracts-wrap" class="card p-4 hidden">
+      <div class="flex justify-between items-baseline mb-3 gap-2 flex-wrap">
+        <h3 class="text-sm font-semibold text-slate-400">Contracts</h3>
+        <span class="text-xs text-slate-500" id="r-contracts-sum"></span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-slate-500 text-xs border-b border-slate-800">
+            <th class="text-left py-2 pr-4">Contract</th>
+            <th class="text-left py-2 pr-4">Type</th>
+            <th class="text-left py-2 pr-4">GPUs</th>
+            <th class="text-right py-2 pr-4">GPU $/hr</th>
+            <th class="text-right py-2 pr-4">Disk</th>
+            <th class="text-right py-2 pr-4">Disk $/hr</th>
+            <th class="text-right py-2 pr-4">Started</th>
+            <th class="text-right py-2 pr-4">Ends</th>
+            <th class="text-right py-2">Earned today</th>
+          </tr></thead>
+          <tbody id="r-contracts"></tbody>
+        </table>
+      </div>
+    </div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Temperature — 24h</h3><canvas id="chart-r-temp24"></canvas></div>
       <div class="card p-4"><h3 class="text-sm font-semibold text-slate-400 mb-3">Ask Price — 7d</h3><canvas id="chart-r-price7"></canvas></div>
@@ -1329,16 +1351,55 @@ function slotTitle(slot) {
   if (!slot?.rented) return "Free";
   const parts = ["Rented"];
   if (slot.rate > 0) parts.push("@ $" + Number(slot.rate).toFixed(3) + "/hr" +
-    (slot.rate_source === "listing_now" ? " (approx: today's listing)" :
+    (slot.rate_source === "contract" ? " (contract price)" :
+     slot.rate_source === "listing_now" ? " (approx: today's listing)" :
      slot.rate_source === "listing_at_start" ? " (listing when contract started)" : ""));
   if (slot.instance_id) parts.push("· contract " + slot.instance_id);
+  if (slot.rental_type) parts.push("· " + slot.rental_type);
   if (slot.contract_gpus > 1) parts.push("(" + slot.contract_gpus + " GPUs)");
   if (slot.since) parts.push("· started " + new Date(slot.since).toLocaleString());
+  if (slot.end) parts.push("· ends " + new Date(slot.end).toLocaleDateString());
   if (slot.disk_gb) parts.push("· disk " + slot.disk_gb + " GB");
   return parts.join(" ");
 }
 function lastRentalStatusEvent(events) {
   return [...(events||[])].filter(e=>e.type==="gpu_rental_status").pop();
+}
+// Contracts table on the rig detail tab, from the "contracts" list the
+// monitor copies out of Vast's /machines/{id}/contracts/. Stopped contracts
+// hold no GPU but still pay for their disk.
+function renderContracts(events) {
+  const wrap = document.getElementById("r-contracts-wrap");
+  const ev = lastRentalStatusEvent(events);
+  const list = ev?.contracts;
+  if (!wrap) return;
+  if (!Array.isArray(list)) { wrap.classList.add("hidden"); return; }
+  wrap.classList.remove("hidden");
+  const fmtD = iso => iso ? new Date(iso).toLocaleDateString(undefined, {month:"short", day:"numeric"}) : "—";
+  const rows = [...list].sort((a,b) => (b.running - a.running) || String(a.start).localeCompare(String(b.start)));
+  document.getElementById("r-contracts").innerHTML = rows.length ? rows.map(c => {
+    const gpus = c.running
+      ? (c.gpus?.length ? "GPU " + c.gpus.join(", ") : c.num_gpus + "× (running)")
+      : `<span class="text-slate-500">stopped · storage only</span>`;
+    return `<tr class="border-b border-slate-800/50">
+      <td class="py-2 pr-4 font-mono text-xs">C.${c.contract_id}</td>
+      <td class="py-2 pr-4 text-xs">${c.rental_type || "—"}</td>
+      <td class="py-2 pr-4 text-xs">${gpus}</td>
+      <td class="py-2 pr-4 text-right font-mono ${c.running ? "text-emerald-400" : "text-slate-500"}">${c.num_gpus > 1 ? c.num_gpus + " × " : ""}$${Number(c.gpu_price).toFixed(3)}</td>
+      <td class="py-2 pr-4 text-right">${c.disk_gb} GB</td>
+      <td class="py-2 pr-4 text-right font-mono">$${Number(c.disk_dph).toFixed(3)}</td>
+      <td class="py-2 pr-4 text-right text-xs" title="${c.start || ""}">${fmtD(c.start)}${c.start ? " · " + slotAge(c.start) : ""}</td>
+      <td class="py-2 pr-4 text-right text-xs" title="${c.end || ""}">${fmtD(c.end)}</td>
+      <td class="py-2 text-right font-mono">${fmtUSD(c.earn_day)}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="9" class="py-3 text-slate-500 text-xs">No contracts on this machine.</td></tr>`;
+  const running = list.filter(c => c.running);
+  const gpuHr = running.reduce((a, c) => a + c.gpu_price * Math.max(c.num_gpus, 1), 0);
+  const diskHr = list.reduce((a, c) => a + Number(c.disk_dph || 0), 0);
+  const today = list.reduce((a, c) => a + Number(c.earn_day || 0), 0);
+  document.getElementById("r-contracts-sum").textContent =
+    `${running.length} running, ${list.length - running.length} stopped · GPU $${gpuHr.toFixed(3)}/hr + disk $${diskHr.toFixed(3)}/hr · ${fmtUSD(today)} today` +
+    (ev.contracts_omitted ? ` · ${ev.contracts_omitted} not listed by Vast` : "");
 }
 
 // ── Rental analysis (Analysis tab) ─────────────────────────────────────
@@ -1937,6 +1998,7 @@ function renderRig(idx) {
       }).join("");
     }
     document.getElementById("r-prices").textContent = todayEvs.filter(e=>e.type==="price_change").length;
+    renderContracts(events);
 
     const tempEvs = eventsIn(events,1).filter(e=>e.type==="gpu_status");
     if (tempEvs.length) {
