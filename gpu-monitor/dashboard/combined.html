@@ -1359,7 +1359,7 @@ function slotTitle(slot) {
   if (slot.contract_gpus > 1) parts.push("(" + slot.contract_gpus + " GPUs)");
   if (slot.since) parts.push("· started " + new Date(slot.since).toLocaleString());
   if (slot.end) parts.push("· ends " + new Date(slot.end).toLocaleDateString());
-  if (slot.disk_gb) parts.push("· disk " + slot.disk_gb + " GB");
+  if (slot.disk_gb) parts.push("· disk " + Math.round(Number(slot.disk_gb)) + " GB");
   return parts.join(" ");
 }
 function lastRentalStatusEvent(events) {
@@ -1388,7 +1388,7 @@ function renderContracts(events) {
       <td class="py-2 pr-4 text-xs">${c.rental_type || "—"}</td>
       <td class="py-2 pr-4 text-xs">${gpus}</td>
       <td class="py-2 pr-4 text-right font-mono ${c.running ? "text-emerald-400" : "text-slate-500"}">${c.num_gpus > 1 ? c.num_gpus + " × " : ""}$${Number(c.gpu_price).toFixed(3)}</td>
-      <td class="py-2 pr-4 text-right">${c.disk_gb} GB</td>
+      <td class="py-2 pr-4 text-right">${Math.round(Number(c.disk_gb))} GB</td>
       <td class="py-2 pr-4 text-right font-mono">$${Number(c.disk_dph).toFixed(3)}</td>
       <td class="py-2 pr-4 text-right text-xs" title="${c.start || ""}">${fmtD(c.start)}${c.start ? " · " + slotAge(c.start) : ""}</td>
       <td class="py-2 pr-4 text-right text-xs" title="${c.end || ""}">${fmtD(c.end)}</td>
@@ -1984,7 +1984,7 @@ function renderRig(idx) {
           ? `<span class="text-xs px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-400 border border-emerald-700/50" title="${slotTitle(slot)}">● ${slot.rate>0?slotRateText(slot)+"/hr":"Rented"}</span>`
           : `<span class="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-500">○ Free${askNow>0?" · ask $"+askNow.toFixed(3):""}</span>`;
         const contractLine = slot?.rented && (slot.instance_id || slot.since)
-          ? `<div class="text-xs text-slate-500 truncate" title="${slotTitle(slot)}">${slot.instance_id?"C."+slot.instance_id:""}${slot.contract_gpus>1?" ("+slot.contract_gpus+" GPUs)":""}${slot.since?" · "+slotAge(slot.since):""}${slot.disk_gb?" · "+slot.disk_gb+" GB":""}</div>`
+          ? `<div class="text-xs text-slate-500 truncate" title="${slotTitle(slot)}">${slot.instance_id?"C."+slot.instance_id:""}${slot.contract_gpus>1?" ("+slot.contract_gpus+" GPUs)":""}${slot.since?" · "+slotAge(slot.since):""}${slot.disk_gb?" · "+Math.round(Number(slot.disk_gb))+" GB":""}</div>`
           : "";
         return `
         <div class="card p-4 space-y-3">

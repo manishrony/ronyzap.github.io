@@ -3994,7 +3994,7 @@ for m in mine:
                 if num(ac.get('end_date')):
                     row['end'] = iso(num(ac['end_date']))
                 if num(ac.get('disk_size_gb')):
-                    row['disk_gb'] = num(ac['disk_size_gb'])
+                    row['disk_gb'] = round(num(ac['disk_size_gb']), 1)
             rows.append(row)
         else:
             # Only Vast's actual "nothing here" marker ('x') counts as
@@ -4020,7 +4020,7 @@ for m in mine:
                 'rental_type': ac.get('rental_type'),
                 'num_gpus': int(num(ac.get('num_gpus')) or 0),
                 'gpu_price': gp,
-                'disk_gb': dgb,
+                'disk_gb': round(dgb, 1),
                 'disk_price_gb_month': dpr,
                 'disk_dph': round(dgb * dpr / 730, 4),
                 'start': iso(num(ac['start_date'])) if num(ac.get('start_date')) else None,
