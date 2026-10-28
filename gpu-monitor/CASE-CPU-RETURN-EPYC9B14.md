@@ -714,6 +714,15 @@ At that point the controller protects itself, and the link drop that
 followed fits. Since the heatsink: 38–43 °C under normal rental load,
 55 °C peak under a 2-minute full-speed write test.
 
+**Clean since the heatsink — as of 2026-10-28 23:17 UTC.** Up 1d 22h 49m
+since the 2026-10-27 00:28 boot: no hang, no watchdog reset.
+`journalctl -k --since "2026-10-27 01:00" | grep -c "Hardware Error"`
+returns **0**. The only `Hardware Error` lines in the last 3 days are the
+corrected PCIe errors on `03:00.0` (vendor `c0a9`, the T705) at 00:28:05,
+logged while the link came up on that boot. 7 of 8 GPUs rented, Vast
+`reliability2` 0.964. Board inlet (`MB_Air_Inlet_T`) still toggles
+49↔50 °C under full GPU load; that is airflow, not a fault.
+
 **Longest stable run since the fault began — as of 2026-10-13 16:10 UTC.**
 Up 2d 10h 42m since the 2026-10-11 05:28 boot (no hang, no watchdog
 reset, no new SEL/AER entries after that boot's usual PERR burst).
