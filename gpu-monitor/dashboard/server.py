@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """GPU Monitor dashboard server — serves UI + /api/data from JSONL log."""
-import datetime, http.server, json, os, socket, urllib.request, urllib.error, urllib.parse
+import datetime, gzip, http.server, json, os, socket, threading, urllib.request, urllib.error, urllib.parse
 from pathlib import Path
 import assistant
 import prom_exporter
@@ -32,6 +32,40 @@ if not PEER_URLS and _legacy_peer:
     PEER_URLS = [_legacy_peer]
 PEER_NAMES = [n.strip() for n in os.environ.get("PEER_NAMES", "").split(",") if n.strip()]
 SELF_NAME  = os.environ.get("SELF_NAME", "").strip() or socket.gethostname()
+
+# /api/data is the whole JSONL history (75 MB raw on zappa2 by 2026-10-29),
+# rebuilt and compressed only when the file changes. The monitor appends a few
+# times a minute, so most dashboard refreshes reuse the cached copy.
+_DATA_CACHE = {"key": None, "body": None, "gz": None}
+_DATA_LOCK = threading.Lock()
+
+def _data_body():
+    """Return (json_bytes, gzipped_bytes) for /api/data."""
+    p = Path(DATA_FILE)
+    try:
+        st = p.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    with _DATA_LOCK:
+        if key is not None and _DATA_CACHE["key"] == key:
+            return _DATA_CACHE["body"], _DATA_CACHE["gz"]
+        events = []
+        if key is not None:
+            # Include all events (no cutoff) so daily_earnings history shows in dashboard
+            for line in p.read_text(errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                    events.append(ev)
+                except Exception:
+                    pass
+        body = json.dumps({"host": socket.gethostname(), "events": events}).encode()
+        gz = gzip.compress(body, compresslevel=1)
+        _DATA_CACHE.update(key=key, body=body, gz=gz)
+        return body, gz
 
 class Handler(http.server.BaseHTTPRequestHandler):
     # Belt-and-suspenders alongside ThreadingHTTPServer: every individual
@@ -450,22 +484,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         rest = path_only[len("/api/peer"):].strip("/")
         idx = int(rest) if rest.isdigit() else 0
 
+        gz = None
         if idx >= len(PEER_URLS):
             body = json.dumps({"error": f"no peer configured at index {idx}", "events": []}).encode()
         else:
             try:
-                req = urllib.request.urlopen(PEER_URLS[idx] + "/api/data", timeout=8)
-                body = req.read()
+                # Ask the peer for gzip and pass it through as-is: zappa2's
+                # full history is ~75 MB raw (2026-10-29), too much to reach a
+                # phone on mobile data within the page's 8 s fetch timeout.
+                req = urllib.request.Request(PEER_URLS[idx] + "/api/data",
+                                             headers={"Accept-Encoding": "gzip"})
+                resp = urllib.request.urlopen(req, timeout=8)
+                raw = resp.read()
+                if (resp.headers.get("Content-Encoding") or "").lower() == "gzip":
+                    gz = raw
+                    body = None
+                else:
+                    body = raw
             except Exception as e:
                 body = json.dumps({"error": str(e), "events": [], "online": False}).encode()
+                gz = None
         try:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            if gz is not None and not self._accepts_gzip():
+                body, gz = gzip.decompress(gz), None
+            self._send_json_body(body, gz)
         except BrokenPipeError:
             pass
 
@@ -490,29 +532,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def _accepts_gzip(self):
+        return "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+
+    def _send_json_body(self, body, gz=None):
+        """Send a JSON body, gzipped when the client accepts it. `gz` is an
+        already-compressed copy of `body`, if the caller has one."""
+        if self._accepts_gzip():
+            body = gz if gz is not None else gzip.compress(body, compresslevel=1)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if self._accepts_gzip():
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _serve_data(self):
         try:
-            events = []
-            p = Path(DATA_FILE)
-            if p.exists():
-                # Include all events (no cutoff) so daily_earnings history shows in dashboard
-                for line in p.read_text().splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        ev = json.loads(line)
-                        events.append(ev)
-                    except Exception:
-                        pass
-            body = json.dumps({"host": socket.gethostname(), "events": events}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            body, gz = _data_body()
+            self._send_json_body(body, gz)
         except BrokenPipeError:
             pass
         except Exception as e:
