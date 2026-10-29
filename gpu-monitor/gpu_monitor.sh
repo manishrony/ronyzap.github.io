@@ -1617,6 +1617,12 @@ _pid_cmdline_is_miner() {
     cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")" || return 1
     case "${cmd,,}" in
         *--pool*|*stratum+*|*stratum://*) return 0 ;;
+        # TensorCash "useful work" mining runs a llama.cpp fork as
+        # `/opt/prl/tensorcash/bin/llama-server mine --model ... --worker ...`
+        # (zappa2, 2026-10-29). Its GPU process is usually named tsc-engine-*,
+        # which the name list catches, but match the launcher too in case the
+        # GPU process shows up as plain llama-server.
+        */tensorcash/*|*"llama-server mine "*) return 0 ;;
     esac
     return 1
 }
@@ -3923,7 +3929,7 @@ for m in mine:
     mid = str(m.get('id', ''))
     total = int(m.get('num_gpus', 0) or 0)
     gpu_name = m.get('gpu_name', '?')
-    listed = float(m.get('listed_gpu_cost') or 0)
+    listed = round(float(m.get('listed_gpu_cost') or 0), 4)
     occ_chars = (m.get('gpu_occupancy', '') or '').split()
     slots = slots_by_machine.get(mid, {})
 
@@ -4012,7 +4018,7 @@ for m in mine:
         # contract holds no GPU but still pays for its disk.
         clist = []
         for cid, ac in sorted(api_by_id.items()):
-            gp = num(ac.get('gpu_price_dph')) or 0
+            gp = round(num(ac.get('gpu_price_dph')) or 0, 4)
             dgb = num(ac.get('disk_size_gb')) or 0
             dpr = num(ac.get('disk_price_dpgbm')) or 0
             clist.append({
