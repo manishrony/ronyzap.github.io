@@ -38,10 +38,17 @@
    with `nvidia-smi` showing 1 GPU on a 2-GPU machine, and the monitor logging
    `Unable to determine the device handle for GPU0: 0000:01:00.0: Unknown Error`.
 
-   **`Node Reboot Required` means exactly that.** Xid 79 is not recoverable in software: the GPU
-   stopped responding on PCIe and cannot be reset without a power cycle. Restarting Docker,
-   regenerating CDI specs, or bouncing vastai will not bring it back. Do not waste an outage
-   window on them.
+   **The Xid 154 wording varies.** Confirmed live on zappa1 (2026-10-30 08:32), the same
+   fallen-off-the-bus fault produced `0x0 (None) to 0x1 (GPU Reset Required)` instead of
+   `0x2 (Node Reboot Required)`. Treat both the same way -- they are the identical underlying
+   fault, just a different recovery-action code from the driver. `gpu-monitor/xid79-autoreboot.sh`
+   matches both strings for this reason; if you're grepping manually, match on
+   `recovery action changed from 0x0` generally, not on one specific wording.
+
+   **`Node Reboot Required` / `GPU Reset Required` means exactly that.** Xid 79 is not recoverable
+   in software: the GPU stopped responding on PCIe and cannot be reset without a power cycle.
+   Restarting Docker, regenerating CDI specs, or bouncing vastai will not bring it back. Do not
+   waste an outage window on them.
 
    ```bash
    sudo reboot
@@ -55,6 +62,30 @@
    ~30s to drop the SSH session — if it doesn't, stop waiting and power-cycle at the machine**
    (physical reset/power button, or IPMI/BMC power-cycle if you have remote access to it). Don't
    keep re-running `sudo reboot` from a hung session; it won't retry, it's just stuck.
+
+   If you have no physical/IPMI access, the remote equivalent of a power-cycle is a magic SysRq
+   hard reset, which bypasses the graceful shutdown path entirely instead of waiting on it:
+   ```bash
+   echo 1 > /proc/sys/kernel/sysrq
+   echo b > /proc/sysrq-trigger
+   ```
+   This is what `xid79-autoreboot.sh` itself falls back to after `REBOOT_TIMEOUT_SECS`. Confirmed
+   live on zappa1 (2026-10-30): recovered a dual-GPU-down state after `sudo reboot` hung, instantly.
+
+   **A second, milder hang variant exists and is not Xid-related.** Also on zappa1 (2026-10-30,
+   ~50 min after the Xid 79 above, on the next boot), an ordinary `reboot`/`shutdown` -- with no
+   Xid 79/154 in the log at all -- hung for 7+ minutes on GPU0 during the Docker-unmount shutdown
+   step:
+   ```
+   systemd: Failed unmounting var-lib-docker.mount - /var/lib/docker.
+   kernel: nvidia-modeset: ERROR: GPU:0: Error while waiting for GPU progress: 0x0000ca7d:0 2:0:4048:4040
+   ```
+   (repeating every ~5s). This is `journalctl -b -1 -p err`'s signature for it -- different
+   subsystem (`nvidia-modeset`, not `NVRM`/Xid), same family of problem: a GPU not releasing
+   cleanly for shutdown. It self-resolved without intervention that time (box came up ~7 min
+   later), so it is not yet known whether it ever needs the SysRq fallback above -- but if a
+   reboot is stuck specifically on repeating `nvidia-modeset: ... waiting for GPU progress` lines
+   rather than silence, this is why, and the same SysRq remedy applies if it doesn't self-resolve.
 
    **Reboot immediately if the machine is vacant** (`gpu_occupancy` all `x`, no running
    containers). A delisted machine earns $0, so there is no reliability left to protect and
