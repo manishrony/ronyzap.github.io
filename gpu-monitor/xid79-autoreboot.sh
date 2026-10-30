@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # xid79-autoreboot.sh — zappa1-only. Tails the kernel log for the confirmed
-# Xid 79 ("GPU has fallen off the bus") + Xid 154 ("Node Reboot Required")
+# Xid 79 ("GPU has fallen off the bus") + Xid 154 recovery-action-required
 # signature and reboots automatically, instead of waiting for a human to see
 # the Telegram alert and SSH in.
 #
@@ -12,9 +12,13 @@
 #
 # Narrow trigger, not broad: this only fires on the specific pair the runbook
 # (TROUBLESHOOTING-CDI-ERROR.md) documents as confirmed-fatal and
-# non-recoverable in software -- Xid 79 plus the 0x0 -> 0x2 "Node Reboot
-# Required" recovery-action change. It does NOT fire on other Xid codes,
-# including the benign ones TROUBLESHOOTING-CDI-ERROR.md calls out
+# non-recoverable in software -- Xid 79 plus a 0x0 -> non-zero Xid 154
+# recovery-action change. NVIDIA's driver has been observed emitting this as
+# either 0x2 "Node Reboot Required" (2026-09/10) or 0x1 "GPU Reset Required"
+# (2026-10-30, zappa1) for what is the same underlying fallen-off-the-bus
+# fault -- the watcher matches both strings so it isn't silently blind to
+# whichever wording the driver picks this time. It does NOT fire on other
+# Xid codes, including the benign ones TROUBLESHOOTING-CDI-ERROR.md calls out
 # (permission-denied register reads from renter mining software, etc).
 #
 # Loop guard: refuses a second auto-reboot within AUTOREBOOT_GUARD_SECS of
@@ -99,7 +103,7 @@ journalctl -k -f -n 0 --no-pager 2>/dev/null | while IFS= read -r line; do
         continue
     fi
 
-    if [[ -n "${pending_bus:-}" ]] && echo "$line" | grep -q 'Node Reboot Required'; then
+    if [[ -n "${pending_bus:-}" ]] && echo "$line" | grep -qE 'Node Reboot Required|GPU Reset Required'; then
         if ! guard_ok; then
             log "Xid 79 + Node Reboot Required confirmed on $pending_bus, but within ${AUTOREBOOT_GUARD_SECS}s guard window of the last auto-reboot -- alerting only, NOT rebooting"
             tg_send "🔴 <b>$(hostname): another Xid 79 (bus $pending_bus) within the auto-reboot guard window — NOT auto-rebooting (possible repeat/ongoing hardware failure). Needs manual investigation.</b>"
