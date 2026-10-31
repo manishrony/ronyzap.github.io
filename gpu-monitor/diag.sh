@@ -10,7 +10,17 @@ set -uo pipefail
 
 LOG=/var/log/gpu_monitor.log
 DATA=/var/log/gpu_monitor_data.jsonl
-GRACE_SEC=3600
+# Was hardcoded to 3600 regardless of the rig's actual
+# WORKLOAD_THROTTLE_GRACE_SECS -- real enforcement in gpu_monitor.sh always
+# used the live conf value correctly (confirmed live on zappa1, 2026-10-31:
+# the WORKLOAD THROTTLE log lines said "past the 1800s grace period" the
+# whole time), but this display-only estimate silently assumed 3600s, so
+# the "throttle in ~Xm" countdown shown here was wrong on any rig that
+# overrides the default -- on zappa1 (1800s override) it overstated the
+# remaining time by a full 30 minutes. The real cap always fired on
+# schedule regardless; only this display estimate was stale.
+[[ -f /etc/gpu_monitor.conf ]] && source /etc/gpu_monitor.conf
+GRACE_SEC="${WORKLOAD_THROTTLE_GRACE_SECS:-3600}"
 
 sec() { printf '\n\033[1m════ %s ════\033[0m\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
