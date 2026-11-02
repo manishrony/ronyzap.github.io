@@ -2452,14 +2452,45 @@ vastai_init_state() {
     slots_tmpfile=$(mktemp)
     vastai_fetch_gpu_slots > "$slots_tmpfile"
 
-    python3 - "$tmpfile" "$JSONL_FILE" "$slots_tmpfile" "$MAX_RENTAL_DAYS" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
-import sys, json, datetime, socket, glob, re
+    # Running contract ids (C.<id> containers), so the backfill can price
+    # only the contracts that are actually running.
+    local running_cids
+    running_cids=$(docker ps --format '{{.Names}}' 2>/dev/null \
+        | sed -nE 's/^C\.([0-9]+)$/\1/p' | paste -sd, -)
+
+    VASTAI_API_KEY="$VASTAI_API_KEY" python3 - "$tmpfile" "$JSONL_FILE" "$slots_tmpfile" \
+        "$MAX_RENTAL_DAYS" "$running_cids" <<'PYEOF' 2>/dev/null >> "$LOG_FILE" || true
+import sys, json, datetime, socket, glob, re, os, urllib.request, urllib.parse
 
 tmpf, jsonl, slots_f = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     max_rental_days = int(sys.argv[4])
 except Exception:
     max_rental_days = 5
+running_cids = set(x for x in (sys.argv[5] if len(sys.argv) > 5 else '').split(',') if x)
+
+def contract_total(mid):
+    """(total $/hr, GPU count) of this machine's running contracts, from
+    GET /api/v0/machines/{id}/contracts/ (gpu_price_dph is per GPU), or None."""
+    key = os.environ.get('VASTAI_API_KEY', '')
+    if not key or not running_cids:
+        return None
+    url = ('https://console.vast.ai/api/v0/machines/%s/contracts/?api_key=%s'
+           % (urllib.parse.quote(mid), urllib.parse.quote(key)))
+    req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + key})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            cs = json.load(r).get('contracts') or []
+    except Exception:
+        return None
+    total, gpus = 0.0, 0
+    for c in cs:
+        if str(c.get('contract_id')) not in running_cids:
+            continue
+        n = int(c.get('num_gpus') or 0)
+        total += float(c.get('gpu_price_dph') or 0) * max(n, 1)
+        gpus += n
+    return (total, gpus) if total > 0 else None
 
 def get_instance_image(instance_id):
     if not instance_id:
@@ -2483,7 +2514,7 @@ def classify_workload(image):
         return 'unknown'
     if 'self-test' in img:
         return 'selftest'
-    if any(k in img for k in ('miner', 'srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer', 'matador', 'wildrig')):
+    if any(k in img for k in ('miner', 'srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer', 'matador', 'wildrig', 'tsc-engine', 'tensorcash')):
         return 'mining'
     if any(k in img for k in ('hashcat', 'hcxdump', 'hcxtools', 'johntheripper', 'john-the-ripper')):
         return 'cracking'
@@ -2603,9 +2634,16 @@ for m in machines:
     # (e.g. 4 of 8 GPUs) gets backfilled at the single-GPU rate and the
     # dashboard's revenue math undercounts by the number of GPUs rented.
     rented_slots = [s for s in slots_by_machine.get(mid, {}).values() if s.get('instance_id')]
+    occ_count = sum(1 for c in (m.get('gpu_occupancy', '') or '').split() if c != 'x')
+    ct = contract_total(mid) if (rented and not rented_slots) else None
     if rented_slots:
         cur_bid = sum(float(s.get('rate', 0) or 0) for s in rented_slots)
-    elif earn_hour > 0:
+    elif ct:
+        # The running contracts' own prices. Preferred over earn_hour, which
+        # is a trailing 24h average: after zappa2's 2026-11-02 power outage it
+        # backfilled $3.235/hr "8x RTX 5090" with only 2 GPUs still rented.
+        cur_bid = ct[0]
+    elif earn_hour > 0 and not occ_count:
         # No /instances/ match at all — typical for a Dedicated (D-type)
         # background contract, invisible to that endpoint. earn_hour is
         # /machines/'s own live per-machine rate; confirmed 2026-07-18
@@ -2659,7 +2697,8 @@ for m in machines:
 
     # Report GPUs actually rented, not the machine total — a partial rental
     # (4 of 8) should read "4x RTX 5090", matching the live vastai_check() path.
-    rented_count = len(rented_slots) if rented_slots else num_gpus
+    rented_count = (len(rented_slots) if rented_slots
+                    else (ct[1] if ct and ct[1] else (occ_count or num_gpus)))
     gpus_str = f'{rented_count}x {gpu_name}'
 
     # end_date is /machines/'s own real contract-end timestamp; confirmed
@@ -3172,7 +3211,7 @@ def classify_workload(image):
         return 'unknown'
     if 'self-test' in img:
         return 'selftest'
-    if any(k in img for k in ('miner', 'srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer', 'matador', 'wildrig')):
+    if any(k in img for k in ('miner', 'srbminer', 'xmrig', 'nbminer', 't-rex', 'phoenixminer', 'lolminer', 'gminer', 'teamredminer', 'matador', 'wildrig', 'tsc-engine', 'tensorcash')):
         return 'mining'
     if any(k in img for k in ('hashcat', 'hcxdump', 'hcxtools', 'johntheripper', 'john-the-ripper')):
         return 'cracking'
