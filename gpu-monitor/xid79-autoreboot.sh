@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # xid79-autoreboot.sh — zappa1-only. Tails the kernel log for the confirmed
-# Xid 79 ("GPU has fallen off the bus") + Xid 154 ("Node Reboot Required")
+# Xid 79 ("GPU has fallen off the bus") + Xid 154 recovery-action-required
 # signature and reboots automatically, instead of waiting for a human to see
 # the Telegram alert and SSH in.
 #
@@ -12,10 +12,26 @@
 #
 # Narrow trigger, not broad: this only fires on the specific pair the runbook
 # (TROUBLESHOOTING-CDI-ERROR.md) documents as confirmed-fatal and
-# non-recoverable in software -- Xid 79 plus the 0x0 -> 0x2 "Node Reboot
-# Required" recovery-action change. It does NOT fire on other Xid codes,
-# including the benign ones TROUBLESHOOTING-CDI-ERROR.md calls out
+# non-recoverable in software -- Xid 79 plus a 0x0 -> non-zero Xid 154
+# recovery-action change. NVIDIA's driver has been observed emitting this as
+# either 0x2 "Node Reboot Required" (2026-09/10) or 0x1 "GPU Reset Required"
+# (2026-10-30, zappa1) for what is the same underlying fallen-off-the-bus
+# fault -- the watcher matches both strings so it isn't silently blind to
+# whichever wording the driver picks this time. It does NOT fire on other
+# Xid codes, including the benign ones TROUBLESHOOTING-CDI-ERROR.md calls out
 # (permission-denied register reads from renter mining software, etc).
+#
+# Second, separate trigger: NV_ERR_GPU_IN_FULLCHIP_RESET assertion storm.
+# Confirmed live on zappa1, 2026-10-31 02:22 -- a self-test container's
+# bandwidth/GPU-init probe wedged the GSP without ever emitting a Xid 79/154
+# pair, so the trigger above stayed silent and the GPU sat dead (repeated
+# "GPU HANDLE ERROR" from gpu_monitor.sh) for over 3 hours until a manual
+# reboot. NVRM logs this return code on ~every call that touches the GPU
+# while GSP is mid-reset, so a SINGLE line is not proof of a real wedge --
+# it can appear transiently during an expected, self-recovering reset. A
+# sustained burst (FULLCHIP_RESET_THRESHOLD matches within
+# FULLCHIP_RESET_WINDOW_SECS) is what distinguishes an actually-stuck GPU
+# (dozens of lines, same second, for hours) from a brief blip.
 #
 # Loop guard: refuses a second auto-reboot within AUTOREBOOT_GUARD_SECS of
 # the last one, so a genuinely failing card can't reboot-loop the box
@@ -42,6 +58,8 @@ CONF="/etc/gpu_monitor.conf"
 AUTOREBOOT_GUARD_SECS="${AUTOREBOOT_GUARD_SECS:-7200}"   # 2h between auto-reboots
 REBOOT_TIMEOUT_SECS="${REBOOT_TIMEOUT_SECS:-30}"
 ALERT_DELAY_SECS="${ALERT_DELAY_SECS:-30}"
+FULLCHIP_RESET_THRESHOLD="${FULLCHIP_RESET_THRESHOLD:-5}"
+FULLCHIP_RESET_WINDOW_SECS="${FULLCHIP_RESET_WINDOW_SECS:-60}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 
@@ -64,12 +82,11 @@ guard_ok() {
 }
 
 do_reboot() {
-    local bus="$1"
+    local reason="$1" alert_html="$2"
     date +%s > "$GUARD_FILE"
 
-    tg_send "🔴 <b>Xid 79 — $(hostname) GPU bus $bus has fallen off the bus</b>
-Node Reboot Required confirmed (matches the documented non-recoverable-in-software fault). Auto-rebooting in ${ALERT_DELAY_SECS}s. Reply/SSH in now if you need to abort or investigate first."
-    log "Xid 79 confirmed on bus $bus -- Node Reboot Required. Rebooting in ${ALERT_DELAY_SECS}s."
+    tg_send "$alert_html"
+    log "$reason -- rebooting in ${ALERT_DELAY_SECS}s."
     sleep "$ALERT_DELAY_SECS"
 
     log "Issuing systemctl reboot"
@@ -89,6 +106,8 @@ Node Reboot Required confirmed (matches the documented non-recoverable-in-softwa
 
 log "xid79-autoreboot watcher started"
 
+fullchip_hits=()
+
 # Tail the kernel ring for the fatal pair. journalctl -k -f blocks and emits
 # new lines as they arrive -- this process is meant to run continuously.
 journalctl -k -f -n 0 --no-pager 2>/dev/null | while IFS= read -r line; do
@@ -99,13 +118,40 @@ journalctl -k -f -n 0 --no-pager 2>/dev/null | while IFS= read -r line; do
         continue
     fi
 
-    if [[ -n "${pending_bus:-}" ]] && echo "$line" | grep -q 'Node Reboot Required'; then
+    if [[ -n "${pending_bus:-}" ]] && echo "$line" | grep -qE 'Node Reboot Required|GPU Reset Required'; then
         if ! guard_ok; then
             log "Xid 79 + Node Reboot Required confirmed on $pending_bus, but within ${AUTOREBOOT_GUARD_SECS}s guard window of the last auto-reboot -- alerting only, NOT rebooting"
             tg_send "🔴 <b>$(hostname): another Xid 79 (bus $pending_bus) within the auto-reboot guard window — NOT auto-rebooting (possible repeat/ongoing hardware failure). Needs manual investigation.</b>"
         else
-            do_reboot "$pending_bus"
+            do_reboot "Xid 79 confirmed on bus $pending_bus -- Node Reboot Required" \
+                "🔴 <b>Xid 79 — $(hostname) GPU bus $pending_bus has fallen off the bus</b>
+Node Reboot Required confirmed (matches the documented non-recoverable-in-software fault). Auto-rebooting in ${ALERT_DELAY_SECS}s. Reply/SSH in now if you need to abort or investigate first."
         fi
         unset pending_bus
+        continue
+    fi
+
+    if echo "$line" | grep -q 'NV_ERR_GPU_IN_FULLCHIP_RESET'; then
+        now=$(date +%s)
+        fullchip_hits+=("$now")
+        # Drop hits outside the window.
+        cutoff=$(( now - FULLCHIP_RESET_WINDOW_SECS ))
+        new_hits=()
+        for t in "${fullchip_hits[@]}"; do
+            (( t >= cutoff )) && new_hits+=("$t")
+        done
+        fullchip_hits=("${new_hits[@]}")
+
+        if (( ${#fullchip_hits[@]} >= FULLCHIP_RESET_THRESHOLD )); then
+            fullchip_hits=()
+            if ! guard_ok; then
+                log "FULLCHIP_RESET burst confirmed (GSP stuck in reset), but within ${AUTOREBOOT_GUARD_SECS}s guard window of the last auto-reboot -- alerting only, NOT rebooting"
+                tg_send "🔴 <b>$(hostname): another FULLCHIP_RESET burst within the auto-reboot guard window — NOT auto-rebooting (possible repeat/ongoing hardware failure). Needs manual investigation.</b>"
+            else
+                do_reboot "FULLCHIP_RESET burst confirmed (>=${FULLCHIP_RESET_THRESHOLD} hits in ${FULLCHIP_RESET_WINDOW_SECS}s) -- GSP stuck in reset" \
+                    "🔴 <b>$(hostname): GPU wedged (GSP stuck in FULLCHIP_RESET)</b>
+No Xid 79 was logged -- this is the 2026-10-31 self-test-triggered wedge pattern, invisible to the Xid 79 trigger. Auto-rebooting in ${ALERT_DELAY_SECS}s. Reply/SSH in now if you need to abort or investigate first."
+            fi
+        fi
     fi
 done
