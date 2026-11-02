@@ -69,8 +69,13 @@
    echo 1 > /proc/sys/kernel/sysrq
    echo b > /proc/sysrq-trigger
    ```
-   This is what `xid79-autoreboot.sh` itself falls back to after `REBOOT_TIMEOUT_SECS`. Confirmed
-   live on zappa1 (2026-10-30): recovered a dual-GPU-down state after `sudo reboot` hung, instantly.
+   Confirmed live on zappa1 (2026-10-30): recovered a dual-GPU-down state after `sudo reboot`
+   hung, instantly. `xid79-autoreboot.sh` now goes straight to SysRq (sync `s`, read-only `u`,
+   reboot `b`). It used to run `systemctl reboot` and fall back to SysRq after 30 s, but that
+   fallback ran inside the watcher's own service, which the shutdown stops first. Its log shows
+   every automatic reboot hanging that way: 2026-10-30 10:25:50 (back 10:39), 2026-10-31
+   12:01:39 (back 12:17) and 2026-11-02 15:48:31 (back 16:02, only after someone pressed the
+   power button). None of them logged the SysRq fallback.
 
    **A second, milder hang variant exists and is not Xid-related.** Also on zappa1 (2026-10-30,
    ~50 min after the Xid 79 above, on the next boot), an ordinary `reboot`/`shutdown` -- with no
@@ -104,6 +109,12 @@
    `PCI:0000:xx:00` address in the Xid line gives you the slot. Xid 79 after days of clean uptime
    on a rig that has been renting normally is more often a transient link drop than a dead card,
    so do not order parts off one event; do log it and watch for a repeat on the same bus address.
+
+   **zappa1 repeat log, bus `0000:01:00` (GPU 0):** Xid 79 + 154 at 2026-10-31 12:01:08 and
+   2026-11-02 15:48:00, both while that GPU was under a renter's full load (the 11-02 one with
+   the mining throttle active at 450 W). Same bus both times, so this is no longer a one-off:
+   reseat GPU 0's riser and both ends of its power cable, then if it repeats, swap GPU 0 and
+   GPU 1 between slots to see whether the fault follows the card or the slot.
 
 2. **Leftover self-test/self-rented instance holding the GPUs.**
    This is the most common cause and the one that resolved the Sep 2026 zappa1 (machine 138419)
