@@ -37,13 +37,16 @@
 # the last one, so a genuinely failing card can't reboot-loop the box
 # forever -- it keeps alerting instead.
 #
-# Reboot method: tries `systemctl reboot` first, but per the runbook a card
-# that has already fallen off the bus can make `reboot` hang (confirmed live
-# on zappa1, 2026-09-25 and 2026-10-28) because the kernel can't quiesce the
-# dead PCIe device. If the box hasn't actually gone down within
-# REBOOT_TIMEOUT_SECS, fall back to the magic-SysRq hard reset
-# (`echo b > /proc/sysrq-trigger`), which bypasses the graceful-shutdown path
-# and has reliably recovered this exact fault.
+# Reboot method: magic SysRq only -- sync (s), remount read-only (u), reboot
+# (b). Per the runbook a card that has fallen off the bus can make a graceful
+# `reboot` hang (confirmed live on zappa1, 2026-09-25 and 2026-10-28) because
+# the kernel can't quiesce the dead PCIe device, while SysRq b has reliably
+# recovered this exact fault. This used to try `systemctl reboot` first and
+# fall back to SysRq after 30 s, but that fallback ran inside
+# this service, which the graceful shutdown stops first -- so when the
+# shutdown then hung, nothing forced the reset. zappa1 on 2026-11-02: every
+# service stopped cleanly at 15:48:31 and the box stayed dead until someone
+# pressed the power button at 16:02.
 #
 # Deploy: see xid79-autoreboot.service in this directory. Runs continuously
 # via systemd (Restart=always), not on a timer -- it needs to react within
@@ -56,7 +59,6 @@ GUARD_FILE="/var/tmp/gpu_monitor_last_autoreboot"
 CONF="/etc/gpu_monitor.conf"
 
 AUTOREBOOT_GUARD_SECS="${AUTOREBOOT_GUARD_SECS:-7200}"   # 2h between auto-reboots
-REBOOT_TIMEOUT_SECS="${REBOOT_TIMEOUT_SECS:-30}"
 ALERT_DELAY_SECS="${ALERT_DELAY_SECS:-30}"
 FULLCHIP_RESET_THRESHOLD="${FULLCHIP_RESET_THRESHOLD:-5}"
 FULLCHIP_RESET_WINDOW_SECS="${FULLCHIP_RESET_WINDOW_SECS:-60}"
@@ -89,19 +91,13 @@ do_reboot() {
     log "$reason -- rebooting in ${ALERT_DELAY_SECS}s."
     sleep "$ALERT_DELAY_SECS"
 
-    log "Issuing systemctl reboot"
-    systemctl reboot &
-    local reboot_pid=$!
-
-    sleep "$REBOOT_TIMEOUT_SECS"
-
-    # If we're still here and able to run, the graceful reboot hasn't
-    # completed -- matches the known hang pattern. Force it.
-    if kill -0 "$reboot_pid" 2>/dev/null || [[ -d /proc/1 ]]; then
-        log "systemctl reboot did not complete within ${REBOOT_TIMEOUT_SECS}s -- forcing via sysrq"
-        tg_send "⚠️ <b>$(hostname): graceful reboot hung (known Xid 79 pattern) — forcing hard reset via sysrq now</b>"
-        echo b > /proc/sysrq-trigger
-    fi
+    log "Rebooting via sysrq (sync, remount read-only, reboot)"
+    sync
+    echo s > /proc/sysrq-trigger
+    sleep 3
+    echo u > /proc/sysrq-trigger
+    sleep 3
+    echo b > /proc/sysrq-trigger
 }
 
 log "xid79-autoreboot watcher started"
