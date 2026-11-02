@@ -5042,17 +5042,25 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
         # Rather than keep chasing which branch misfired, enforce the
         # invariant unconditionally right before the price is actually sent,
         # so it holds regardless of which upstream branch computed the raise.
-        if (( fully_vacant )) && [[ "${RATCHET_UP_WHILE_VACANT:-1}" != "1" ]] && (( $(echo "$new_price > $cur_bid" | bc -l) )); then
-            log "  Machine $mid: RATCHET_UP_WHILE_VACANT=0 safety clamp -- computed \$$new_price > current \$$cur_bid while fully vacant, capping at \$$cur_bid"
-            new_price="$cur_bid"
+        #
+        # The cap is never below the floor: the floor clamp above runs first,
+        # and capping at a below-floor cur_bid undid it every cycle. zappa2
+        # 2026-11-02: the ask sat at $0.40-0.42 under its $0.45 floor while
+        # partially rented ("negligible change, skipping"), and a 4-GPU
+        # TensorCash contract took it at $0.40.
+        local hold_cap
+        hold_cap=$(bc_max "$cur_bid" "$floor")
+        if (( fully_vacant )) && [[ "${RATCHET_UP_WHILE_VACANT:-1}" != "1" ]] && (( $(echo "$new_price > $hold_cap" | bc -l) )); then
+            log "  Machine $mid: RATCHET_UP_WHILE_VACANT=0 safety clamp -- computed \$$new_price > current \$$cur_bid while fully vacant, capping at \$$hold_cap"
+            new_price="$hold_cap"
         fi
-        if (( fully_rented )) && [[ "${RATCHET_UP_WHILE_FULL:-1}" != "1" ]] && (( $(echo "$new_price > $cur_bid" | bc -l) )); then
-            log "  Machine $mid: RATCHET_UP_WHILE_FULL=0 safety clamp -- computed \$$new_price > current \$$cur_bid while fully rented, capping at \$$cur_bid"
-            new_price="$cur_bid"
+        if (( fully_rented )) && [[ "${RATCHET_UP_WHILE_FULL:-1}" != "1" ]] && (( $(echo "$new_price > $hold_cap" | bc -l) )); then
+            log "  Machine $mid: RATCHET_UP_WHILE_FULL=0 safety clamp -- computed \$$new_price > current \$$cur_bid while fully rented, capping at \$$hold_cap"
+            new_price="$hold_cap"
         fi
-        if [[ "$rented" == "True" ]] && (( ! fully_rented )) && (( ! fully_vacant )) && [[ "${RATCHET_UP_WHILE_PARTIAL:-1}" != "1" ]] && (( $(echo "$new_price > $cur_bid" | bc -l) )); then
-            log "  Machine $mid: RATCHET_UP_WHILE_PARTIAL=0 safety clamp -- computed \$$new_price > current \$$cur_bid while partially rented, capping at \$$cur_bid"
-            new_price="$cur_bid"
+        if [[ "$rented" == "True" ]] && (( ! fully_rented )) && (( ! fully_vacant )) && [[ "${RATCHET_UP_WHILE_PARTIAL:-1}" != "1" ]] && (( $(echo "$new_price > $hold_cap" | bc -l) )); then
+            log "  Machine $mid: RATCHET_UP_WHILE_PARTIAL=0 safety clamp -- computed \$$new_price > current \$$cur_bid while partially rented, capping at \$$hold_cap"
+            new_price="$hold_cap"
         fi
 
         if (( $(echo "($new_price - $cur_bid)^2 < 0.0001" | bc -l) )); then
