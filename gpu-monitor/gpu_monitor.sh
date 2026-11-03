@@ -419,6 +419,15 @@ PRICE_ADJUST_UP_MAX=2    # cents to RAISE per cycle when below target (max)
 PRICE_ADJUST_DOWN_MIN=1  # cents to LOWER per cycle when above target (min)
 PRICE_ADJUST_DOWN_MAX=2  # cents to LOWER per cycle when above target (max)
 MAX_RENTAL_DAYS=14   # max rental/listing duration set on every pricing update (2 weeks)
+# Longer listing window, used only while the machine has earned it: reliability2
+# at or above LONG_RENTAL_MIN_RELIABILITY and the new ask at or above
+# LONG_RENTAL_MIN_PRICE. Otherwise MAX_RENTAL_DAYS applies. 0 = off. Most RTX
+# 5090 listings run longer than 2 weeks (2026-11-03: p25 13.5d, median 37d,
+# p75 86d), but committing a month at a cheap price or right after an outage
+# isn't worth it. Set per rig in /etc/gpu_monitor.conf, e.g. LONG_RENTAL_DAYS=30.
+LONG_RENTAL_DAYS="${LONG_RENTAL_DAYS:-0}"
+LONG_RENTAL_MIN_RELIABILITY="${LONG_RENTAL_MIN_RELIABILITY:-0.90}"
+LONG_RENTAL_MIN_PRICE="${LONG_RENTAL_MIN_PRICE:-0.45}"
 # Interruptible ("idle instance") min bid, in cents BELOW the on-demand listing
 # price. Empty = old behaviour (min bid = the PRICE_FLOORS floor). Either way the
 # min bid never drops under the floor. e.g. 5 → listed $0.67 gives min bid $0.62.
@@ -4234,6 +4243,7 @@ vastai_set_price() {
     local machine_id="$1"
     local new_price="$2"
     local floor_price="${3:-0.10}"
+    local reliability="${4:-}"
     local http_code tmpf resp end_ts body
     new_price=$(printf "%.4f" "$new_price")
     floor_price=$(printf "%.4f" "$floor_price")
@@ -4244,9 +4254,17 @@ vastai_set_price() {
     fi
     tmpf=$(mktemp)
 
-    # Listing end = now + MAX_RENTAL_DAYS (Unix epoch). Extends the listing on every price update.
-    end_ts=$(date -d "+${MAX_RENTAL_DAYS} days" '+%s' 2>/dev/null || \
-             python3 -c "import time; print(int(time.time() + ${MAX_RENTAL_DAYS}*86400))" 2>/dev/null || \
+    # Listing end = now + MAX_RENTAL_DAYS (Unix epoch), or LONG_RENTAL_DAYS once
+    # reliability and price both qualify. Extends the listing on every price update.
+    local rental_days="$MAX_RENTAL_DAYS"
+    if [[ "$LONG_RENTAL_DAYS" =~ ^[0-9]+$ ]] && (( LONG_RENTAL_DAYS > MAX_RENTAL_DAYS )) \
+        && [[ "$reliability" =~ ^[0-9.]+$ ]] \
+        && (( $(echo "$reliability >= $LONG_RENTAL_MIN_RELIABILITY && $new_price >= $LONG_RENTAL_MIN_PRICE" | bc -l) )); then
+        rental_days="$LONG_RENTAL_DAYS"
+    fi
+    log "  Machine $machine_id: listing window ${rental_days}d (reliability2=${reliability:-unknown}, ask \$$new_price)"
+    end_ts=$(date -d "+${rental_days} days" '+%s' 2>/dev/null || \
+             python3 -c "import time; print(int(time.time() + ${rental_days}*86400))" 2>/dev/null || \
              echo "0")
 
     body=$(python3 -c "
@@ -5086,7 +5104,7 @@ Target (${target_label}, ${MARKET_PRICE_DISCOUNT:-1}x of Vast's advertised price
 
         log "  Machine $mid: \$$cur_bid → \$$new_price/hr $direction (max rental: $expire_date)"
 
-        if vastai_set_price "$mid" "$new_price" "$floor"; then
+        if vastai_set_price "$mid" "$new_price" "$floor" "${reliability2:-}"; then
             log "  Machine $mid: price updated OK"
             tg_send "💰 <b>Price Adjusted</b> — $(hostname)
 Machine: <b>$mid</b> | GPU: $gpu_name x$num_gpus
