@@ -115,7 +115,11 @@
    load (the 11-02 one with the mining throttle active at 450 W). The 11-03 line read `79,
    pid=175798, name=python, GPU has fallen off the bus`, which the watcher's exact-text match
    missed, so no auto-reboot fired and GPU 0 stayed dead until a manual reboot. Three times on
-   the same bus in four days is a hardware fault, not a transient:
+   the same bus in four days is a hardware fault, not a transient.
+
+   **Reseated 2026-11-03 ~11:00-11:17 UTC:** GPU 0 (bus `01:00`) removed and reinserted during
+   a SysRq power-off. Both GPUs back after boot (`01:00.0` and `03:00.0`, Gen5 x8 under load).
+   If bus `01:00` drops again after this, skip straight to the slot swap below:
    reseat GPU 0's riser and both ends of its power cable, then if it repeats, swap GPU 0 and
    GPU 1 between slots to see whether the fault follows the card or the slot.
 
