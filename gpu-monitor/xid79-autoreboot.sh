@@ -107,7 +107,11 @@ fullchip_hits=()
 # Tail the kernel ring for the fatal pair. journalctl -k -f blocks and emits
 # new lines as they arrive -- this process is meant to run continuously.
 journalctl -k -f -n 0 --no-pager 2>/dev/null | while IFS= read -r line; do
-    if echo "$line" | grep -qE 'Xid \(PCI:([0-9a-fA-F:.]+)\): 79, GPU has fallen off the bus'; then
+    # The driver may insert the process between the code and the text:
+    # "Xid (PCI:0000:01:00): 79, pid=175798, name=python, GPU has fallen off
+    # the bus." (zappa1 2026-11-03 06:38:52). The old exact "79, GPU has
+    # fallen" match missed that line and the box sat with GPU 0 dead for hours.
+    if echo "$line" | grep -qE 'Xid \(PCI:[0-9a-fA-F:.]+\): 79,.*GPU has fallen off the bus'; then
         bus=$(echo "$line" | grep -oE 'PCI:[0-9a-fA-F:.]+' | head -1 | cut -d: -f2-)
         log "Xid 79 line seen on bus $bus -- waiting for recovery-action confirmation"
         pending_bus="$bus"

@@ -110,9 +110,12 @@
    on a rig that has been renting normally is more often a transient link drop than a dead card,
    so do not order parts off one event; do log it and watch for a repeat on the same bus address.
 
-   **zappa1 repeat log, bus `0000:01:00` (GPU 0):** Xid 79 + 154 at 2026-10-31 12:01:08 and
-   2026-11-02 15:48:00, both while that GPU was under a renter's full load (the 11-02 one with
-   the mining throttle active at 450 W). Same bus both times, so this is no longer a one-off:
+   **zappa1 repeat log, bus `0000:01:00` (GPU 0):** Xid 79 + 154 at 2026-10-31 12:01:08,
+   2026-11-02 15:48:00 and 2026-11-03 06:38:52, each while that GPU was under a renter's full
+   load (the 11-02 one with the mining throttle active at 450 W). The 11-03 line read `79,
+   pid=175798, name=python, GPU has fallen off the bus`, which the watcher's exact-text match
+   missed, so no auto-reboot fired and GPU 0 stayed dead until a manual reboot. Three times on
+   the same bus in four days is a hardware fault, not a transient:
    reseat GPU 0's riser and both ends of its power cable, then if it repeats, swap GPU 0 and
    GPU 1 between slots to see whether the fault follows the card or the slot.
 
