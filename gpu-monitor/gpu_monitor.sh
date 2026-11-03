@@ -427,7 +427,7 @@ MAX_RENTAL_DAYS=14   # max rental/listing duration set on every pricing update (
 # isn't worth it. Set per rig in /etc/gpu_monitor.conf, e.g. LONG_RENTAL_DAYS=30.
 LONG_RENTAL_DAYS="${LONG_RENTAL_DAYS:-0}"
 LONG_RENTAL_MIN_RELIABILITY="${LONG_RENTAL_MIN_RELIABILITY:-0.90}"
-LONG_RENTAL_MIN_PRICE="${LONG_RENTAL_MIN_PRICE:-0.45}"
+LONG_RENTAL_MIN_PRICE="${LONG_RENTAL_MIN_PRICE:-0.50}"
 # Interruptible ("idle instance") min bid, in cents BELOW the on-demand listing
 # price. Empty = old behaviour (min bid = the PRICE_FLOORS floor). Either way the
 # min bid never drops under the floor. e.g. 5 → listed $0.67 gives min bid $0.62.
