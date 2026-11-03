@@ -119,9 +119,9 @@
 
    **Reseated 2026-11-03 ~11:00-11:17 UTC:** GPU 0 (bus `01:00`) removed and reinserted during
    a SysRq power-off. Both GPUs back after boot (`01:00.0` and `03:00.0`, Gen5 x8 under load).
-   If bus `01:00` drops again after this, skip straight to the slot swap below:
-   reseat GPU 0's riser and both ends of its power cable, then if it repeats, swap GPU 0 and
-   GPU 1 between slots to see whether the fault follows the card or the slot.
+   If bus `01:00` drops again after this, reseat both ends of its power cable (not done this
+   time), and if it repeats after that, swap GPU 0 and GPU 1 between slots to see whether the
+   fault follows the card or the slot.
 
 2. **Leftover self-test/self-rented instance holding the GPUs.**
    This is the most common cause and the one that resolved the Sep 2026 zappa1 (machine 138419)
