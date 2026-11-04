@@ -7,7 +7,7 @@ This procedure was run end-to-end on zappa3 on 2026-11-03 and worked.
 | Rig | OS | Before | After | Done |
 |---|---|---|---|---|
 | zappa3 | Ubuntu 26.04, kernel 7.0 | 595.84 (Ubuntu archive) | 595.91.07 | 2026-11-03 |
-| zappa1 | Ubuntu 24.04 | 595.84 | — | pending |
+| zappa1 | Ubuntu 24.04 | 595.84 (Ubuntu archive) | 595.91.07 | 2026-11-04 (persistenced hang again; SysRq power-off for cable reseat) |
 | zappa2 | Ubuntu 24.04 | 595.71.05 (Ubuntu archive) | 595.91.07 | 2026-11-04 (done during the Xid 79 reboot) |
 
 Run everything as root.
