@@ -8,7 +8,7 @@ This procedure was run end-to-end on zappa3 on 2026-11-03 and worked.
 |---|---|---|---|---|
 | zappa3 | Ubuntu 26.04, kernel 7.0 | 595.84 (Ubuntu archive) | 595.91.07 | 2026-11-03 |
 | zappa1 | Ubuntu 24.04 | 595.84 | — | pending |
-| zappa2 | Ubuntu 24.04 | 595.71.05 | — | pending |
+| zappa2 | Ubuntu 24.04 | 595.71.05 (Ubuntu archive) | 595.91.07 | 2026-11-04 (done during the Xid 79 reboot) |
 
 Run everything as root.
 
@@ -67,6 +67,19 @@ modinfo -k $(ls /boot/vmlinuz-* | sed 's|.*/vmlinuz-||' | sort -V | tail -1) -F 
 
 `modinfo` **must** print `595.91.07`. If not, or the install printed `Error!`, do not reboot.
 
+**Install hangs at `Setting up nvidia-persistenced`** (zappa2, 2026-11-04: old driver still
+loaded and a GPU off the bus). The postinst sits in `systemctl start nvidia-persistenced`.
+From a second shell, cancel it; the service starts normally after the reboot:
+
+```bash
+systemctl stop --no-block nvidia-persistenced
+systemctl kill -s KILL nvidia-persistenced
+```
+
+The same hang can recur at the end in needrestart's `systemctl restart nvidia-persistenced`;
+cancel it the same way. Then `dpkg --configure -a; dpkg -C` must be clean before rebooting.
+Do **not** run `apt autoremove` in between (it lists `dkms`).
+
 Hold the driver:
 
 ```bash
@@ -113,9 +126,13 @@ headless host.
 ```bash
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader   # every GPU: 595.91.07
 systemctl is-active gpu-monitor docker                             # active, active
-docker run --rm --gpus all ubuntu nvidia-smi -L                    # GPU list, no error
+docker run --rm --device nvidia.com/gpu=all ubuntu nvidia-smi -L   # GPU list, no error
 systemctl restart vastai                                           # clears the stale console error
 ```
+
+Use `--device nvidia.com/gpu=all` (CDI), not `--gpus all`: with the toolkit in `cdi` mode
+(zappa2) `--gpus all` fails with "invoking the NVIDIA Container Runtime Hook directly ... is
+not supported" even when everything is healthy.
 
 Wait ~5 min for the console's `bad nvidia_smi` / Offline to clear, then relist and click
 **Mark As Done** on the driver notice.
