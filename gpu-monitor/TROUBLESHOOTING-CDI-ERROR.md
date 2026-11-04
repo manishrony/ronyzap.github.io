@@ -123,6 +123,16 @@
    time), and if it repeats after that, swap GPU 0 and GPU 1 between slots to see whether the
    fault follows the card or the slot.
 
+   **Repeat after the reseat, 2026-11-04 10:23:08:** Xid 79 + 154 on bus `01:00` again (4th
+   time in 5 days), with GPU 0 under a renter (python3) and GPU 1 mining at 400 W. The fixed
+   watcher caught it and SysRq-rebooted at 10:23:39; back up at 10:24 with both GPUs and both
+   renters resumed (about 1 minute down, versus hours before). It happened ~1 min after zappa2
+   came back from its own SysRq reboot (8 GPUs initialising); the PDU at `192.168.1.251`
+   reads 4-4.8 kW, more than zappa1 alone draws, so the rigs likely share that circuit and a
+   power sag is a candidate trigger. Reseating the card did not fix it. Next: reseat both ends
+   of GPU 0's 12V-2x6 power cable and inspect the connector pins/housing for browning or
+   melting; if it drops again, swap the two cards between slots.
+
 2. **Leftover self-test/self-rented instance holding the GPUs.**
    This is the most common cause and the one that resolved the Sep 2026 zappa1 (machine 138419)
    incident. A self-test container (e.g. image `vastai/test:self-test-cu128`) can stay "running"
