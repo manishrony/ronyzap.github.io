@@ -133,6 +133,12 @@
    of GPU 0's 12V-2x6 power cable and inspect the connector pins/housing for browning or
    melting; if it drops again, swap the two cards between slots.
 
+   **Power cable reseated 2026-11-04 ~10:38-10:46 UTC** (during the driver-upgrade power-off):
+   both ends of GPU 0's 12V-2x6 cable reseated; connector pins and housing looked normal, no
+   browning or melting. Card and cable have now both been reseated. If bus `01:00` drops
+   again, swap GPU 0 and GPU 1 between slots: fault follows the card -> RMA the card; stays at
+   `01:00` -> slot/riser/motherboard.
+
 2. **Leftover self-test/self-rented instance holding the GPUs.**
    This is the most common cause and the one that resolved the Sep 2026 zappa1 (machine 138419)
    incident. A self-test container (e.g. image `vastai/test:self-test-cu128`) can stay "running"
