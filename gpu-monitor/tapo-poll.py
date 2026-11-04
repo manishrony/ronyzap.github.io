@@ -29,7 +29,7 @@ disk each call.
 
 Usage:
     tapo-poll.py --host <plug-ip> --email <tapo-account-email> \
-        --password <tapo-account-password> --jsonl <path> --rig <hostname> \
+        --jsonl <path> --rig <hostname> \
         --rate <dollars-per-kwh> [--baseline-kwh <n>] [--dump]
 
 --dump prints every attribute python-kasa's Energy interface exposes for the
@@ -92,8 +92,13 @@ async def _poll(host, email, password, dump):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", required=True, help="Tapo plug's local IP")
-    ap.add_argument("--email", required=True, help="TP-Link account email (local-auth handshake only, no cloud calls per-poll)")
-    ap.add_argument("--password", required=True, help="TP-Link account password")
+    # Credentials come from the TAPO_EMAIL / TAPO_PASSWORD environment
+    # variables. --email/--password still work for manual --dump checks, but
+    # callers must not use them: anything on the command line is readable by
+    # every local user via `ps`, and showed up in diag.sh output (zappa1,
+    # 2026-11-04).
+    ap.add_argument("--email", default=os.environ.get("TAPO_EMAIL"), help="TP-Link account email (default: $TAPO_EMAIL)")
+    ap.add_argument("--password", default=os.environ.get("TAPO_PASSWORD"), help="TP-Link account password (default: $TAPO_PASSWORD; avoid passing on the command line)")
     ap.add_argument("--jsonl", help="Path to this rig's gpu_monitor_data.jsonl (required unless --dump)")
     ap.add_argument("--rig", help="Hostname to tag the event with (required unless --dump)")
     ap.add_argument("--rate", type=float, default=0.25, help="$/kWh (default 0.25, matches gpu_monitor.sh's own PDU_ENERGY_RATE default)")
@@ -101,6 +106,8 @@ def main():
     ap.add_argument("--dump", action="store_true", help="Print device info and exit instead of writing an event")
     args = ap.parse_args()
 
+    if not args.email or not args.password:
+        ap.error("set TAPO_EMAIL and TAPO_PASSWORD in the environment")
     if not args.dump and (not args.jsonl or not args.rig):
         ap.error("--jsonl and --rig are required unless --dump")
 

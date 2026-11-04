@@ -1203,8 +1203,8 @@ Verify the plug is actually reachable and reporting before trusting live
 polling:
 
 ```bash
-python3 /usr/local/bin/tapo-poll.py --host $TAPO_HOST --email $TAPO_EMAIL \
-    --password $TAPO_PASSWORD --dump
+TAPO_EMAIL="$TAPO_EMAIL" TAPO_PASSWORD="$TAPO_PASSWORD" \
+  python3 /usr/local/bin/tapo-poll.py --host $TAPO_HOST --dump
 ```
 
 `--dump` prints the device's real field values instead of writing an event —

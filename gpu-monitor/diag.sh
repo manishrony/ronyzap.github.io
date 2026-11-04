@@ -194,6 +194,7 @@ echo "  -- running processes --"
 # redact secrets that leak through argv (Vast API key, bearer tokens, turn creds)
 ps -eo pid,etime,cmd 2>/dev/null | grep -i -E "gpu[-_]monitor|gpu[-_]dashboard|vast" | grep -v grep \
   | sed -E 's/(api_key=|[Bb]earer +|token=|password=|--user=[^:]*:)[A-Za-z0-9._:-]+/\1<redacted>/g' \
+  | sed -E 's/(--(password|passwd|email|token|api-key|secret)[= ]+)[^ ]+/\1<redacted>/g' \
   | sed 's/^/  /' || echo "  (none matched)"
 
 # ── 7. Deploy targets + repo git state (for cross-rig sync) ───

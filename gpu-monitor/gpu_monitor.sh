@@ -2006,8 +2006,10 @@ tapo_poll() {
         return
     fi
     local out
-    out=$(python3 "$(dirname "$0")/tapo-poll.py" --host "$TAPO_HOST" --email "$TAPO_EMAIL" \
-          --password "$TAPO_PASSWORD" --jsonl "$JSONL_FILE" --rig "$(hostname)" \
+    # Credentials via environment, not argv (argv is readable by anyone via ps).
+    out=$(TAPO_EMAIL="$TAPO_EMAIL" TAPO_PASSWORD="$TAPO_PASSWORD" \
+          python3 "$(dirname "$0")/tapo-poll.py" --host "$TAPO_HOST" \
+          --jsonl "$JSONL_FILE" --rig "$(hostname)" \
           --rate "$TAPO_ENERGY_RATE" --baseline-kwh "$TAPO_KWH_BASELINE" 2>&1)
     if [[ $? -ne 0 || -n "$out" ]]; then
         if [[ ! -f "$TAPO_WARNED_FILE" ]]; then

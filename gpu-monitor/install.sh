@@ -352,7 +352,7 @@ echo "     Machine dump:dump-machine-json [outfile] (one-off: dump this rig's fu
 echo "     Earnings:  earnings-today (today's rentals, times, prices + revenue; pass YYYY-MM-DD for a past day)"
 echo "     PDU power: pdu-power (live rack watts + today/lifetime kWh & cost; hub rig only, needs PDU_HOSTS)"
 if [[ -f /etc/gpu_monitor.conf ]] && grep -q '^TAPO_HOST=.\+' /etc/gpu_monitor.conf 2>/dev/null; then
-    echo "     Tapo power:enabled (TAPO_HOST set) — python3 /usr/local/bin/tapo-poll.py --host \$TAPO_HOST --email \$TAPO_EMAIL --password \$TAPO_PASSWORD --dump  to verify"
+    echo "     Tapo power:enabled (TAPO_HOST set) — TAPO_EMAIL=... TAPO_PASSWORD=... python3 /usr/local/bin/tapo-poll.py --host \$TAPO_HOST --dump  to verify"
 else
     echo "     Tapo power:disabled — set TAPO_HOST/TAPO_EMAIL/TAPO_PASSWORD in this rig's own /etc/gpu_monitor.conf for a per-rig smart-plug meter (see RIGS.md)"
 fi

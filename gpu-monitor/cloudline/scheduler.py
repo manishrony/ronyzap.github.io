@@ -189,12 +189,15 @@ def poll_tapo():
     if not TAPO_HOST:
         return False
     try:
+        # Credentials go through the environment, never argv: argv is
+        # world-readable via `ps` (the password leaked into diag output).
         subprocess.run([
             sys.executable, TAPO_POLL_SCRIPT,
-            "--host", TAPO_HOST, "--email", TAPO_EMAIL, "--password", TAPO_PASSWORD,
+            "--host", TAPO_HOST,
             "--jsonl", TAPO_JSONL, "--rig", TAPO_RIG_NAME, "--rate", TAPO_RATE,
             "--baseline-kwh", TAPO_BASELINE_KWH,
-        ], check=True, capture_output=True, text=True, timeout=30)
+        ], check=True, capture_output=True, text=True, timeout=30,
+           env={**os.environ, "TAPO_EMAIL": TAPO_EMAIL, "TAPO_PASSWORD": TAPO_PASSWORD})
         return True
     except subprocess.CalledProcessError as e:
         print(f"[cloudline-scheduler] tapo poll failed, falling back to speed-based estimate: {e.stderr.strip()}", file=sys.stderr, flush=True)
