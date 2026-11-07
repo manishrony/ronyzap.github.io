@@ -139,6 +139,26 @@
    again, swap GPU 0 and GPU 1 between slots: fault follows the card -> RMA the card; stays at
    `01:00` -> slot/riser/motherboard.
 
+   **zappa2 drop log (8x 5090, TYAN), from `journalctl _TRANSPORT=kernel | grep 'fallen off'`:**
+
+   | When (UTC) | Bus | Index | Context |
+   |---|---|---|---|
+   | 2026-11-04 02:54:30 | `04:00` | GPU 0 | |
+   | 2026-11-05 14:31:39 | `85:00` | GPU 5 (MSI) | renter python under load |
+   | 2026-11-05 14:47:29 | `c2:00` | GPU 6 | renter python, 16 min after the one above |
+   | 2026-11-06 19:33:33 | `85:00` | GPU 5 (MSI) | long-term renter at full 450 W; inlet *not* hot (no SEL alert since 15:13) |
+   | 2026-11-07 05:32:06 | `c2:00` | GPU 6 | ~4 min after an 8-GPU renter started (05:28); renter ended `GPU_ERROR` |
+
+   Two slots repeat (`85:00` twice, `c2:00` twice) and a third dropped once, on different root
+   complexes. The two most recent drops had no inlet alert and one came minutes after a cold
+   boot, so room heat no longer explains them; shared power delivery (PSUs, 12V-2x6 cables, the
+   circuit shared with zappa1 via PDU `192.168.1.251`) is the leading suspect. The reboot sent
+   at 2026-11-06 23:42 hung until ~04:17 (4.5 h down), and the 05:32 drop needed a BMC power
+   reset at 07:07; reliability fell from 0.93 to 0.65 and the 30-day 4-GPU renter left.
+   Mitigation in place 2026-11-07: `GPU_POWER_OVERRIDE` caps GPU 5 at 400 W (350 W at >=70 C).
+   Next: check BMC PSU sensors/SEL, then in a window reseat the 12V-2x6 cables on `85:00` and
+   `c2:00` (inspect for browning) and swap one of them with a card that has never dropped.
+
 2. **Leftover self-test/self-rented instance holding the GPUs.**
    This is the most common cause and the one that resolved the Sep 2026 zappa1 (machine 138419)
    incident. A self-test container (e.g. image `vastai/test:self-test-cu128`) can stay "running"
