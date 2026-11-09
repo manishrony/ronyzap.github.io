@@ -150,6 +150,11 @@
    | 2026-11-07 05:32:06 | `c2:00` | GPU 6 | ~4 min after an 8-GPU renter started (05:28); renter ended `GPU_ERROR` |
    | 2026-11-09 15:38:05 | `c2:00` | GPU 6 | renter vLLM engine; card was already capped at 400 W by `GPU_POWER_OVERRIDE`, so the cap did not prevent it. Third drop on `c2:00` in 5 days |
 
+   Bus to physical slot (from `/sys/bus/pci/slots/*/address`; GPUs report serial `0`, so slot
+   is the only way to find the card): `04:00`=109, `06:00`=110, `42:00`=113, `44:00`=114,
+   `83:00`=105, `85:00`=106, `c2:00`=101, `c4:00`=102. Pairs (101/102, 105/106, 109/110,
+   113/114) share a PCIe switch.
+
    Two slots repeat (`85:00` twice, `c2:00` twice) and a third dropped once, on different root
    complexes. The two most recent drops had no inlet alert and one came minutes after a cold
    boot, so room heat no longer explains them; shared power delivery (PSUs, 12V-2x6 cables, the
