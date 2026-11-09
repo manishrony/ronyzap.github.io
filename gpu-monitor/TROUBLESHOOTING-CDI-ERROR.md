@@ -148,6 +148,7 @@
    | 2026-11-05 14:47:29 | `c2:00` | GPU 6 | renter python, 16 min after the one above |
    | 2026-11-06 19:33:33 | `85:00` | GPU 5 (MSI) | long-term renter at full 450 W; inlet *not* hot (no SEL alert since 15:13) |
    | 2026-11-07 05:32:06 | `c2:00` | GPU 6 | ~4 min after an 8-GPU renter started (05:28); renter ended `GPU_ERROR` |
+   | 2026-11-09 15:38:05 | `c2:00` | GPU 6 | renter vLLM engine; card was already capped at 400 W by `GPU_POWER_OVERRIDE`, so the cap did not prevent it. Third drop on `c2:00` in 5 days |
 
    Two slots repeat (`85:00` twice, `c2:00` twice) and a third dropped once, on different root
    complexes. The two most recent drops had no inlet alert and one came minutes after a cold
