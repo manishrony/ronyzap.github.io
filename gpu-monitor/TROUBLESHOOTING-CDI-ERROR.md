@@ -160,6 +160,12 @@
    | 2026-11-09 15:38:05 | `c2:00` | GPU 6 | renter vLLM engine; card was already capped at 400 W by `GPU_POWER_OVERRIDE`, so the cap did not prevent it. Third drop on `c2:00` in 5 days |
    | 2026-11-09 21:47:09 | `c2:00` | slot 101 | 5.5 h after the 16:09 power-off/reboot. Afterwards the periodic bandwidthTest failed on the idle GPUs 0/1/3/4: a knock-on effect of the Xid 154 "Node Reboot Required" state, not four new faults |
 
+   **2026-11-09 ~23:50: BIOS PCIe link speed forced to Gen4 on all GPU slots** (was Auto/Gen5).
+   After boot all 8 GPUs report `pcie.link.gen.max` 4, all x8 except `06:00` (slot 110, GPU 1),
+   which has trained x4 since the 16:09 power-off and stayed x4 at Gen4 too, so it is physical
+   (MCIO cable or seating), not signal speed. Judge Gen4 by `c2:00`: it dropped every 1-2 days
+   (once 5.5 h after boot); 5+ days clean means Gen4 fixed it, then apply the same to zappa1.
+
    Bus to physical slot (from `/sys/bus/pci/slots/*/address`; GPUs report serial `0`, so slot
    is the only way to find the card): `04:00`=109, `06:00`=110, `42:00`=113, `44:00`=114,
    `83:00`=105, `85:00`=106, `c2:00`=101, `c4:00`=102. Pairs (101/102, 105/106, 109/110,
