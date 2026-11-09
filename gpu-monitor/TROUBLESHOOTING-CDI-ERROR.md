@@ -139,6 +139,14 @@
    again, swap GPU 0 and GPU 1 between slots: fault follows the card -> RMA the card; stays at
    `01:00` -> slot/riser/motherboard.
 
+   **zappa1 repeat, 2026-11-09 17:44:37:** bus `01:00` again, after 3.5 days clean (longest run
+   yet). The watcher rebooted within a minute. Reliability fell 0.97 to 0.58. The same diag
+   showed both GPUs at **525 W**, not the conf's `POWER_LIMITS=("5090:400")`. The source was
+   `Environment=GPU_POWER_LIMIT=525` in `/etc/systemd/system/gpu-monitor.service`, which is
+   install.sh's 5th argument. It forces one value on every GPU, logged as `GPU n -> 525W OK
+   (override)`, and the conf's per-model curve never applies. Remove that line (and never pass
+   the 5th argument when reinstalling zappa1), so the card that keeps dropping runs at 400 W.
+
    **zappa2 drop log (8x 5090, TYAN), from `journalctl _TRANSPORT=kernel | grep 'fallen off'`:**
 
    | When (UTC) | Bus | Index | Context |
