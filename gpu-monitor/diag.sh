@@ -195,6 +195,7 @@ echo "  -- running processes --"
 ps -eo pid,etime,cmd 2>/dev/null | grep -i -E "gpu[-_]monitor|gpu[-_]dashboard|vast" | grep -v grep \
   | sed -E 's/(api_key=|[Bb]earer +|token=|password=|--user=[^:]*:)[A-Za-z0-9._:-]+/\1<redacted>/g' \
   | sed -E 's/(--(password|passwd|email|token|api-key|secret)[= ]+)[^ ]+/\1<redacted>/g' \
+  | sed -E 's/([A-Za-z0-9_]*(SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|CLIENT_ID)[A-Za-z0-9_]*=)[^ ]+/\1<redacted>/g' \
   | sed 's/^/  /' || echo "  (none matched)"
 
 # ── 7. Deploy targets + repo git state (for cross-rig sync) ───

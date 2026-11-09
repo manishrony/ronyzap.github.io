@@ -158,6 +158,7 @@
    | 2026-11-06 19:33:33 | `85:00` | GPU 5 (MSI) | long-term renter at full 450 W; inlet *not* hot (no SEL alert since 15:13) |
    | 2026-11-07 05:32:06 | `c2:00` | GPU 6 | ~4 min after an 8-GPU renter started (05:28); renter ended `GPU_ERROR` |
    | 2026-11-09 15:38:05 | `c2:00` | GPU 6 | renter vLLM engine; card was already capped at 400 W by `GPU_POWER_OVERRIDE`, so the cap did not prevent it. Third drop on `c2:00` in 5 days |
+   | 2026-11-09 21:47:09 | `c2:00` | slot 101 | 5.5 h after the 16:09 power-off/reboot. Afterwards the periodic bandwidthTest failed on the idle GPUs 0/1/3/4: a knock-on effect of the Xid 154 "Node Reboot Required" state, not four new faults |
 
    Bus to physical slot (from `/sys/bus/pci/slots/*/address`; GPUs report serial `0`, so slot
    is the only way to find the card): `04:00`=109, `06:00`=110, `42:00`=113, `44:00`=114,
