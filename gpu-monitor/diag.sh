@@ -180,6 +180,16 @@ else
   echo "  $LOG not readable"
 fi
 
+# Vast recomputes reliability2 in steps, so print only the readings where it changed:
+# a flat stretch is Vast not having recomputed yet, not the rig doing anything wrong.
+if [[ -r "$LOG" ]]; then
+  echo
+  echo "  -- reliability2 changes (last 15) --"
+  grep -h 'reliability2=' "$LOG" 2>/dev/null \
+    | sed -nE 's/^\[([^]]+)\].*reliability2=([0-9.]+).*/\1 \2/p' \
+    | awk '{v=sprintf("%.3f",$3)} v!=last {print "  " $1 " " $2 "  " v; last=v}' | tail -15
+fi
+
 # ── 6. Monitor service health ────────────────────────────────
 sec "6. Monitor service / process health"
 if have systemctl; then
@@ -189,6 +199,13 @@ if have systemctl; then
     echo "  -- journal: $u (last 12) --"
     journalctl -u "$u" --no-pager -n 12 2>/dev/null | sed 's/^/    /'
   done
+fi
+# Xid 79 auto-reboot watcher: "inactive" here means a GPU drop waits for a human again
+# (zappa2, 2026-11-10: 2 h down, reliability 0.866 -> 0.56).
+if have systemctl; then
+  st=$(systemctl is-active xid79-autoreboot 2>/dev/null); en=$(systemctl is-enabled xid79-autoreboot 2>/dev/null)
+  echo "  xid79-autoreboot: active=${st:-unknown} enabled=${en:-not-installed}"
+  [[ -r /var/log/xid79_autoreboot.log ]] && tail -4 /var/log/xid79_autoreboot.log | sed 's/^/    /'
 fi
 echo "  -- running processes --"
 # redact secrets that leak through argv (Vast API key, bearer tokens, turn creds)
