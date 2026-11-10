@@ -148,6 +148,14 @@
    applies. Removed 2026-11-09 and set `POWER_LIMITS=("5090:450")`; both GPUs now 450 W.
    diag.sh now prints `GPU_POWER_LIMIT` so this can't hide again.
 
+   **zappa1 repeat, 2026-11-10 20:00:18:** bus `01:00` again, at 450 W this time, about 27 h
+   after the last one and 7 min after a new 2-GPU ComfyUI renter (60115542, $0.47) started.
+   The watcher rebooted at 20:00:49, back at 20:01:20 (~1 min). Reliability fell 0.90 to 0.50.
+   The 450 W cap did not prevent it, so power limit is ruled out for this card. With every drop
+   on `01:00`, the next step is the physical swap: put the `01:00` card in the other slot (or
+   its riser/cable on the other card) at the next power-off. If the fault follows the card,
+   it's the card; if it stays on `01:00`, it's the slot/riser.
+
    **zappa2 drop log (8x 5090, TYAN), from `journalctl _TRANSPORT=kernel | grep 'fallen off'`:**
 
    | When (UTC) | Bus | Index | Context |

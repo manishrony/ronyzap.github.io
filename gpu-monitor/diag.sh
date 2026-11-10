@@ -97,7 +97,15 @@ grep -a "WORKLOAD THROTTLE" "$LOG" 2>/dev/null | tail -5 | sed 's/^/  /' || true
 sec "2b. Hardware fault watcher (SERR/MCE/Xid/OOM, last 3 days)"
 if have journalctl; then
   FAULT_RE='PCI SERR|Machine Check Exception|Hardware Error|Xid|NVRM: Xid|mce: \[Hardware Error\]|Out of memory|Killed process'
-  faults=$(journalctl --since "3 days ago" --no-pager -k 2>/dev/null | grep -aiE "$FAULT_RE")
+  # _TRANSPORT=kernel, not -k: -k means this boot only, so after an auto-reboot the Xid that
+  # caused it was invisible here (zappa1 2026-11-10 20:00 showed "none" 6 min after one).
+  faults=$(journalctl --since "3 days ago" --no-pager _TRANSPORT=kernel 2>/dev/null | grep -aiE "$FAULT_RE")
+  # Xid lines first: the cold-boot NVMe/AER burst (~170 lines) otherwise pushes them out of tail -30.
+  xids=$(echo "$faults" | grep -a 'Xid')
+  if [ -n "$xids" ]; then
+    echo "  !! Xid lines (all boots, last 3 days; 79 = fell off the bus) !!"
+    echo "$xids" | tail -20 | sed 's/^/  /'
+  fi
   if [ -n "$faults" ]; then
     echo "  !! fault lines found (last 3 days) !!"
     echo "$faults" | tail -30 | sed 's/^/  /'
@@ -180,12 +188,13 @@ else
   echo "  $LOG not readable"
 fi
 
-# Vast recomputes reliability2 in steps, so print only the readings where it changed:
+# Vast recomputes reliability2 in steps, so print only the readings where it changed.
+# grep -a: the log has binary bytes, and without it grep prints only "Binary file matches".
 # a flat stretch is Vast not having recomputed yet, not the rig doing anything wrong.
 if [[ -r "$LOG" ]]; then
   echo
   echo "  -- reliability2 changes (last 15) --"
-  grep -h 'reliability2=' "$LOG" 2>/dev/null \
+  grep -ah 'reliability2=' "$LOG" 2>/dev/null \
     | sed -nE 's/^\[([^]]+)\].*reliability2=([0-9.]+).*/\1 \2/p' \
     | awk '{v=sprintf("%.3f",$3)} v!=last {print "  " $1 " " $2 "  " v; last=v}' | tail -15
 fi
