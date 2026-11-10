@@ -9,7 +9,7 @@ _Last updated: 2026-07-16_
 
 | Rig    | Hostname | LAN IP (enp13s0) | Dash port | Role                         | Notes |
 |--------|----------|------------------|-----------|------------------------------|-------|
-| Zappa1 | zappa1   | 192.168.1.171    | 8080      | **Hub** (serves combined view) | 2× RTX 5090 |
+| Zappa1 | zappa1   | 192.168.1.171    | 8080      | **Hub** (serves combined view) | 2× RTX 5090: GPU 0 `01:00` = ZOTAC liquid-cooled (subsys 19da:1761, reports a constant ~40% fan/pump at idle; every zappa1 Xid 79 so far), GPU 1 `03:00` = MSI (subsys 1462:5303, air, 0% fan at idle) |
 | Zappa2 | zappa2   | 192.168.1.196    | 8081      | Node                         | 8× RTX 5090 (GPU 5 = MSI, lazy-fan → per-GPU override in its conf); AMD EPYC 9 B14 |
 | Zappa3 | zappa3   | 192.168.1.211    | 8082      | Node                         | RTX 5080 (325W curve, 250W@80°C; mining/cracking throttles to 250W past the 60min grace period) |
 

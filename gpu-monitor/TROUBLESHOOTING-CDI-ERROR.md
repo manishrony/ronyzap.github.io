@@ -155,6 +155,11 @@
    on `01:00`, the next step is the physical swap: put the `01:00` card in the other slot (or
    its riser/cable on the other card) at the next power-off. If the fault follows the card,
    it's the card; if it stays on `01:00`, it's the slot/riser.
+   `01:00` is the **liquid-cooled ZOTAC** (subsystem `19da:1761`, VBIOS 98.02.2E.80.4A); `03:00`
+   is an air-cooled MSI (`1462:5303`) that has never dropped. Before the swap, check the AIO
+   tubing/radiator isn't pulling on the card (on an open rig the weight can twist the slot or
+   riser connector, which gives exactly this intermittent fall-off-the-bus), check the
+   pump/fan power lead, and the 12V-2x6 connector for browning and full seating.
 
    **zappa2 drop log (8x 5090, TYAN), from `journalctl _TRANSPORT=kernel | grep 'fallen off'`:**
 
