@@ -1,5 +1,5 @@
 [Unit]
-Description=Auto-reboot zappa1 on confirmed Xid 79 (GPU fell off the bus) -- zappa1 only, no BMC watchdog on this rig
+Description=Auto-reboot on confirmed Xid 79 (GPU fell off the bus) -- zappa1 and zappa2
 After=network.target
 
 [Service]

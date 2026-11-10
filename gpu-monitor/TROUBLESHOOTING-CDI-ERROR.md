@@ -172,6 +172,24 @@
    idles at ~80% fan and GPU 5 at ~30%, so ignore those):
    `docker run --rm --device nvidia.com/gpu=6 --entrypoint python <local pytorch image> -c "..."`.
 
+   **2026-11-10: `xid79-autoreboot` installed on zappa2** after the 83:00 drop sat for 2 h.
+   On a rig whose BMC answers `ipmitool mc info` it ends with `ipmitool chassis power cycle`
+   (cold boot by the BMC, with SysRq `b` as the fallback after 60 s); zappa1 still uses SysRq.
+   Install, then test BEFORE enabling (an injected line with the service running reboots for real):
+   ```bash
+   cd /home/ronyzap/ronyzap.github.io && git pull
+   install -m 755 gpu-monitor/xid79-autoreboot.sh /usr/local/bin/
+   install -m 644 gpu-monitor/xid79-autoreboot.service /etc/systemd/system/
+   # terminal 1: dry run (logs + TEST Telegram, never reboots)
+   AUTOREBOOT_DRY_RUN=1 /usr/local/bin/xid79-autoreboot.sh
+   # terminal 2: fake fault on bus ff:00, marked TEST so it can't be mistaken for a real drop
+   echo 'NVRM: Xid (PCI:0000:ff:00): 79, TEST ONLY GPU has fallen off the bus' > /dev/kmsg
+   echo 'NVRM: Xid (PCI:0000:ff:00): 154, TEST ONLY Node Reboot Required' > /dev/kmsg
+   tail -5 /var/log/xid79_autoreboot.log   # expect "reboot method: ipmi" and "DRY RUN"
+   # Ctrl-C terminal 1, then:
+   systemctl daemon-reload && systemctl enable --now xid79-autoreboot
+   ```
+
    Bus to physical slot (from `/sys/bus/pci/slots/*/address`; GPUs report serial `0`, so slot
    is the only way to find the card): `04:00`=109, `06:00`=110, `42:00`=113, `44:00`=114,
    `83:00`=105, `85:00`=106, `c2:00`=101, `c4:00`=102. Pairs (101/102, 105/106, 109/110,

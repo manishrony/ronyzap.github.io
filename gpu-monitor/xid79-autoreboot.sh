@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 #
-# xid79-autoreboot.sh — zappa1-only. Tails the kernel log for the confirmed
-# Xid 79 ("GPU has fallen off the bus") + Xid 154 recovery-action-required
-# signature and reboots automatically, instead of waiting for a human to see
-# the Telegram alert and SSH in.
+# xid79-autoreboot.sh -- runs on zappa1 and zappa2. Tails the kernel log for
+# the confirmed Xid 79 ("GPU has fallen off the bus") + Xid 154
+# recovery-action-required signature and reboots automatically, instead of
+# waiting for a human to see the Telegram alert and SSH in.
 #
-# Why zappa1 only: zappa2 has a BMC with its own hardware watchdog, so an OS
-# that wedges gets power-cycled regardless. zappa1 has no IPMI/BMC access
-# (confirmed 2026-10) -- if the OS doesn't reboot itself, nothing will, so
-# this rig needs an OS-level substitute for what the BMC would normally do.
+# zappa1 has no BMC, so this is the only thing that will reboot it. zappa2 was
+# first left out because its BMC has a hardware watchdog, but that watchdog
+# only fires when the OS wedges, and an Xid 79 leaves the OS running with
+# every GPU stuck in "Node Reboot Required". On 2026-11-10 83:00 dropped at
+# 13:32 and nobody rebooted until 15:26: 2 h down, reliability 0.866 -> 0.56,
+# and a renter's Vast support ticket. Installed on zappa2 the same day.
 #
 # Narrow trigger, not broad: this only fires on the specific pair the runbook
 # (TROUBLESHOOTING-CDI-ERROR.md) documents as confirmed-fatal and
@@ -37,7 +39,19 @@
 # the last one, so a genuinely failing card can't reboot-loop the box
 # forever -- it keeps alerting instead.
 #
-# Reboot method: magic SysRq only -- sync (s), remount read-only (u), reboot
+# Reboot method: on a rig with an in-band BMC (zappa2), sync + remount
+# read-only via SysRq, then `ipmitool chassis power cycle`: a true cold
+# boot, run by the BMC, so it can't hang the way a warm reset of a box with a
+# dead PCIe device can (zappa2's reboot on 2026-11-06 hung for 4.5 h, and the
+# 2026-11-07 and 2026-11-10 recoveries both needed a BMC power reset). If the
+# BMC doesn't act within 60 s, SysRq b runs anyway. Without a BMC (zappa1):
+# SysRq only. Set AUTOREBOOT_METHOD=sysrq|ipmi|auto (default auto) in
+# /etc/gpu_monitor.conf to force one.
+#
+# Dry run: AUTOREBOOT_DRY_RUN=1 logs and sends a TEST Telegram message instead
+# of rebooting, so the trigger can be checked on a live rig (see the runbook).
+#
+# SysRq details: magic SysRq only -- sync (s), remount read-only (u), reboot
 # (b). Per the runbook a card that has fallen off the bus can make a graceful
 # `reboot` hang (confirmed live on zappa1, 2026-09-25 and 2026-10-28) because
 # the kernel can't quiesce the dead PCIe device, while SysRq b has reliably
@@ -62,6 +76,8 @@ AUTOREBOOT_GUARD_SECS="${AUTOREBOOT_GUARD_SECS:-7200}"   # 2h between auto-reboo
 ALERT_DELAY_SECS="${ALERT_DELAY_SECS:-30}"
 FULLCHIP_RESET_THRESHOLD="${FULLCHIP_RESET_THRESHOLD:-5}"
 FULLCHIP_RESET_WINDOW_SECS="${FULLCHIP_RESET_WINDOW_SECS:-60}"
+AUTOREBOOT_METHOD="${AUTOREBOOT_METHOD:-auto}"   # auto | ipmi | sysrq
+AUTOREBOOT_DRY_RUN="${AUTOREBOOT_DRY_RUN:-0}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 
@@ -83,24 +99,61 @@ guard_ok() {
     (( now - last >= AUTOREBOOT_GUARD_SECS ))
 }
 
+bmc_ok() {
+    command -v ipmitool >/dev/null 2>&1 && timeout 15 ipmitool mc info >/dev/null 2>&1
+}
+
+resolve_method() {
+    case "$AUTOREBOOT_METHOD" in
+        sysrq) echo sysrq ;;
+        ipmi|auto)
+            if bmc_ok; then
+                echo ipmi
+            else
+                [[ "$AUTOREBOOT_METHOD" == ipmi ]] && \
+                    log "AUTOREBOOT_METHOD=ipmi but the BMC is not reachable in-band -- using sysrq"
+                echo sysrq
+            fi ;;
+        *) log "unknown AUTOREBOOT_METHOD=$AUTOREBOOT_METHOD -- using sysrq"; echo sysrq ;;
+    esac
+}
+
 do_reboot() {
     local reason="$1" alert_html="$2"
+
+    if [[ "$AUTOREBOOT_DRY_RUN" == 1 ]]; then
+        log "DRY RUN: $reason -- would reboot via $REBOOT_METHOD (no guard file written)"
+        tg_send "🧪 <b>TEST (dry run), nothing rebooted</b>
+$alert_html"
+        return
+    fi
+
     date +%s > "$GUARD_FILE"
 
     tg_send "$alert_html"
     log "$reason -- rebooting in ${ALERT_DELAY_SECS}s."
     sleep "$ALERT_DELAY_SECS"
 
-    log "Rebooting via sysrq (sync, remount read-only, reboot)"
+    # Log before 'u': the filesystem is read-only after it.
+    if [[ "$REBOOT_METHOD" == ipmi ]]; then
+        log "Rebooting: sysrq sync + remount read-only, then BMC chassis power cycle (sysrq b if still up after 60s)"
+    else
+        log "Rebooting via sysrq (sync, remount read-only, reboot)"
+    fi
     sync
     echo s > /proc/sysrq-trigger
     sleep 3
     echo u > /proc/sysrq-trigger
     sleep 3
+    if [[ "$REBOOT_METHOD" == ipmi ]]; then
+        timeout 20 ipmitool chassis power cycle >/dev/null 2>&1
+        sleep 60
+    fi
     echo b > /proc/sysrq-trigger
 }
 
-log "xid79-autoreboot watcher started"
+REBOOT_METHOD=$(resolve_method)
+log "xid79-autoreboot watcher started (reboot method: $REBOOT_METHOD, dry run: $AUTOREBOOT_DRY_RUN)"
 
 fullchip_hits=()
 
