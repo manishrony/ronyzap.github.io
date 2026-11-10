@@ -196,6 +196,11 @@
    # Ctrl-C terminal 1, then:
    systemctl daemon-reload && systemctl enable --now xid79-autoreboot
    ```
+   Enabled on zappa2 2026-11-10 ~20:00 UTC; startup log confirmed `reboot method: ipmi`. The
+   TEST lines on bus `ff:00` in that day's kernel log were written after the dry run had
+   exited, so detection was not exercised on zappa2 (the same matching code has caught real
+   drops on zappa1). Ignore those `ff:00` lines in diag. Pasting the steps above into one
+   terminal does not work: the dry run blocks it and the rest runs only after Ctrl-C.
 
    Bus to physical slot (from `/sys/bus/pci/slots/*/address`; GPUs report serial `0`, so slot
    is the only way to find the card): `04:00`=109, `06:00`=110, `42:00`=113, `44:00`=114,
