@@ -168,6 +168,13 @@
    2 s); now limited to one per 30 min. Two failures in about an hour: the card or slot is
    getting worse, so take it out of service at the next power-off rather than reboot-looping.
 
+   Full zappa1 list from diag (all `01:00`, the ZOTAC): 11-09 17:44:37, 11-09 20:59:56,
+   11-10 20:00:18, 11-10 21:06:43. The last two each came within ~10 min of a new 2-GPU
+   renter starting (19:53, then 60122040 at 20:57), so the card now fails as soon as it is
+   loaded. Still dead at 22:24 with the guard window over: the watcher only reacts to new log
+   lines, so a GPU that stays dead after the window waits for a human. By 22:24 the Vast
+   snapshot showed `listed_gpu_cost`/`end_date` = None (offer gone).
+
    **zappa2 drop log (8x 5090, TYAN), from `journalctl _TRANSPORT=kernel | grep 'fallen off'`:**
 
    | When (UTC) | Bus | Index | Context |
