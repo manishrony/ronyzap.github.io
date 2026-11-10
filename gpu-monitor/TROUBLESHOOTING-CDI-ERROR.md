@@ -172,6 +172,13 @@
    idles at ~80% fan and GPU 5 at ~30%, so ignore those):
    `docker run --rm --device nvidia.com/gpu=6 --entrypoint python <local pytorch image> -c "..."`.
 
+   **BMC PSU check, 2026-11-10: inconclusive.** `ipmitool sdr` lists PSU0/PSU1 sensors as
+   `disabled` / `Not Readable`, so the BMC has no telemetry from these PSUs. The only power SEL
+   events are `AC lost | Deasserted` (AC restored) at the planned power-ons (11-02, 11-07 04:16,
+   11-09 16:08, 11-10 00:08), none at any drop time, so the board never lost AC input during a
+   drop. Per-GPU 12V rails and the PSUs themselves remain unchecked; the PDU (`pdu-power.sh`) is
+   the only power data source left.
+
    **2026-11-10: `xid79-autoreboot` installed on zappa2** after the 83:00 drop sat for 2 h.
    On a rig whose BMC answers `ipmitool mc info` it ends with `ipmitool chassis power cycle`
    (cold boot by the BMC, with SysRq `b` as the fallback after 60 s); zappa1 still uses SysRq.
