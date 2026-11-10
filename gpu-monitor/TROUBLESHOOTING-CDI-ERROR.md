@@ -165,6 +165,11 @@
    which has trained x4 since the 16:09 power-off and stayed x4 at Gen4 too, so it is physical
    (MCIO cable or seating), not signal speed. Judge Gen4 by `c2:00`: it dropped every 1-2 days
    (once 5.5 h after boot); 5+ days clean means Gen4 fixed it, then apply the same to zappa1.
+   Also during the 2026-11-10 00:06 power-off, the MCIO cable for `c2:00` (slot 101) was
+   reseated, so the 5-day test covers Gen4 plus the reseat together. The card was physically
+   identified with a 2-minute load on index 6 (only that card's fan spins up; GPU 2 always
+   idles at ~80% fan and GPU 5 at ~30%, so ignore those):
+   `docker run --rm --device nvidia.com/gpu=6 --entrypoint python <local pytorch image> -c "..."`.
 
    Bus to physical slot (from `/sys/bus/pci/slots/*/address`; GPUs report serial `0`, so slot
    is the only way to find the card): `04:00`=109, `06:00`=110, `42:00`=113, `44:00`=114,
