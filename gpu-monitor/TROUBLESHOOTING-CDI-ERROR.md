@@ -161,6 +161,13 @@
    riser connector, which gives exactly this intermittent fall-off-the-bus), check the
    pump/fan power lead, and the 12V-2x6 connector for browning and full seating.
 
+   **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
+   `NV_ERR_GPU_IN_FULLCHIP_RESET` storm (`nvidia-smi`: "Unable to determine the device handle
+   for GPU0: 0000:01:00.0: Unknown Error"). Inside the 2 h guard window, so the watcher alerted
+   instead of rebooting, as designed. It also sent one Telegram alert per 5 log lines (5 in
+   2 s); now limited to one per 30 min. Two failures in about an hour: the card or slot is
+   getting worse, so take it out of service at the next power-off rather than reboot-looping.
+
    **zappa2 drop log (8x 5090, TYAN), from `journalctl _TRANSPORT=kernel | grep 'fallen off'`:**
 
    | When (UTC) | Bus | Index | Context |

@@ -78,6 +78,7 @@ FULLCHIP_RESET_THRESHOLD="${FULLCHIP_RESET_THRESHOLD:-5}"
 FULLCHIP_RESET_WINDOW_SECS="${FULLCHIP_RESET_WINDOW_SECS:-60}"
 AUTOREBOOT_METHOD="${AUTOREBOOT_METHOD:-auto}"   # auto | ipmi | sysrq
 AUTOREBOOT_DRY_RUN="${AUTOREBOOT_DRY_RUN:-0}"
+GUARD_ALERT_COOLDOWN_SECS="${GUARD_ALERT_COOLDOWN_SECS:-1800}"  # 1 guard-window alert per 30 min
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 
@@ -89,6 +90,28 @@ tg_send() {
         -d chat_id="$TELEGRAM_CHAT_ID" \
         -d parse_mode="HTML" \
         --data-urlencode text="$1" >/dev/null 2>&1 || true
+}
+
+# A GPU stuck in FULLCHIP_RESET logs dozens of lines a second, so inside the guard window
+# every 5 lines re-confirmed the burst and sent another Telegram alert (zappa1 2026-11-10
+# 21:07: five alerts in two seconds, and it would have kept going). Alert and log once,
+# then stay quiet for GUARD_ALERT_COOLDOWN_SECS, counting what was suppressed.
+last_guard_alert=0
+guard_suppressed=0
+guard_alert() {
+    local log_msg="$1" tg_msg="$2" now
+    now=$(date +%s)
+    if (( now - last_guard_alert < GUARD_ALERT_COOLDOWN_SECS )); then
+        guard_suppressed=$(( guard_suppressed + 1 ))
+        return
+    fi
+    if (( guard_suppressed > 0 )); then
+        log_msg="$log_msg ($guard_suppressed repeats suppressed since the last alert)"
+    fi
+    last_guard_alert=$now
+    guard_suppressed=0
+    log "$log_msg"
+    tg_send "$tg_msg"
 }
 
 guard_ok() {
@@ -173,8 +196,8 @@ journalctl -k -f -n 0 --no-pager 2>/dev/null | while IFS= read -r line; do
 
     if [[ -n "${pending_bus:-}" ]] && echo "$line" | grep -qE 'Node Reboot Required|GPU Reset Required'; then
         if ! guard_ok; then
-            log "Xid 79 + Node Reboot Required confirmed on $pending_bus, but within ${AUTOREBOOT_GUARD_SECS}s guard window of the last auto-reboot -- alerting only, NOT rebooting"
-            tg_send "🔴 <b>$(hostname): another Xid 79 (bus $pending_bus) within the auto-reboot guard window — NOT auto-rebooting (possible repeat/ongoing hardware failure). Needs manual investigation.</b>"
+            guard_alert "Xid 79 + Node Reboot Required confirmed on $pending_bus, but within ${AUTOREBOOT_GUARD_SECS}s guard window of the last auto-reboot -- alerting only, NOT rebooting" \
+                "🔴 <b>$(hostname): another Xid 79 (bus $pending_bus) within the auto-reboot guard window — NOT auto-rebooting (possible repeat/ongoing hardware failure). Needs manual investigation.</b>"
         else
             do_reboot "Xid 79 confirmed on bus $pending_bus -- Node Reboot Required" \
                 "🔴 <b>Xid 79 — $(hostname) GPU bus $pending_bus has fallen off the bus</b>
@@ -198,8 +221,8 @@ Node Reboot Required confirmed (matches the documented non-recoverable-in-softwa
         if (( ${#fullchip_hits[@]} >= FULLCHIP_RESET_THRESHOLD )); then
             fullchip_hits=()
             if ! guard_ok; then
-                log "FULLCHIP_RESET burst confirmed (GSP stuck in reset), but within ${AUTOREBOOT_GUARD_SECS}s guard window of the last auto-reboot -- alerting only, NOT rebooting"
-                tg_send "🔴 <b>$(hostname): another FULLCHIP_RESET burst within the auto-reboot guard window — NOT auto-rebooting (possible repeat/ongoing hardware failure). Needs manual investigation.</b>"
+                guard_alert "FULLCHIP_RESET burst confirmed (GSP stuck in reset), but within ${AUTOREBOOT_GUARD_SECS}s guard window of the last auto-reboot -- alerting only, NOT rebooting" \
+                    "🔴 <b>$(hostname): another FULLCHIP_RESET burst within the auto-reboot guard window — NOT auto-rebooting (possible repeat/ongoing hardware failure). Needs manual investigation.</b>"
             else
                 do_reboot "FULLCHIP_RESET burst confirmed (>=${FULLCHIP_RESET_THRESHOLD} hits in ${FULLCHIP_RESET_WINDOW_SECS}s) -- GSP stuck in reset" \
                     "🔴 <b>$(hostname): GPU wedged (GSP stuck in FULLCHIP_RESET)</b>
