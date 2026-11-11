@@ -160,6 +160,7 @@
    tubing/radiator isn't pulling on the card (on an open rig the weight can twist the slot or
    riser connector, which gives exactly this intermittent fall-off-the-bus), check the
    pump/fan power lead, and the 12V-2x6 connector for browning and full seating.
+   2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. Still to do: 12V-2x6 seating/browning, the ZOTAC/MSI slot swap, Gen4 in BIOS (link still trains Gen5).
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
    `NV_ERR_GPU_IN_FULLCHIP_RESET` storm (`nvidia-smi`: "Unable to determine the device handle
