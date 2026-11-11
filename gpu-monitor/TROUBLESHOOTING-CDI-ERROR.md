@@ -209,7 +209,7 @@
    **BMC sensor snapshot, 2026-11-11 02:36, all 8 GPUs loaded (~3.5 kW):** 12V rails 12.00 /
    11.91 V, 3.3V 3.35 V: no sag at full load. `VDD_5_RUN` 4.66 V, below the usual 4.75 V
    (-5%) floor; the GPUs don't use 5V, but MCIO risers powered by SATA connectors would. Check
-   whether it changes between idle and load (`ipmitool sensor get VDD_5_RUN`). Inlet MB 41 /
+   whether it changes between idle and load (`ipmitool sensor get VDD_5_RUN`: 4.658 +/- 0.017 V, BMC lower critical 4.487 V = -10%, so "ok" to the board but under the ATX -5% spec). Inlet MB 41 /
    OCP 35 C (50 C critical; last alert 11-06 15:13), CPU 48, VRM 48, DIMMs 35-37 C. No BMC fan
    or PSU readings on this open rig, and `dcmi power reading` returns 0 W, so the PDU is the
    only power meter. The SEL shows `Watchdog2 IPMI_Watchdog | Hard reset` at 11-07 07:07,
