@@ -268,7 +268,7 @@
    circuit shared with zappa1 via PDU `192.168.1.251`) is the leading suspect. The reboot sent
    at 2026-11-06 23:42 hung until ~04:17 (4.5 h down), and the 05:32 drop needed a BMC power
    reset at 07:07; reliability fell from 0.93 to 0.65 and the 30-day 4-GPU renter left.
-   Mitigation in place 2026-11-07: `GPU_POWER_OVERRIDE` caps GPU 5 at 400 W (350 W at >=70 C).
+   Mitigation in place 2026-11-07: `GPU_POWER_OVERRIDE` caps GPU 5 at 400 W. The `70@350` step does nothing: 400 W is the RTX 5090's minimum power limit, and `clamp_power_limit` raises any lower request to 400 W (seen 2026-11-12: GPU 5 at 71-76 C with a 400 W limit). So 400 W is as low as a power limit can take these cards; going lower would need clock locking (`nvidia-smi -lgc`).
    Next: check BMC PSU sensors/SEL, then in a window reseat the 12V-2x6 cables on `85:00` and
    `c2:00` (inspect for browning) and swap one of them with a card that has never dropped.
 
