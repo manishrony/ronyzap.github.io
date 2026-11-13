@@ -218,6 +218,15 @@
    reboot that had hung, not someone pressing reset. That is why the zappa2 watcher ends
    with a BMC power cycle instead of a warm reboot.
 
+   **GPU 5 (`85:00`, MSI) at 90 C with its fan at 30%, 2026-11-13 (nvtop):** clocks pulled back
+   to 2415 MHz (thermal throttling) at 385/400 W while the other loaded cards ran 62-69 C at
+   42-80% fan. Earlier readings had this card at 30% fan from idle to 76 C, and only once at
+   66%, so its fans are not following temperature. During the 2026-11-10 fan test the owner
+   saw one card with only 2 of its 3 fans spinning. `85:00` has dropped twice (11-05, 11-06),
+   so a weak or failed fan on this card is a live suspect for those drops. 400 W is the 5090
+   minimum power limit, so power can't cool it further; lock its clocks lower until the fans
+   are checked.
+
    **2026-11-10: `xid79-autoreboot` installed on zappa2** after the 83:00 drop sat for 2 h.
    On a rig whose BMC answers `ipmitool mc info` it ends with `ipmitool chassis power cycle`
    (cold boot by the BMC, with SysRq `b` as the fallback after 60 s); zappa1 still uses SysRq.
