@@ -160,6 +160,13 @@
    tubing/radiator isn't pulling on the card (on an open rig the weight can twist the slot or
    riser connector, which gives exactly this intermittent fall-off-the-bus), check the
    pump/fan power lead, and the 12V-2x6 connector for browning and full seating.
+   **2026-11-13 06:50:41: fifth `01:00` drop, the first at 475 W** (the owner raised POWER_LIMITS
+   from 450 to 475 at 00:09). It came 3 min after a pytorch renter started (06:47). The watcher's
+   SysRq reboot ran at 06:51:12, but **the ZOTAC did not come back**: after boot only the MSI
+   (`03:00`, UUID `94d80956...`) enumerates, while Vast still lists the machine as 2 GPUs. A
+   warm reset is no longer enough for this card; it needs a cold power-off, and zappa1 has no
+   BMC (the APC PDU is metered, not switched), so that has to be done by hand. Reliability fell
+   0.958 to 0.513. Set POWER_LIMITS back to 450 W.
    2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. Still to do: 12V-2x6 seating/browning, the ZOTAC/MSI slot swap, Gen4 in BIOS (link still trains Gen5).
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
