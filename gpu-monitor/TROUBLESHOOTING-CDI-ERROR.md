@@ -167,6 +167,9 @@
    warm reset is no longer enough for this card; it needs a cold power-off, and zappa1 has no
    BMC (the APC PDU is metered, not switched), so that has to be done by hand. Reliability fell
    0.958 to 0.513. Set POWER_LIMITS back to 450 W.
+   Owner did a manual cold power-off; after boot at 12:35 both GPUs enumerate again (ZOTAC on
+   `01:00` at its usual ~40% pump/fan reading, MSI on `03:00`). This confirms the card had
+   latched in a state that only removing power clears. POWER_LIMITS was still 475 at that boot.
    2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. Still to do: 12V-2x6 seating/browning, the ZOTAC/MSI slot swap, Gen4 in BIOS (link still trains Gen5).
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
