@@ -170,6 +170,11 @@
    Owner did a manual cold power-off; after boot at 12:35 both GPUs enumerate again (ZOTAC on
    `01:00` at its usual ~40% pump/fan reading, MSI on `03:00`). This confirms the card had
    latched in a state that only removing power clears. POWER_LIMITS was still 475 at that boot.
+   Afterwards Vast still showed `error_description: failed to inject CDI devices: unresolvable
+   CDI devices` (verified, listed), left over from the hours the ZOTAC was missing; the 13:36
+   Vast self-test did not overwrite it. Base spec regenerated at ~15:30 as a precaution
+   (`nvidia-ctk cdi generate`): `gpu=0`, `gpu=1` and both UUIDs (`027f63a3` ZOTAC, `94d80956`
+   MSI) present; 170 CDI devices total, i.e. ~33 accumulated per-container `D.*` specs.
    2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. 2026-11-13: all 12V-2x6 plugs checked by the owner (seated, no browning), so the power connector is ruled out too. Still to do: the ZOTAC/MSI slot swap, Gen4 in BIOS (link still trains Gen5).
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
