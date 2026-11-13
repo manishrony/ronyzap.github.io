@@ -162,16 +162,15 @@ POWER_LIMIT_DEFAULT="${GPU_POWER_LIMIT:-$POWER_LIMIT_FALLBACK}"
 # for a card that runs hot at full fan-headroom: power capping only trims heat
 # *generation*; the fan is what removes it.
 #   "5:80" → keep GPU 5's fan at >=80%
-# Needs an X server with Coolbits enabled (headless rigs usually don't have one);
-# if fan control isn't available the monitor logs one clear warning and falls
-# back to the power floor only — it never fails the cycle. On exit it restores
-# each controlled GPU to automatic (VBIOS) fan control.
+# Uses NVML through $NVML_PY (python3 -m venv /opt/nvml && /opt/nvml/bin/pip
+# install nvidia-ml-py); if that's missing the monitor logs one warning and skips
+# it, without failing the cycle. On exit it restores each controlled GPU to
+# automatic (VBIOS) fan control. The fan-policy guard leaves these GPUs alone.
 # RIG-SPECIFIC like GPU_POWER_OVERRIDE: set it in that rig's /etc/gpu_monitor.conf,
 # not here. Default empty so no rig touches a fan unless its conf asks for it.
 #   GPU_FAN_FLOOR=("5:80")   # ← example, put in the conf
 GPU_FAN_FLOOR=()
-# DISPLAY candidates to try for nvidia-settings (first that answers wins; cached).
-GPU_FAN_DISPLAYS="${GPU_FAN_DISPLAYS:-:0 :1}"
+# (GPU_FAN_DISPLAYS is no longer used: fan control moved from nvidia-settings to NVML.)
 
 # --- Workload-based power throttle (runs every THERMAL_CHECK_INTERVAL) ---------
 # Low-value rentals (hash-cracking, mining) aren't worth full power/heat, but we
@@ -1439,51 +1438,46 @@ thermal_adjust() {
 }
 
 # ── Per-GPU fan floor ─────────────────────────────────────────────────────────
-# Fan control on Linux goes through nvidia-settings, which needs an X server with
-# Coolbits. Cache a working DISPLAY (or the fact that none works) so we probe once,
-# not every cycle. _GPU_FAN_STATE: "" = unprobed, "none" = unavailable, else the
-# DISPLAY string that answered.
-_GPU_FAN_STATE=""
+# Fan control goes through NVML ($NVML_PY with nvidia-ml-py; see FAN_POLICY_GUARD),
+# addressing each GPU's OWN fans by NVML index. This used to go through
+# nvidia-settings, which numbers fans globally across all GPUs, and fell back to
+# "[fan:<gpu index>]" when it couldn't read the coupling. On zappa2 with
+# GPU_FAN_FLOOR=("5:80") that put GPU 5 into MANUAL fan control (left at a 30%
+# target) and drove global fan 5 to 80%. Global fan 5 is GPU 2's fan 0 (GPU 0
+# has fans 0-1, GPU 1 fans 2-4). So the floor stopped GPU 5's fan curve and
+# pinned the wrong card. GPU 5 hit 90 °C, and GPU 2 sat at 80% for weeks
+# (found 2026-11-13).
 _GPU_FAN_WARNED=0
-_gpu_fan_display() {
-    [[ -n "$_GPU_FAN_STATE" ]] && { [[ "$_GPU_FAN_STATE" == "none" ]] && return 1; echo "$_GPU_FAN_STATE"; return 0; }
-    command -v nvidia-settings >/dev/null 2>&1 || { _GPU_FAN_STATE="none"; return 1; }
-    local d
-    for d in $GPU_FAN_DISPLAYS; do
-        # A working display answers a fan-control query without error.
-        if DISPLAY="$d" nvidia-settings -c "$d" -q "[gpu:0]/GPUFanControlState" >/dev/null 2>&1; then
-            _GPU_FAN_STATE="$d"; echo "$d"; return 0
-        fi
-    done
-    _GPU_FAN_STATE="none"; return 1
-}
-# Set GPU <idx>'s fans to <pct>%. Enables manual control on that GPU, then drives
-# every fan coupled to it. Returns non-zero if control isn't available.
+_gpu_fan_ctl_ok() { [[ -x "$NVML_PY" ]]; }
+# Set every fan on GPU <idx> to <pct>%. Non-zero if NVML refuses.
 _set_gpu_fan() {
-    local idx="$1" pct="$2" disp fanlist f
-    disp=$(_gpu_fan_display) || return 1
-    DISPLAY="$disp" nvidia-settings -c "$disp" -a "[gpu:$idx]/GPUFanControlState=1" >/dev/null 2>&1 || return 1
-    # Fans coupled to this GPU (e.g. "0, 1" for a dual-fan board); fall back to
-    # a same-index single fan if the coupling attribute isn't exposed.
-    fanlist=$(DISPLAY="$disp" nvidia-settings -c "$disp" -q "[gpu:$idx]/Fans" 2>/dev/null \
-              | grep -oE 'fan:[0-9]+' | grep -oE '[0-9]+' | tr '\n' ' ')
-    [[ -z "$fanlist" ]] && fanlist="$idx"
-    local ok=1
-    for f in $fanlist; do
-        DISPLAY="$disp" nvidia-settings -c "$disp" -a "[fan:$f]/GPUTargetFanSpeed=$pct" >/dev/null 2>&1 && ok=0
-    done
-    return $ok
+    local idx="$1" pct="$2"
+    _gpu_fan_ctl_ok || return 1
+    timeout 20 "$NVML_PY" - "$idx" "$pct" >/dev/null 2>&1 <<'PYEOF'
+import sys, pynvml as n
+n.nvmlInit()
+h = n.nvmlDeviceGetHandleByIndex(int(sys.argv[1]))
+for f in range(n.nvmlDeviceGetNumFans(h)):
+    n.nvmlDeviceSetFanSpeed_v2(h, f, int(sys.argv[2]))
+PYEOF
 }
 # Restore automatic (VBIOS) fan control on every GPU we hold a floor on. Called
 # on exit so a stopped monitor never leaves a card pinned to a fixed fan speed.
 _restore_gpu_fans() {
-    local disp rule idx
+    local rule idx
     [[ ${#GPU_FAN_FLOOR[@]} -eq 0 ]] && return
-    disp=$(_gpu_fan_display) || return
+    _gpu_fan_ctl_ok || return
     for rule in "${GPU_FAN_FLOOR[@]}"; do
         [[ -z "$rule" ]] && continue
         idx="${rule%%:*}"
-        DISPLAY="$disp" nvidia-settings -c "$disp" -a "[gpu:$idx]/GPUFanControlState=0" >/dev/null 2>&1
+        [[ "$idx" =~ ^[0-9]+$ ]] || continue
+        timeout 20 "$NVML_PY" - "$idx" >/dev/null 2>&1 <<'PYEOF'
+import sys, pynvml as n
+n.nvmlInit()
+h = n.nvmlDeviceGetHandleByIndex(int(sys.argv[1]))
+for f in range(n.nvmlDeviceGetNumFans(h)):
+    n.nvmlDeviceSetFanControlPolicy(h, f, 0)
+PYEOF
     done
     log "  FAN: restored automatic fan control on floored GPU(s)"
 }
@@ -1493,12 +1487,11 @@ _restore_gpu_fans() {
 # then no-ops (the power floor still does its job).
 fan_floor_adjust() {
     [[ ${#GPU_FAN_FLOOR[@]} -eq 0 ]] && return
-    if ! _gpu_fan_display >/dev/null; then
+    if ! _gpu_fan_ctl_ok; then
         if (( _GPU_FAN_WARNED == 0 )); then
             _GPU_FAN_WARNED=1
-            log "  FAN: control unavailable (nvidia-settings needs an X server with Coolbits) — "
-            log "       GPU fan floor disabled; hot cards rely on the power floor only. To enable,"
-            log "       run a headless X with Option \"Coolbits\" \"28\" and set GPU_FAN_DISPLAYS."
+            log "  FAN: control unavailable ($NVML_PY missing) -- GPU fan floor disabled. Set up with:"
+            log "       python3 -m venv /opt/nvml && /opt/nvml/bin/pip install nvidia-ml-py"
         fi
         return
     fi
@@ -1514,7 +1507,7 @@ fan_floor_adjust() {
                 log "  FAN: GPU $idx ${cur}% → ${floorpct}% (floor)"
             elif (( _GPU_FAN_WARNED == 0 )); then
                 _GPU_FAN_WARNED=1
-                log "  FAN: could not set GPU $idx fan (nvidia-settings rejected the write) — "
+                log "  FAN: could not set GPU $idx fan (NVML rejected the write) — "
                 log "       relying on power floor only."
             fi
         fi
@@ -5372,7 +5365,7 @@ main() {
     fi
     log "Temp threshold      : ${TEMP_THRESHOLD}°C"
     (( ${#GPU_POWER_OVERRIDE[@]} )) && log "Per-GPU power ovr    : ${GPU_POWER_OVERRIDE[*]}"
-    (( ${#GPU_FAN_FLOOR[@]} ))      && log "Per-GPU fan floor    : ${GPU_FAN_FLOOR[*]} (needs X+Coolbits; power floor otherwise)"
+    (( ${#GPU_FAN_FLOOR[@]} ))      && log "Per-GPU fan floor    : ${GPU_FAN_FLOOR[*]} (via NVML, $NVML_PY)"
     if [[ "$WORKLOAD_THROTTLE_WATTS" =~ ^[1-9] ]]; then
         local wtsumm="" wrule
         for wrule in "${WORKLOAD_THROTTLE_LIMITS[@]}"; do
