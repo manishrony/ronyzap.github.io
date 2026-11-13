@@ -15,7 +15,20 @@
 
 LOG_FILE="/var/log/gpu_monitor.log"
 JSONL_FILE="/var/log/gpu_monitor_data.jsonl"
-TEMP_THRESHOLD=75        # °C — GPU Telegram alert if exceeded
+TEMP_THRESHOLD=75        # °C — logged as a temp_warning event only (no Telegram; renters hit this routinely)
+# GPU heat Telegram alerts (checked every GPU_CHECK_INTERVAL). Two cases:
+#  - any GPU at/above GPU_TEMP_ALERT
+#  - a GPU at/above GPU_FAN_STUCK_TEMP whose fan reads at/below GPU_FAN_STUCK_MAX %,
+#    i.e. its fans aren't responding to heat. Seen on zappa2 2026-11-13: GPU 5
+#    (MSI, 85:00) throttling at 90 °C with its fan at 30% for days, while
+#    TEMP_THRESHOLD above only ever wrote a log line nobody read.
+# At most one alert per GPU per GPU_HEAT_ALERT_COOLDOWN seconds. Override any of
+# these in /etc/gpu_monitor.conf; GPU_TEMP_ALERT=0 turns both alerts off.
+GPU_TEMP_ALERT="${GPU_TEMP_ALERT:-85}"
+GPU_FAN_STUCK_TEMP="${GPU_FAN_STUCK_TEMP:-80}"
+GPU_FAN_STUCK_MAX="${GPU_FAN_STUCK_MAX:-35}"
+GPU_HEAT_ALERT_COOLDOWN="${GPU_HEAT_ALERT_COOLDOWN:-1800}"
+GPU_HEAT_ALERT_DIR="/var/tmp/gpu_monitor_heat_alert"
 CHECK_INTERVAL=3600      # 1 hour in seconds (earnings sync, power-limit re-apply,
                          # fault/selftest checks — the rate-limit-sensitive stuff)
 # How often to refresh /machines/ and react to it: vastai_check() (rental
@@ -1814,6 +1827,7 @@ GPU likely wedged (GSP stuck in reset) — this can silently delist the machine 
             write_event "temp_warning" "{\"gpu_idx\":$idx,\"gpu_name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"fan\":$fan}"
             overtemp=$((overtemp + 1))
         fi
+        gpu_heat_alert "$idx" "$name" "$temp" "$fan"
     done <<< "$gpu_data"
     gpu_json_arr+="]"
 
@@ -1829,6 +1843,40 @@ GPU likely wedged (GSP stuck in reset) — this can silently delist the machine 
     check_gpu_count "$gpu_count_actual"
 
     log "--- End GPU Status ---"
+}
+
+# Telegram alert for a hot GPU or one whose fans aren't keeping up (see
+# GPU_TEMP_ALERT). Cards that report no fan reading (e.g. some AIO boards) only
+# get the plain temperature alert.
+gpu_heat_alert() {
+    local idx="$1" name="$2" temp="$3" fan="$4" kind=""
+    [[ "$GPU_TEMP_ALERT" =~ ^[0-9]+$ ]] && (( GPU_TEMP_ALERT > 0 )) || return 0
+    [[ "$temp" =~ ^[0-9]+$ ]] || return 0
+    if [[ "$fan" =~ ^[0-9]+$ ]] && (( temp >= GPU_FAN_STUCK_TEMP && fan <= GPU_FAN_STUCK_MAX )); then
+        kind="fan"
+    elif (( temp >= GPU_TEMP_ALERT )); then
+        kind="temp"
+    else
+        return 0
+    fi
+    mkdir -p "$GPU_HEAT_ALERT_DIR" 2>/dev/null || true
+    local f="$GPU_HEAT_ALERT_DIR/gpu${idx}" now last=0
+    now=$(date +%s)
+    [[ -f "$f" ]] && last=$(cat "$f" 2>/dev/null || echo 0)
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    (( now - last < GPU_HEAT_ALERT_COOLDOWN )) && return 0
+    echo "$now" > "$f"
+    local bus; bus=$(nvidia-smi -i "$idx" --query-gpu=pci.bus_id --format=csv,noheader 2>/dev/null | sed -E 's/^[0-9A-Fa-f]+://; s/\.[0-9]+$//' | tr 'A-F' 'a-f')
+    write_event "gpu_heat_alert" "{\"gpu_idx\":$idx,\"kind\":\"$kind\",\"temp\":$temp,\"fan\":\"$fan\"}"
+    log "  HEAT ALERT ($kind): GPU $idx ${bus:+($bus) }${temp}°C, fan ${fan}%"
+    if [[ "$kind" == "fan" ]]; then
+        tg_send "🌡️ <b>$(hostname): GPU $idx fan not keeping up</b>
+${name}${bus:+ (bus $bus)}: <b>${temp}°C</b> with fan at <b>${fan}%</b>.
+Its fans aren't responding to heat — check that all of them spin (dead fan or loose fan cable). It will throttle and may drop off the bus."
+    else
+        tg_send "🌡️ <b>$(hostname): GPU $idx at ${temp}°C</b>
+${name}${bus:+ (bus $bus)}, fan ${fan}% (alert ≥${GPU_TEMP_ALERT}°C). Check airflow / inlet temperature."
+    fi
 }
 
 # Lean gpu_status refresh — same event check_gpus writes (power/temp/util/fan/
@@ -1850,6 +1898,7 @@ snapshot_gpu_status() {
         [[ $first -eq 0 ]] && gpu_json_arr+=","
         gpu_json_arr+="{\"idx\":$idx,\"name\":\"$name\",\"temp\":$temp,\"power_draw\":$power_draw,\"power_limit\":$power_limit,\"fan\":$fan,\"util\":$util,\"proc\":\"$proc\"}"
         first=0
+        gpu_heat_alert "$idx" "$name" "$temp" "$fan"
     done <<< "$gpu_data"
     gpu_json_arr+="]"
     local cpu_field="" ct; ct=$(get_cpu_temp)
