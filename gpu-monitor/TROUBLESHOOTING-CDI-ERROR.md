@@ -218,12 +218,12 @@
    reboot that had hung, not someone pressing reset. That is why the zappa2 watcher ends
    with a BMC power cycle instead of a warm reboot.
 
-   **GPU 5 (`85:00`, MSI) at 90 C with its fan at 30%, 2026-11-13 (nvtop):** clocks pulled back
+   **GPU 5 (`85:00`; not the MSI, which the owner moved to zappa1) at 90 C with its fan at 30%, 2026-11-13 (nvtop):** clocks pulled back
    to 2415 MHz (thermal throttling) at 385/400 W while the other loaded cards ran 62-69 C at
    42-80% fan. Earlier readings had this card at 30% fan from idle to 76 C, and only once at
    66%, so its fans are not following temperature. During the 2026-11-10 fan test the owner
    saw one card with only 2 of its 3 fans spinning. `85:00` has dropped twice (11-05, 11-06),
-   so a weak or failed fan on this card is a live suspect for those drops. 400 W is the 5090
+   so a weak or failed fan on this card is a live suspect for those drops. Later the same day, idle at 9 W, it sat at 62 C with the fan still at exactly 30% while idle neighbours were 40-47 C at 0%: the fan reading never moves with temperature, at idle or under load. Next: read the fan control policy and target over NVML, and check whether the fans physically spin. 400 W is the 5090
    minimum power limit, so power can't cool it further; lock its clocks lower until the fans
    are checked.
 
@@ -265,7 +265,7 @@
    | `42:00` | 113 | `GPU-bb45dbe5-4d67-b43c-348b-5d46d5626a1f` |
    | `44:00` | 114 | `GPU-ada5ae30-f911-9eae-aa7a-6a02e49997e0` |
    | `83:00` | 105 | `GPU-09430fe5-1897-ef75-3b74-0741bb7c1f3e` |
-   | `85:00` | 106 | `GPU-8e951f0f-b7b6-64fd-5a69-db3cc5de782f` (MSI) |
+   | `85:00` | 106 | `GPU-8e951f0f-b7b6-64fd-5a69-db3cc5de782f` (not the MSI: the MSI moved to zappa1, where it has a different UUID) |
    | `c2:00` | 101 | `GPU-4ca80fb9-44d5-485c-a75c-917c34a84f7c` |
    | `c4:00` | 102 | `GPU-819437f8-b208-8190-e7ef-0eb7e233edb8` |
 

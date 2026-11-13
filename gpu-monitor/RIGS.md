@@ -9,8 +9,8 @@ _Last updated: 2026-07-16_
 
 | Rig    | Hostname | LAN IP (enp13s0) | Dash port | Role                         | Notes |
 |--------|----------|------------------|-----------|------------------------------|-------|
-| Zappa1 | zappa1   | 192.168.1.171    | 8080      | **Hub** (serves combined view) | 2× RTX 5090: GPU 0 `01:00` = ZOTAC liquid-cooled (subsys 19da:1761, reports a constant ~40% fan/pump at idle; every zappa1 Xid 79 so far), GPU 1 `03:00` = MSI (subsys 1462:5303, air, 0% fan at idle) |
-| Zappa2 | zappa2   | 192.168.1.196    | 8081      | Node                         | 8× RTX 5090 (GPU 5 = MSI, lazy-fan → per-GPU override in its conf); AMD EPYC 9 B14 |
+| Zappa1 | zappa1   | 192.168.1.171    | 8080      | **Hub** (serves combined view) | 2× RTX 5090: GPU 0 `01:00` = ZOTAC liquid-cooled (subsys 19da:1761, reports a constant ~40% fan/pump at idle; every zappa1 Xid 79 so far), GPU 1 `03:00` = MSI (subsys 1462:5303, air, 0% fan at idle; this is the MSI that used to be zappa2's GPU 5) |
+| Zappa2 | zappa2   | 192.168.1.196    | 8081      | Node                         | 8× RTX 5090 (GPU 5 `85:00` was the lazy-fan MSI, since moved to zappa1; the card there now reads a flat ~30% fan and ran 90 °C on 2026-11-13, so the 400 W override stays); AMD EPYC 9 B14 |
 | Zappa3 | zappa3   | 192.168.1.211    | 8082      | Node                         | RTX 5080 (325W curve, 250W@80°C; mining/cracking throttles to 250W past the 60min grace period) |
 
 > ⚠️ These are **DHCP** addresses and have drifted before (Zappa3 moved
@@ -158,7 +158,7 @@ both drives; that VG was destroyed on 2026-09-14. **When it goes back in, give i
 filesystem** — a linear LV across two drives loses everything if either one fails, and this
 rig already has one known-bad M.2 port.
 
-**GPU 5 is MSI** and runs a quieter stock fan curve than the others, so it sits warmest at
+**GPU 5 was the MSI** (moved to zappa1 as its GPU 1, `03:00`; see TROUBLESHOOTING-CDI-ERROR.md for the card now in `85:00`). It ran a quieter stock fan curve than the others, so it sits warmest at
 idle. That is the card, not a fault. `GPU_FAN_FLOOR=("5:80")` needs an X server with Coolbits
 to take effect and is currently inert.
 
@@ -578,7 +578,7 @@ sudo bash gpu-monitor/install.sh <port>     # Zappa2=8081, Zappa3=8082
 Rig-specific overrides live in `/etc/gpu_monitor.conf` (root-only, sourced at
 startup). The shared `gpu_monitor.sh` defaults to none.
 
-**Zappa2** — GPU 5 is a lazy-fan MSI board; it runs ~5 °C hotter than its
+**Zappa2** — GPU 5 was a lazy-fan MSI board (since moved to zappa1); it runs ~5 °C hotter than its
 siblings and its VBIOS won't spin the fan up. Its conf carries:
 
 ```bash
