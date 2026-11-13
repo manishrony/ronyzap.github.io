@@ -170,7 +170,7 @@
    Owner did a manual cold power-off; after boot at 12:35 both GPUs enumerate again (ZOTAC on
    `01:00` at its usual ~40% pump/fan reading, MSI on `03:00`). This confirms the card had
    latched in a state that only removing power clears. POWER_LIMITS was still 475 at that boot.
-   2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. Still to do: 12V-2x6 seating/browning, the ZOTAC/MSI slot swap, Gen4 in BIOS (link still trains Gen5).
+   2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. 2026-11-13: all 12V-2x6 plugs checked by the owner (seated, no browning), so the power connector is ruled out too. Still to do: the ZOTAC/MSI slot swap, Gen4 in BIOS (link still trains Gen5).
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
    `NV_ERR_GPU_IN_FULLCHIP_RESET` storm (`nvidia-smi`: "Unable to determine the device handle
