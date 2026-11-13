@@ -46,6 +46,21 @@ GPU_CLOCK_MIN_MHZ="${GPU_CLOCK_MIN_MHZ:-210}"
 GPU_CLOCK_STEP_DWELL_SECS="${GPU_CLOCK_STEP_DWELL_SECS:-120}"
 GPU_CLOCK_RESTORE_SECS="${GPU_CLOCK_RESTORE_SECS:-300}"
 GPU_CLOCK_STATE_DIR="/var/tmp/gpu_monitor_clock"
+# Fan-policy guard (every GPU_CHECK_INTERVAL). On 2026-11-13 zappa2's GPU 5 (ASUS)
+# had both fans stuck in NVML MANUAL policy at 30%, so its own fan curve never
+# ran and it throttled at 90 °C. GPU 2 had one fan pinned at 80% the same way.
+# Nothing on the host set them, so a renter container is the likely source.
+# This puts any MANUAL fan back to automatic (nvmlDeviceSetFanControlPolicy, which
+# worked where nvmlDeviceSetDefaultFanSpeed_v2 did not) and sends a Telegram
+# alert, so the next time it happens we learn when and on which GPU. GPUs listed
+# in GPU_FAN_FLOOR are skipped, because that floor deliberately holds them manual.
+# Needs Python NVML bindings; set up once with:
+#   python3 -m venv /opt/nvml && /opt/nvml/bin/pip install nvidia-ml-py
+# FAN_POLICY_GUARD=0 turns it off.
+FAN_POLICY_GUARD="${FAN_POLICY_GUARD:-1}"
+NVML_PY="${NVML_PY:-/opt/nvml/bin/python}"
+FAN_POLICY_ALERT_COOLDOWN="${FAN_POLICY_ALERT_COOLDOWN:-21600}"   # 6 h per GPU
+FAN_POLICY_STATE_DIR="/var/tmp/gpu_monitor_fan_policy"
 CHECK_INTERVAL=3600      # 1 hour in seconds (earnings sync, power-limit re-apply,
                          # fault/selftest checks — the rate-limit-sensitive stuff)
 # How often to refresh /machines/ and react to it: vastai_check() (rental
@@ -1860,6 +1875,73 @@ GPU likely wedged (GSP stuck in reset) — this can silently delist the machine 
     check_gpu_count "$gpu_count_actual"
 
     log "--- End GPU Status ---"
+}
+
+_FAN_GUARD_WARNED=0
+fan_policy_guard() {
+    [[ "$FAN_POLICY_GUARD" == "1" ]] || return 0
+    if [[ ! -x "$NVML_PY" ]]; then
+        if (( _FAN_GUARD_WARNED == 0 )); then
+            _FAN_GUARD_WARNED=1
+            log "  FAN GUARD: $NVML_PY not found, so stuck (MANUAL) GPU fans can't be detected. Set up with: python3 -m venv /opt/nvml && /opt/nvml/bin/pip install nvidia-ml-py"
+        fi
+        return 0
+    fi
+    local skip="" rule
+    for rule in "${GPU_FAN_FLOOR[@]}"; do skip+="${rule%%:*},"; done
+    local out
+    out=$(SKIP="$skip" timeout 30 "$NVML_PY" - 2>&1 <<'PYEOF'
+import os, pynvml as n
+skip = {int(x) for x in os.environ.get("SKIP", "").split(",") if x.strip().isdigit()}
+n.nvmlInit()
+for i in range(n.nvmlDeviceGetCount()):
+    if i in skip:
+        continue
+    h = n.nvmlDeviceGetHandleByIndex(i)
+    try:
+        nf = n.nvmlDeviceGetNumFans(h)
+    except n.NVMLError:
+        continue
+    for f in range(nf):
+        try:
+            if n.nvmlDeviceGetFanControlPolicy_v2(h, f) != 1:
+                continue
+            spd = n.nvmlDeviceGetTargetFanSpeed(h, f)
+            temp = n.nvmlDeviceGetTemperature(h, 0)
+            try:
+                n.nvmlDeviceSetFanControlPolicy(h, f, 0)
+                ok = n.nvmlDeviceGetFanControlPolicy_v2(h, f) != 1
+            except n.NVMLError:
+                ok = False
+            print(f"MANUAL {i} {f} {spd} {temp} {'fixed' if ok else 'failed'}")
+        except n.NVMLError:
+            pass
+PYEOF
+)
+    [[ -z "$out" ]] && return 0
+    mkdir -p "$FAN_POLICY_STATE_DIR" 2>/dev/null || true
+    local line tag idx fan spd temp res now last f
+    now=$(date +%s)
+    while read -r tag idx fan spd temp res; do
+        if [[ "$tag" != "MANUAL" || ! "$idx" =~ ^[0-9]+$ ]]; then
+            # A Python/NVML error; log its first line once, not every 5 minutes.
+            if [[ -n "$tag" ]] && (( _FAN_GUARD_WARNED < 2 )); then
+                _FAN_GUARD_WARNED=2
+                log "  FAN GUARD: NVML check failed: $tag $idx $fan $spd $temp $res (further errors not logged)"
+            fi
+            continue
+        fi
+        log "  FAN GUARD: GPU $idx fan $fan was MANUAL at ${spd}% (${temp}°C) → reset to automatic: $res"
+        write_event "fan_policy_reset" "{\"gpu_idx\":$idx,\"fan\":$fan,\"pinned_pct\":$spd,\"temp\":$temp,\"result\":\"$res\"}"
+        f="$FAN_POLICY_STATE_DIR/gpu$idx"; last=0
+        [[ -f "$f" ]] && last=$(cat "$f" 2>/dev/null || echo 0)
+        [[ "$last" =~ ^[0-9]+$ ]] || last=0
+        if (( now - last >= FAN_POLICY_ALERT_COOLDOWN )); then
+            echo "$now" > "$f"
+            tg_send "🌀 <b>$(hostname): GPU $idx fan was locked at ${spd}%</b>
+Fan $fan was in MANUAL fan control (${temp}°C), so the card's own fan curve wasn't running. Reset to automatic: <b>$res</b>. Nothing on the host sets this, so check which rental is on GPU $idx."
+        fi
+    done <<< "$out"
 }
 
 # Clock locks don't survive a reboot and a restarted monitor has no memory of
@@ -5333,6 +5415,7 @@ main() {
     thermal_adjust
     clock_throttle_reset
     clock_thermal_adjust
+    fan_policy_guard
     # Report the power cap actually applied (read back from nvidia-smi), so the
     # dashboard shows 325 on an RTX 5080 rig rather than the 575 fallback.
     local effective_power_limit
@@ -5414,6 +5497,7 @@ main() {
                 # Refresh the dashboard's power/temp snapshot on the same
                 # cadence so it doesn't lag the hourly cycle either.
                 snapshot_gpu_status
+                fan_policy_guard
             fi
             # Sample the PDU on its own cadence (no-ops unless PDU_HOSTS is set).
             (( slept % PDU_POLL_INTERVAL == 0 )) && pdu_poll
