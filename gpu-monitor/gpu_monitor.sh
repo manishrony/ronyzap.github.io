@@ -29,6 +29,23 @@ GPU_FAN_STUCK_TEMP="${GPU_FAN_STUCK_TEMP:-80}"
 GPU_FAN_STUCK_MAX="${GPU_FAN_STUCK_MAX:-35}"
 GPU_HEAT_ALERT_COOLDOWN="${GPU_HEAT_ALERT_COOLDOWN:-1800}"
 GPU_HEAT_ALERT_DIR="/var/tmp/gpu_monitor_heat_alert"
+# Automatic clock throttle for any GPU that reaches GPU_CLOCK_HOT_TEMP (checked
+# every THERMAL_CHECK_INTERVAL). Power can't do this job: 400 W is an RTX 5090's
+# minimum power limit, and zappa2's GPU 5 still reached 90 °C at it on
+# 2026-11-13. Locking the graphics clock lower (nvidia-smi -lgc) cuts heat
+# further. It steps down one GPU_CLOCK_STEPS entry per GPU_CLOCK_STEP_DWELL_SECS
+# while still hot, and steps back up one entry after GPU_CLOCK_RESTORE_SECS at
+# or below GPU_CLOCK_COOL_TEMP. Back at the top it unlocks (nvidia-smi -rgc). The
+# renter keeps running, only slower, which beats the card falling off the bus.
+# GPU_CLOCK_THROTTLE=0 in /etc/gpu_monitor.conf turns it off.
+GPU_CLOCK_THROTTLE="${GPU_CLOCK_THROTTLE:-1}"
+GPU_CLOCK_HOT_TEMP="${GPU_CLOCK_HOT_TEMP:-90}"
+GPU_CLOCK_COOL_TEMP="${GPU_CLOCK_COOL_TEMP:-78}"
+GPU_CLOCK_STEPS="${GPU_CLOCK_STEPS:-2400 2100 1800}"   # MHz max graphics clock per step
+GPU_CLOCK_MIN_MHZ="${GPU_CLOCK_MIN_MHZ:-210}"
+GPU_CLOCK_STEP_DWELL_SECS="${GPU_CLOCK_STEP_DWELL_SECS:-120}"
+GPU_CLOCK_RESTORE_SECS="${GPU_CLOCK_RESTORE_SECS:-300}"
+GPU_CLOCK_STATE_DIR="/var/tmp/gpu_monitor_clock"
 CHECK_INTERVAL=3600      # 1 hour in seconds (earnings sync, power-limit re-apply,
                          # fault/selftest checks — the rate-limit-sensitive stuff)
 # How often to refresh /machines/ and react to it: vastai_check() (rental
@@ -1843,6 +1860,80 @@ GPU likely wedged (GSP stuck in reset) — this can silently delist the machine 
     check_gpu_count "$gpu_count_actual"
 
     log "--- End GPU Status ---"
+}
+
+# Clock locks don't survive a reboot and a restarted monitor has no memory of
+# why one was set, so start clean: unlock anything a previous run locked.
+clock_throttle_reset() {
+    [[ -d "$GPU_CLOCK_STATE_DIR" ]] || return 0
+    local f idx
+    for f in "$GPU_CLOCK_STATE_DIR"/gpu*; do
+        [[ -f "$f" ]] || continue
+        idx="${f##*/gpu}"
+        [[ "$idx" =~ ^[0-9]+$ ]] && nvidia-smi -i "$idx" -rgc >/dev/null 2>&1 \
+            && log "  CLOCK: GPU $idx clock lock cleared at startup"
+        rm -f "$f"
+    done
+}
+
+clock_thermal_adjust() {
+    [[ "$GPU_CLOCK_THROTTLE" == "1" ]] || return 0
+    local -a steps; read -ra steps <<< "$GPU_CLOCK_STEPS"
+    local nsteps=${#steps[@]}
+    (( nsteps > 0 )) || return 0
+    mkdir -p "$GPU_CLOCK_STATE_DIR" 2>/dev/null || return 0
+    local now; now=$(date +%s)
+    local idx temp f level last cool cap
+    while IFS=',' read -r idx temp; do
+        idx="${idx// /}"; temp="${temp// /}"
+        [[ "$idx" =~ ^[0-9]+$ && "$temp" =~ ^[0-9]+$ ]] || continue
+        f="$GPU_CLOCK_STATE_DIR/gpu$idx"
+        level=0; last=0; cool=0
+        [[ -f "$f" ]] && read -r level last cool < "$f"
+        [[ "$level" =~ ^[0-9]+$ ]] || level=0
+        [[ "$last" =~ ^[0-9]+$ ]] || last=0
+        [[ "$cool" =~ ^[0-9]+$ ]] || cool=0
+
+        if (( temp >= GPU_CLOCK_HOT_TEMP )); then
+            cool=0
+            if (( level < nsteps )) && { (( level == 0 )) || (( now - last >= GPU_CLOCK_STEP_DWELL_SECS )); }; then
+                cap="${steps[$level]}"
+                if nvidia-smi -i "$idx" -lgc "${GPU_CLOCK_MIN_MHZ},${cap}" >/dev/null 2>&1; then
+                    level=$(( level + 1 )); last=$now
+                    log "  CLOCK: GPU $idx at ${temp}°C ≥ ${GPU_CLOCK_HOT_TEMP}°C → max clock ${cap} MHz (step $level/$nsteps)"
+                    write_event "gpu_clock_throttle" "{\"gpu_idx\":$idx,\"temp\":$temp,\"cap_mhz\":$cap,\"step\":$level}"
+                    if (( level == 1 )); then
+                        tg_send "🧊 <b>$(hostname): GPU $idx clock-throttled</b>
+${temp}°C ≥ ${GPU_CLOCK_HOT_TEMP}°C, so its max clock is now ${cap} MHz to cool it (renter keeps running, slower). It steps further down if it stays hot and unlocks once it holds ≤${GPU_CLOCK_COOL_TEMP}°C."
+                    fi
+                else
+                    log "  CLOCK: GPU $idx at ${temp}°C but nvidia-smi -lgc was rejected; can't clock-throttle it"
+                fi
+            fi
+        elif (( level > 0 )); then
+            if (( temp <= GPU_CLOCK_COOL_TEMP )); then
+                (( cool == 0 )) && cool=$now
+                if (( now - cool >= GPU_CLOCK_RESTORE_SECS )); then
+                    level=$(( level - 1 )); last=$now; cool=$now
+                    if (( level == 0 )); then
+                        nvidia-smi -i "$idx" -rgc >/dev/null 2>&1
+                        log "  CLOCK: GPU $idx held ≤${GPU_CLOCK_COOL_TEMP}°C for ${GPU_CLOCK_RESTORE_SECS}s → clock lock removed"
+                        write_event "gpu_clock_throttle" "{\"gpu_idx\":$idx,\"temp\":$temp,\"cap_mhz\":0,\"step\":0}"
+                        rm -f "$f"
+                        continue
+                    fi
+                    cap="${steps[$(( level - 1 ))]}"
+                    nvidia-smi -i "$idx" -lgc "${GPU_CLOCK_MIN_MHZ},${cap}" >/dev/null 2>&1
+                    log "  CLOCK: GPU $idx cooled to ${temp}°C → max clock back up to ${cap} MHz (step $level/$nsteps)"
+                fi
+            else
+                cool=0
+            fi
+        fi
+        if (( level > 0 )); then
+            echo "$level $last $cool" > "$f"
+        fi
+    done < <(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits 2>/dev/null)
 }
 
 # Telegram alert for a hot GPU or one whose fans aren't keeping up (see
@@ -5240,6 +5331,8 @@ main() {
     # already running, or an already-low-paying rental) doesn't sit at full
     # power for up to THERMAL_CHECK_INTERVAL before being reclamped.
     thermal_adjust
+    clock_throttle_reset
+    clock_thermal_adjust
     # Report the power cap actually applied (read back from nvidia-smi), so the
     # dashboard shows 325 on an RTX 5080 rig rather than the 575 fallback.
     local effective_power_limit
@@ -5270,6 +5363,7 @@ main() {
         # 400W right after `set_power_limits` logged, well before the next
         # scheduled thermal_adjust tick).
         thermal_adjust
+        clock_thermal_adjust
         check_gpus
         check_gpu_faults
         check_container_runtime_faults
@@ -5292,6 +5386,7 @@ main() {
             sleep "$THERMAL_CHECK_INTERVAL"
             slept=$(( slept + THERMAL_CHECK_INTERVAL ))
             thermal_adjust
+            clock_thermal_adjust
             fan_floor_adjust
             cpu_freq_adjust
             check_bmc_sel_faults
