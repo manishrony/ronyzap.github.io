@@ -175,6 +175,12 @@
    Vast self-test did not overwrite it. Base spec regenerated at ~15:30 as a precaution
    (`nvidia-ctk cdi generate`): `gpu=0`, `gpu=1` and both UUIDs (`027f63a3` ZOTAC, `94d80956`
    MSI) present; 170 CDI devices total, i.e. ~33 accumulated per-container `D.*` specs.
+   2026-11-14: renter churn on the ZOTAC. `vast-activity` section 4 shows both pytorch renters
+   placed on GPU 0 (`01:00`, ZOTAC) destroyed their instance after exactly 2m05s (13:58 and
+   15:07), while the ComfyUI renter on GPU 1 (MSI) stayed 26 min. Containers started cleanly
+   and there was no Xid, so renters are rejecting the card itself (a quick benchmark or check
+   that fails). The ZOTAC had run ~10 h of renter load at 450 W without a drop before this.
+   The owner set zappa1 POWER_LIMITS to 500 W at ~15:35.
    2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. 2026-11-13: all 12V-2x6 plugs checked by the owner (seated, no browning), so the power connector is ruled out too. Still to do: the ZOTAC/MSI slot swap, Gen4 in BIOS (link still trains Gen5).
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
