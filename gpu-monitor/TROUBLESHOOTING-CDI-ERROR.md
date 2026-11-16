@@ -189,6 +189,10 @@
    now dropped on `01:00` at Gen5 and Gen4, at 450/475/500 W, and `vast-activity` shows renters on
    GPU 0 repeatedly leaving within 1-4 min while the MSI on GPU 1 holds 12 h+ rentals. Next: slot
    swap to separate card from slot; if the fault follows the card, RMA the ZOTAC.
+   **2026-11-16 00:40:25: ZOTAC dropped again, now capped at 400 W** (`GPU_POWER_OVERRIDE=("0:400")`,
+   the 5090 minimum, applied 21:57). Trigger as before: a stopped renter instance (C.60743878) was
+   restarted on GPU 0 at 00:36:19 and the card fell off 4 min later. SysRq reboot recovered it.
+   Two drops in under 4 h, at 400 W and Gen4, so neither power nor link speed is the cause.
    2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. 2026-11-13: all 12V-2x6 plugs checked by the owner (seated, no browning), so the power connector is ruled out too. 2026-11-14 ~16:00: BIOS Settings > Miscellaneous > PCIEX16 and PCIEX8 Slot Link Speed set to Gen4 (Gigabyte AM5; the option is not under AMD CBS > NBIO). After boot both GPUs report `pcie.link.gen.max` 4, width x8; no slot swap, ZOTAC still on `01:00`, MSI on `03:00`. Still to do: the ZOTAC/MSI slot swap, only if the ZOTAC drops again at Gen4.
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
