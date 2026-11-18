@@ -2,7 +2,8 @@
 # Deploy gpu_monitor.sh + dashboard on Zappa3.
 # Zappa3 runs standalone (no peers configured here) — its data is picked up
 # by Zappa1's combined dashboard via server-side proxy. GPU power limit is
-# auto-detected by model (RTX 5080 -> 300W), no argument needed.
+# auto-detected by model (RTX 5090 -> 575W code default, overridden by
+# POWER_LIMITS in /etc/gpu_monitor.conf), no argument needed.
 #
 # Usage: sudo bash install-zappa3.sh
 

@@ -112,7 +112,7 @@ REPLICATE_TARGET_PATH=/home/ronyzap/gpu-monitor-replica/zappa2
 2. **Confirm zappa3's `/etc/gpu_monitor.conf` has real (not placeholder) `VASTAI_API_KEY`/`TELEGRAM_CHAT_ID`/`TELEGRAM_TOKEN` values.**
 3. Optional: wire zappa3 into cross-rig replication (pick a target, same pattern as zappa1⇄zappa2).
 4. Never resolved: a residual bug where some `rental_start` events could still log `$0.000/hr` even after fix #2, observed once in an earlier diagnostic — not reproduced/re-investigated since; flag if it recurs.
-5. RIGS.md's rig table still says zappa3 = RTX 5080 — worth a doc correction if this session's "actually a 5090" info is confirmed durable (not a temporary hardware swap).
+5. ~~RIGS.md's rig table still says zappa3 = RTX 5080 — worth a doc correction if this session's "actually a 5090" info is confirmed durable (not a temporary hardware swap).~~ Done 2026-11-18: confirmed 1x RTX 5090, RIGS.md corrected.
 6. The user separately asked about hosting-abuse/liability risk for a `hashcat.bin` cracking workload seen on zappa2 — answered as a policy/liability discussion (not code), recommending network isolation, IP separation, and evidence retention (which fix #2 and #10 above directly support). No code follow-up pending there.
 
 ## Where to look for more detail

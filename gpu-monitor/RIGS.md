@@ -11,7 +11,7 @@ _Last updated: 2026-07-16_
 |--------|----------|------------------|-----------|------------------------------|-------|
 | Zappa1 | zappa1   | 192.168.1.171    | 8080      | **Hub** (serves combined view) | 2× RTX 5090: GPU 0 `01:00` = ZOTAC liquid-cooled (subsys 19da:1761, reports a constant ~40% fan/pump at idle; every zappa1 Xid 79 so far), GPU 1 `03:00` = MSI (subsys 1462:5303, air, 0% fan at idle; this is the MSI that used to be zappa2's GPU 5) |
 | Zappa2 | zappa2   | 192.168.1.196    | 8081      | Node                         | 8× RTX 5090 (GPU 5 `85:00` was the lazy-fan MSI, since moved to zappa1; the card there now reads a flat ~30% fan and ran 90 °C on 2026-11-13, so the 400 W override stays); AMD EPYC 9 B14 |
-| Zappa3 | zappa3   | 192.168.1.211    | 8082      | Node                         | RTX 5080 (325W curve, 250W@80°C; mining/cracking throttles to 250W past the 60min grace period) |
+| Zappa3 | zappa3   | 192.168.1.211    | 8082      | Node                         | 1× RTX 5090 (replaced the earlier RTX 5080s; mining/cracking throttles to 400W past the 60min grace period) |
 
 > ⚠️ These are **DHCP** addresses and have drifted before (Zappa3 moved
 > 192.168.1.150 → .211 on 2026-07-16, which broke the hub's peer link). Set a
@@ -626,13 +626,18 @@ still matters (it's still the threshold checked once the dwell time has
 elapsed) but no longer has to be hand-tuned below every possible workload's
 capped-temp floor to avoid flapping.
 
-**Zappa3** also carries the profitability power throttle — its RTX 5080s at
-full power (360W curve, ~800W wall) can run break-even or at a loss against a
-cheap rental once electricity ($0.25/kWh) is counted. Its conf carries:
+> **Zappa3 is now 1× RTX 5090.** The tiers below date from its earlier RTX 5080
+> build. A 5090's minimum power limit is 400W, so 250W and 300W caps cannot take
+> effect on it. Retune any `PROFIT_THROTTLE_TIERS` still in zappa3's conf.
+
+**Zappa3** also carried the profitability power throttle on its RTX 5080 build:
+those cards at full power (360W curve, ~800W wall) could run break-even or at a
+loss against a cheap rental once electricity ($0.25/kWh) was counted. Its conf
+carried:
 
 ```bash
 PROFIT_THROTTLE_TIERS="5.00:250 7.00:300"
-#   rate <  $5.00/day → cap 250W (VBIOS floor)
+#   rate <  $5.00/day → cap 250W (5080 VBIOS floor)
 #   rate <  $7.00/day → cap 300W
 #   rate >= $7.00/day → no cap (full 360W curve)
 ```
@@ -837,8 +842,8 @@ Rationale for a **verified** machine (Vast's own trust badge, check
 `verification` via `dump-machine-json`) with a strong reliability score
 (`reliability2`): it's a legitimately higher-quality listing than the
 market's midpoint, so `p75` (top quartile) may still be worth targeting
-over `mean` for Zappa1/Zappa2 (verified RTX 5090s); Zappa3 (unverified RTX
-5080) is fine at the `mean` default. Falls back to `median` automatically
+over `mean` for Zappa1/Zappa2 (verified RTX 5090s); Zappa3 (RTX 5090, unverified
+when this was written) is fine at the `mean` default. Falls back to `median` automatically
 if the configured stat comes back unavailable/zero, or if
 `PRICE_TARGET_STAT` is unset/unknown. The below-market Telegram alert and
 the "within 2¢ of target" no-op log line both track whichever stat is
@@ -922,10 +927,10 @@ WORKLOAD_THROTTLE_GRACE_SECS=3600   # 60 min — see grace period below
   `WORKLOAD_THROTTLE_LIMITS` the same substring-match way
   `get_power_limit_for_gpu()` matches `POWER_LIMITS`; falls back to
   `WORKLOAD_THROTTLE_WATTS` for an unlisted model.
-- **Zappa3's `/etc/gpu_monitor.conf` `WORKLOAD_THROTTLE_WATTS=250` override is
-  now redundant** (harmless, but can be removed) — the default
-  `WORKLOAD_THROTTLE_LIMITS` already maps `5080:250` directly, so the per-rig
-  override was only ever hitting the fallback path it duplicates.
+- **Zappa3's `/etc/gpu_monitor.conf` `WORKLOAD_THROTTLE_WATTS=250` override, if
+  still present, is redundant** (harmless, but can be removed) — the default
+  `WORKLOAD_THROTTLE_LIMITS` maps its RTX 5090 to `5090:400`, so the fallback
+  value is never reached.
 - Override per rig in `/etc/gpu_monitor.conf`: `WORKLOAD_THROTTLE_WATTS=0` to
   disable entirely, or edit `WORKLOAD_THROTTLE_LIMITS`/the type list.
 
