@@ -2,7 +2,7 @@
 # Deploy gpu_monitor.sh + dashboard on Zappa1.
 # Zappa1 is the hub — it serves the combined dashboard on both the LAN
 # (http://192.168.1.171:8080/combined) and the public URL
-# (http://141.152.237.39:8080/combined), proxying Zappa2 and Zappa3's data.
+# (http://141.152.237.103:8080/combined; ISP changes this public IP, last on 2026-11-20), proxying Zappa2 and Zappa3's data.
 #
 # Usage: sudo bash install-zappa1.sh
 #
