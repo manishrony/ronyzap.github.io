@@ -119,6 +119,16 @@ package was built against.
 **Do not disable AppArmor.** It is part of the isolation between renters and the
 host, and this is a profile bug, not a reason to remove confinement.
 
+## Incidents
+
+| When (UTC) | Rig | Notes |
+|---|---|---|
+| 2026-09-16 | zappa3 | First occurrence; fixed by `systemctl restart docker`. |
+| 2026-11-21 | zappa3 | Second occurrence, mid-uptime (day 17, no reboot). First denial in `dmesg` at 02:27, as a rental ended; 10 denials and 2 `unable to signal init` errors by 16:00. No apparmor/docker/containerd/runc package change in `dpkg.log`, so the trigger is not an update. A rented container kept running unaffected; only stops failed. A background loop waited for `gpu_occupancy` to go vacant and restarted Docker at 18:48; `docker stop` test exit 0, denial count 0. |
+
+If it keeps recurring mid-uptime, record the first-denial time from
+`journalctl -k` and any `profile_replace ... docker-default` line before it.
+
 ## Does it survive a reboot?
 
 Unknown until tested — the fix regenerates a runtime profile, and boot may load
