@@ -193,6 +193,15 @@
    the 5090 minimum, applied 21:57). Trigger as before: a stopped renter instance (C.60743878) was
    restarted on GPU 0 at 00:36:19 and the card fell off 4 min later. SysRq reboot recovered it.
    Two drops in under 4 h, at 400 W and Gen4, so neither power nor link speed is the cause.
+
+   **2026-11-18 22:31:51 and 2026-11-21 14:08:46: ZOTAC (`01:00`) dropped twice more**, both at
+   400 W and Gen4. The 11-21 drop came while the long-term ComfyUI LTX renter (C.60891455, GPU 0,
+   since 11-16) was running, with no new job starting on GPU 0 just before it, so "minutes after a
+   new job starts" no longer covers every drop. SysRq watcher rebooted at 14:09:17, back at 14:09:47
+   (~1 min); the renter's container resumed after the reboot. Reliability fell 0.963 to 0.578.
+   No `gpu-monitor` restart near either drop (the 11-18 restart was at 11:58, 10.5 h earlier).
+   Next step stays the card/slot swap; after it, `GPU_POWER_OVERRIDE` is index-based, so move the
+   400 W override to the ZOTAC's new index.
    2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. 2026-11-13: all 12V-2x6 plugs checked by the owner (seated, no browning), so the power connector is ruled out too. 2026-11-14 ~16:00: BIOS Settings > Miscellaneous > PCIEX16 and PCIEX8 Slot Link Speed set to Gen4 (Gigabyte AM5; the option is not under AMD CBS > NBIO). After boot both GPUs report `pcie.link.gen.max` 4, width x8; no slot swap, ZOTAC still on `01:00`, MSI on `03:00`. Still to do: the ZOTAC/MSI slot swap, only if the ZOTAC drops again at Gen4.
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
