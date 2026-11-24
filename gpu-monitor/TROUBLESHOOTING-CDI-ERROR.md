@@ -208,6 +208,16 @@
    renter on GPU 0). Drops are getting more frequent: 11-18, 11-21, 11-23, 11-24. SysRq reboot
    recovered each in ~1 min. Reliability 0.856 -> 0.587. After 11-24 both GPUs were vacant and
    `dump-machine-json` showed `listed_gpu_cost = None`, `end_date = None`.
+
+   **2026-11-24 slot swap (rig unlisted for maintenance).** B850 AI TOP: PCIEX16 and PCIEX8
+   share 16 CPU lanes (x8/x8 with both used); the bottom slot is PCIe 4.0 x2 (chipset). The MSI
+   is ~3.5 slots thick, so in slot 1 it leaves only ~1 cm above PCIEX8. First try put the ZOTAC
+   in the bottom slot (`0D:00`, Gen4 x2): no drop in ~50 min of stress. Final layout: **MSI in
+   PCIEX16 = GPU 0 `01:00` x8, ZOTAC in PCIEX8 = GPU 1 `03:00` x8**, both 450 W
+   (`GPU_POWER_OVERRIDE` commented out). 20 min of both cards at 450 W / 100 %: no Xid. The MSI
+   reached 80 C with its fan at 38 % (the lazy-fan card formerly zappa2 GPU 5), so
+   `GPU_FAN_FLOOR=("0:70")` was added; the monitor logged `FAN: GPU 0 0% -> 70% (floor)`.
+   Reading from now on: a drop on `03:00` = the ZOTAC card (RMA); a drop on `01:00` = slot 1/board.
    2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. 2026-11-13: all 12V-2x6 plugs checked by the owner (seated, no browning), so the power connector is ruled out too. 2026-11-14 ~16:00: BIOS Settings > Miscellaneous > PCIEX16 and PCIEX8 Slot Link Speed set to Gen4 (Gigabyte AM5; the option is not under AMD CBS > NBIO). After boot both GPUs report `pcie.link.gen.max` 4, width x8; no slot swap, ZOTAC still on `01:00`, MSI on `03:00`. Still to do: the ZOTAC/MSI slot swap, only if the ZOTAC drops again at Gen4.
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
