@@ -202,6 +202,12 @@
    No `gpu-monitor` restart near either drop (the 11-18 restart was at 11:58, 10.5 h earlier).
    Next step stays the card/slot swap; after it, `GPU_POWER_OVERRIDE` is index-based, so move the
    400 W override to the ZOTAC's new index.
+
+   **2026-11-23 15:51:47 and 2026-11-24 06:25:47: two more ZOTAC drops** (14 in total), again
+   at 400 W and Gen4; the 11-24 one names the renter's `python3` (the same long-term ComfyUI LTX
+   renter on GPU 0). Drops are getting more frequent: 11-18, 11-21, 11-23, 11-24. SysRq reboot
+   recovered each in ~1 min. Reliability 0.856 -> 0.587. After 11-24 both GPUs were vacant and
+   `dump-machine-json` showed `listed_gpu_cost = None`, `end_date = None`.
    2026-11-11: AIO tubing/radiator checked by the owner, no strain on the card, so tube strain is ruled out. 2026-11-13: all 12V-2x6 plugs checked by the owner (seated, no browning), so the power connector is ruled out too. 2026-11-14 ~16:00: BIOS Settings > Miscellaneous > PCIEX16 and PCIEX8 Slot Link Speed set to Gen4 (Gigabyte AM5; the option is not under AMD CBS > NBIO). After boot both GPUs report `pcie.link.gen.max` 4, width x8; no slot swap, ZOTAC still on `01:00`, MSI on `03:00`. Still to do: the ZOTAC/MSI slot swap, only if the ZOTAC drops again at Gen4.
 
    **Again 2026-11-10 21:06:43, 65 min after that reboot:** the ZOTAC on `01:00` went into a
