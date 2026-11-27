@@ -249,7 +249,7 @@
    | 2026-11-13 18:37:37 | `42:00` | slot 113 (GPU 2, UUID `bb45dbe5...`) | first drop on this slot, ~3 days after the 11-10 recovery, with 6 of 8 GPUs at 400-460 W under vLLM renters. The watcher confirmed Xid 154 in 2 s and BMC-power-cycled at 18:38:09; back at 18:40:34 with 8 GPUs, about 3 min down, so the auto-reboot worked as designed. Reliability still fell 0.964 to 0.589. Fifth different slot to drop (109, 106, 101, 105, 113): the fault is not one card or riser, which leaves shared power delivery (PSUs / 12 V distribution) or the board |
    | 2026-11-15 16:21:41 | `04:00` | slot 109 (GPU 0) | second drop on slot 109 (first 11-04), ~46 h after the previous one. Watcher BMC power cycle at 16:22:13, back 16:24:34 (~3 min). That evening (21:58-21:59) the BMC SEL shows `VDD_5_RUN` Lower Critical flapping, readings 4.45-4.56 V against the 4.49 V threshold; on 11-11 the same sensor sat at a constant 4.658 V across 1.9-2.6 kW GPU load, so the 5 V rail is now genuinely moving (sag), not just a fixed offset. In-band `ipmitool` also returned `Get Device ID command failed: 0x95` / `unexpected ID` errors. 23:09-23:10 log: 5 V read 4.487-4.555 V at 1.6-1.9 kW GPU draw (11-11: constant 4.658 V at 1.9-2.6 kW), so the baseline fell ~0.1-0.17 V in 4 days; no clear tracking with load in 6 samples. The SEL is flooding with these flaps (~1/s, ids 225b-2aaf in 100 min): the oldest retained entry is 20:16:52, so the start time is lost and real events (PERR at a drop) get overwritten. Next: multimeter on a spare Molex/SATA 5 V from the board's PSU to confirm the sag independently of the BMC sensor |
    | 2026-11-18 11:59:37 | `04:00` | slot 109 (GPU 0) | third drop on slot 109 (11-04, 11-15), ~68 h after the previous one. GPU 0 was running a vLLM renter at its 400 W override (411.9 W at 11:59:24; ~2.26 kW across all GPUs), so the 400 W cap did not prevent it. `gpu-monitor` had been restarted 30 s earlier (11:59:07) to apply `PRICE_FLOORS` 45; a causal link is unproven, since the other drops had no restart close by. Watcher confirmed at 11:59:38, BMC power cycle at 12:00:08, back at 12:02:34 with 8 GPUs (~3 min). `VDD_5_RUN` was still flapping at 4.45-4.52 V after boot |
-   | 2026-11-26 15:55:52 | `c4:00` | GPU 7 | first drop on `c4:00`, about 1 min after a boot during the GPU 1 cable work (likely the riser was bumped). Idle, no renter. Watcher confirmed at 15:55:53, BMC power cycle at 15:56:23, back at 15:58:48 with 8 GPUs. Reliability was already down from the outage (0.58 at 14:33, 0.49 at 16:04). If `c4:00` drops again, reseat its riser cable |
+   | 2026-11-26 15:55:52 | all 8 | all | **power event, not a card fault**: all 8 zappa2 GPUs and both zappa1 GPUs logged Xid 79 in the same second. The watcher saw `c4:00` first and BMC-power-cycled at 15:56:23, back 15:58:48 with 8 GPUs. Do not count it against any slot (or the zappa1 ZOTAC) |
 
    **2026-11-26: GPU 1 (`06:00`) MCIO cable replaced; x4 is fixed.** The owner rebooted after a
    power outage (~14:00 UTC; reliability 0.983 -> 0.591), then replaced GPU 1's MCIO cable. With
@@ -258,13 +258,22 @@
    port, so only 7 GPUs came up. A reboot and `pci=realloc` (added to grub) did not fix it at
    first, and the BIOS has no MMIO/Above-4G option for it. During the 7-GPU window Vast hit
    `unresolvable CDI devices .../gpu=7` (C.62703356 at 14:08). After the 15:56 BMC power cycle
-   (the `c4:00` drop above), the rig came up with all 8 GPUs at x8, new cable still in, and
+   (the power-event drop above), the rig came up with all 8 GPUs at x8, new cable still in, and
    `pci=realloc` active; CDI lists 8 UUIDs and the 17:13 Vast self-test ran on all 8.
    `pci=realloc` was then removed from `/etc/default/grub` (pending the next boot). **Check at
    the next reboot:** 8 GPUs = fixed; 7 with `06:00` missing = `pci=realloc` is needed, put it
    back (`sudo sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="/&pci=realloc /' /etc/default/grub && sudo update-grub`).
    Pricing while reliability recovers: `PRICE_FLOORS` 30, `LONG_RENTAL_DAYS=0`,
    `MAX_RENTAL_DAYS=7` (temporary; revert to 45 / 30 / 14 once reliability is back over 0.9).
+   **Result:** the boots at 19:56, 20:56, 21:08 and 03:10 (after `pci=realloc` was removed) all came up
+   with 8 GPUs at x8, so the new cable fixed GPU 1 for good; `pci=realloc` is not needed.
+
+   **2026-11-26/27: repeated house power loss.** zappa1 and zappa2 rebooted together at ~15:56,
+   ~19:52, ~20:54 and ~03:08 UTC (journal boot markers on both; zappa2 SEL `ACPI S0/G0 working` at
+   03:09:07). Only the 15:55 event left Xid lines (a dip both rigs rode through briefly); the others
+   were full power cuts with no Xid. Reliability: zappa1 0.416 / 0.447, zappa2 0.341 at the low points.
+   No UPS on either rig. Right after the 03:10 boot zappa2's BMC logged a burst of `PCI PERR` and the
+   NVMe (`03:00.0`) corrected AER errors; watch whether PERR repeats outside a boot.
 
    **2026-11-09 ~23:50: BIOS PCIe link speed forced to Gen4 on all GPU slots** (was Auto/Gen5).
    After boot all 8 GPUs report `pcie.link.gen.max` 4, all x8 except `06:00` (slot 110, GPU 1),
